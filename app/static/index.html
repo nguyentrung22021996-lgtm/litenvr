@@ -2,158 +2,1031 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>LiteNVR Pro - ZimaOS Camera NVR</title>
   <script src="/static/hls.min.js"></script>
   <style>
-    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #121212; color: #eee; }
-    header { display: flex; gap: 8px; padding: 12px 16px; background: #1e1e1e; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #333; }
-    select, input, button { padding: 8px 12px; background: #2c2c2c; color: #fff; border: 1px solid #444; border-radius: 6px; cursor: pointer; font-size: 13px; }
-    button.active { background: #e53935; border-color: #e53935; }
-    button.primary { background: #1976d2; border-color: #1976d2; }
-    button.warn { background: #ef6c00; border-color: #ef6c00; }
-    .topbar { display: flex; gap: 10px; padding: 10px 14px; background: #181818; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #2c2c2c; position: sticky; top: 0; z-index: 20; }
-    .brand { font-weight: 700; font-size: 15px; letter-spacing: .3px; margin-right: 4px; }
-    .brand span { color: #e53935; }
-    .topbar .spacer { margin-left: auto; }
-    button { transition: background .15s, border-color .15s; }
-    button:hover { background: #3a3a3a; }
-    button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid #64b5f6; outline-offset: 2px; }
-    .disk-badge { font-size: 12px; color: #ddd; background: #252525; padding: 6px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #444; }
-
-    .stats-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; max-width: 1000px; margin: 12px auto 0; padding: 0 12px; }
-    .stat-card { background: #1b1b1b; border: 1px solid #2e2e2e; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
-    .stat-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: #9e9e9e; text-transform: uppercase; letter-spacing: .4px; }
-    .stat-value { font-size: 20px; font-weight: 600; }
-    .stat-sub { font-size: 11px; color: #888; }
-    .stat-card canvas { width: 100%; height: 34px; display: block; }
-    .bar { height: 5px; background: #2a2a2a; border-radius: 3px; overflow: hidden; margin-top: 2px; }
-    .bar > i { display: block; height: 100%; width: 0; background: #4caf50; transition: width .3s; }
-    .bar.warn > i { background: #ff9800; }
-    .bar.crit > i { background: #e53935; }
-
-    .cam-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; max-width: 1000px; margin: 12px auto 0; padding: 0 12px; }
-    .cam-tile { background: #1b1b1b; border: 2px solid #2e2e2e; border-radius: 8px; overflow: hidden; cursor: pointer; position: relative; transition: border-color .15s; }
-    .cam-tile:hover { border-color: #555; }
-    .cam-tile.active { border-color: #e53935; }
-    .cam-tile img { width: 100%; height: 100px; object-fit: cover; background: #000; display: block; }
-    .cam-tile .tile-noimg { width: 100%; height: 100px; background: #111; color: #555; display: flex; align-items: center; justify-content: center; font-size: 12px; }
-    .cam-tile .tile-info { padding: 6px 8px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-    .cam-tile .dot { width: 8px; height: 8px; border-radius: 50%; background: #e53935; flex: 0 0 auto; }
-    .cam-tile .dot.on { background: #4caf50; }
-
-    .player-box { width: 100%; max-width: 1000px; margin: 12px auto; background: #000; aspect-ratio: 16/9; position: relative; border-radius: 8px; overflow: hidden; }
-    video { width: 100%; height: 100%; }
-    .timeline-container { max-width: 1000px; margin: 15px auto; padding: 0 12px; }
-    .timeline-bar { height: 26px; background: #252525; position: relative; border-radius: 4px; overflow: visible; cursor: pointer; border: 1px solid #444; touch-action: none; user-select: none; }
-    .timeline-bar .track { position: absolute; inset: 0; overflow: hidden; border-radius: 4px; }
-    .seg-layer, .evt-layer, .motion-layer { position: absolute; inset: 0; pointer-events: none; }
-    .seg-mark { position: absolute; top: 0; bottom: 0; width: 0.25%; background: #2e7d32; }
-    .motion-mark { position: absolute; top: 0; bottom: 0; background: rgba(255,152,0,.45); border-left: 1px solid #ffb300; }
-    .evt-mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff1744; z-index: 2; }
-    .cursor-line { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #ffeb3b; z-index: 3; pointer-events: none; }
-    .cursor-handle { position: absolute; top: -6px; width: 8px; height: 38px; margin-left: -4px; background: #ffeb3b; border-radius: 4px; z-index: 5; cursor: ew-resize; touch-action: none; }
-    .cursor-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: rgba(0,0,0,.5); transform: translateX(-50%); }
-    .time-tip { position: absolute; top: -28px; transform: translateX(-50%); background: #000; color: #ffeb3b; font-size: 11px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; pointer-events: none; z-index: 6; display: none; }
-    .timeline-bar:hover .time-tip, .timeline-bar.scrubbing .time-tip { display: block; }
-    .timeline-legend { display: flex; gap: 14px; font-size: 11px; color: #999; margin-top: 6px; flex-wrap: wrap; }
-    .timeline-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
-    .events-list { max-width: 1000px; margin: 20px auto; padding: 0 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
-    .event-card { background: #1e1e1e; border-radius: 8px; padding: 8px; cursor: pointer; border: 1px solid #333; position: relative; }
-    .event-card img { width: 100%; height: 115px; object-fit: cover; border-radius: 4px; background: #000; }
-    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.78); align-items: center; justify-content: center; z-index: 60; padding: 12px; }
-    .modal-box { background: #1e1e1e; padding: 20px; border-radius: 10px; width: 100%; max-width: 540px; max-height: 90vh; overflow-y: auto; border: 1px solid #444; }
-    .form-row { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .cam-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: #2a2a2a; border-radius: 6px; margin-bottom: 6px; font-size: 13px; }
-    .badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #388e3c; margin-left: 6px; }
-    .badge.motion { background: #f57c00; }
-    .badge.off { background: #616161; }
-    .log-badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 9px; background: #d32f2f; color: #fff; font-size: 11px; text-align: center; }
-    .log-cams { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-    .log-cam { display: flex; align-items: center; gap: 8px; padding: 6px 9px; background: #262626; border-radius: 6px; font-size: 12px; border-left: 3px solid #444; }
-    .log-cam.err { border-left-color: #d32f2f; }
-    .log-cam.warn { border-left-color: #f57c00; }
-    .log-cam.ok { border-left-color: #388e3c; }
-    .log-cam .nm { font-weight: 600; }
-    .log-cam .msg { color: #bbb; margin-left: auto; text-align: right; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .log-filter { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px; color: #bbb; }
-    .log-chk { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-    .log-list { background: #111; border: 1px solid #333; border-radius: 6px; padding: 8px; height: 38vh; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; }
-    .log-line { display: flex; gap: 8px; white-space: pre-wrap; word-break: break-word; }
-    .log-line .ts { color: #777; flex: none; }
-    .log-line .lv { flex: none; font-weight: 700; }
-    .log-line.info .lv { color: #64b5f6; }
-    .log-line.warn .lv { color: #ffb74d; }
-    .log-line.error .lv { color: #ef5350; }
-    .log-line .cid { color: #9ccc65; flex: none; }
-    .log-empty { color: #666; text-align: center; padding: 20px; }
-    .onvif-box { background: #252525; border-radius: 6px; padding: 10px; margin-bottom: 10px; font-size: 13px; max-height: 200px; overflow-y: auto; }
-    .onvif-item { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 6px 8px; background: #2f2f2f; border-radius: 5px; margin-bottom: 6px; }
-    .onvif-item .nm { font-weight: 600; }
-    .onvif-item .ip { color: #aaa; margin-left: 8px; }
-    textarea { width: 100%; box-sizing: border-box; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 8px; font-family: inherit; font-size: 13px; }
-    .grid-view { display: none; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 0 14px 10px; }
-    .grid-view.g9 { grid-template-columns: repeat(3, 1fr); }
-    .grid-tile { position: relative; background: #000; border: 1px solid #333; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; cursor: pointer; }
-    .grid-tile:hover { border-color: #64b5f6; }
-    .grid-tile video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
-    .grid-tile .gname { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.6); color: #eee; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
-    .rec-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; color: #aaa; }
-    .rec-tools input[type="time"] { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 5px; padding: 4px 6px; font-family: inherit; }
-    .ptz-pad { display: grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 38px); gap: 4px; margin-top: 8px; }
-    .ptz-pad button { padding: 0; font-size: 15px; }
-    .sched-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
-    .sched-row input.s-days { flex: 1; min-width: 130px; }
-    .evt-dl { position: absolute; right: 6px; top: 6px; padding: 2px 8px; font-size: 12px; }
-
-    /* ---- Bảo mật & tài khoản ---- */
-    .user-chip { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ccc; background: #252525; border: 1px solid #444; padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
-    .user-chip b { color: #fff; }
-    .btn-menu { display: none; font-size: 17px; padding: 6px 12px; }
-    .sec-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-    .user-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; background: #2a2a2a; border-radius: 6px; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
-    .user-row > div:first-child { min-width: 0; overflow-wrap: anywhere; }
-    .perm-grid, .cam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 12px; font-size: 13px; }
-    .audit-line { font-size: 12px; padding: 4px 6px; border-bottom: 1px solid #262626; display: flex; gap: 8px; flex-wrap: wrap; }
-    .audit-line .ts { color: #777; flex: none; }
-    .sec-warn { color: #ffb74d; font-size: 13px; margin: 4px 0; }
-    .sec-ok { color: #81c784; font-size: 13px; margin: 4px 0; }
-    .export-wrap { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-
-    /* ---- Máy tính bảng: gom menu vào nút ☰ ---- */
-    @media (max-width: 900px) {
-      .btn-menu { display: inline-flex; }
-      .tb-main { display: none; }
-      .tb-main.open { display: flex; flex-direction: column; align-items: stretch; position: absolute; left: 0; right: 0; top: 100%; background: #181818; border-bottom: 1px solid #2c2c2c; padding: 10px 14px; gap: 8px; z-index: 40; max-height: calc(100dvh - 60px); overflow-y: auto; box-shadow: 0 12px 24px rgba(0,0,0,.5); }
-      .tb-main button, .tb-main select, .tb-main input { width: 100%; text-align: left; }
-      .tb-main .spacer { display: none; }
-      .tb-main #statusText { text-align: center; }
-      .user-chip { justify-content: center; }
+    :root {
+      --bg-body: #090c12;
+      --bg-surface: #111621;
+      --bg-elevated: #181f2e;
+      --bg-input: #1b2334;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(255, 255, 255, 0.18);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent-red: #e53935;
+      --accent-blue: #2563eb;
+      --accent-amber: #f59e0b;
+      --accent-green: #10b981;
+      --radius-lg: 14px;
+      --radius-md: 10px;
+      --radius-sm: 8px;
+      --max-w: 1260px;
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+      color-scheme: dark;
     }
 
-    /* ---- Điện thoại ---- */
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Thanh cuộn tinh gọn */
+    ::-webkit-scrollbar { width: 7px; height: 7px; }
+    ::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.2); }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 99px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-body);
+      background-image: radial-gradient(ellipse at 50% -10%, rgba(37, 99, 235, 0.12) 0%, transparent 60%);
+      color: var(--text-main);
+      padding-bottom: 36px;
+      overflow-x: hidden;
+    }
+
+    /* Keyframes nhẹ GPU (chỉ chạy 1 lần khi mở) */
+    @keyframes fadeSlideUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes modalBackdropIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @keyframes modalBoxIn {
+      from { opacity: 0; transform: translateY(16px) scale(0.97); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes menuDrop {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ================= CONTROLS & BUTTONS ================= */
+    select, input, button, textarea {
+      padding: 8px 13px;
+      background: var(--bg-input);
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-family: inherit;
+      transition: transform 0.16s var(--ease-out), background 0.16s, border-color 0.16s, box-shadow 0.16s;
+    }
+
+    button, select {
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    button:hover, select:hover {
+      background: #232d42;
+      border-color: var(--border-hover);
+    }
+
+    button:active {
+      transform: scale(0.97);
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    }
+
+    button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid #60a5fa;
+      outline-offset: 2px;
+    }
+
+    button.active {
+      background: linear-gradient(135deg, #ef4444 0%, #c62828 100%);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(229, 57, 53, 0.35);
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
+    }
+    button.primary:hover {
+      filter: brightness(1.1);
+    }
+
+    button.warn {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(245, 158, 11, 0.25);
+    }
+    button.warn:hover {
+      filter: brightness(1.08);
+    }
+
+    /* ================= TOPBAR ================= */
+    .topbar {
+      display: flex;
+      gap: 10px;
+      padding: 11px 20px;
+      background: rgba(15, 20, 30, 0.92);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      align-items: center;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+
+    .brand {
+      font-weight: 800;
+      font-size: 16.5px;
+      letter-spacing: -0.2px;
+      margin-right: 8px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+    }
+
+    .brand::before {
+      content: "";
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--accent-red);
+      box-shadow: 0 0 10px var(--accent-red);
+      margin-right: 4px;
+    }
+
+    .brand span {
+      color: var(--accent-red);
+    }
+
+    .tb-main {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      flex: 1;
+    }
+
+    .topbar .spacer {
+      margin-left: auto;
+    }
+
+    #statusText {
+      font-size: 12.5px !important;
+      color: #cbd5e1 !important;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 6px 11px;
+      border-radius: 99px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .user-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12.5px;
+      color: #cbd5e1;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      padding: 6px 12px;
+      border-radius: 99px;
+      white-space: nowrap;
+    }
+
+    .user-chip b {
+      color: #fff;
+    }
+
+    .btn-menu {
+      display: none;
+      font-size: 18px;
+      padding: 6px 12px;
+      margin-left: auto;
+    }
+
+    /* ================= STATS TELEMETRY BAR ================= */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      max-width: var(--max-w);
+      margin: 16px auto 0;
+      padding: 0 16px;
+      animation: fadeSlideUp 0.35s var(--ease-out) both;
+    }
+
+    .stat-card {
+      background: linear-gradient(180deg, var(--bg-surface) 0%, #0d121b 100%);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 13px 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      transition: transform 0.2s var(--ease-out), border-color 0.2s;
+    }
+
+    .stat-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-hover);
+    }
+
+    .stat-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .stat-value, #cpuVal, #ramVal, #diskVal {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-main);
+      font-variant-numeric: tabular-nums;
+      text-transform: none;
+    }
+
+    .stat-sub {
+      font-size: 11.5px;
+      color: #64748b;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .stat-card canvas {
+      width: 100%;
+      height: 36px;
+      display: block;
+      margin-top: 2px;
+    }
+
+    .bar {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.07);
+      border-radius: 99px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .bar > i {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #10b981, #34d399);
+      border-radius: 99px;
+      transition: width 0.4s var(--ease-out);
+    }
+
+    .bar.warn > i {
+      background: linear-gradient(90deg, #f59e0b, #fbbf24);
+    }
+
+    .bar.crit > i {
+      background: linear-gradient(90deg, #ef4444, #f87171);
+    }
+
+    /* ================= CAMERA THUMBNAIL STRIP ================= */
+    .cam-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
+      gap: 12px;
+      max-width: var(--max-w);
+      margin: 16px auto 0;
+      padding: 0 16px;
+    }
+
+    .cam-tile {
+      background: var(--bg-surface);
+      border: 1.5px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      cursor: pointer;
+      position: relative;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+      transition: transform 0.22s var(--ease-out), border-color 0.22s, box-shadow 0.22s;
+    }
+
+    .cam-tile:hover {
+      transform: translateY(-3px);
+      border-color: rgba(255, 255, 255, 0.28);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.45);
+    }
+
+    .cam-tile.active {
+      border-color: var(--accent-red);
+      box-shadow: 0 0 0 1px var(--accent-red), 0 10px 24px rgba(229, 57, 53, 0.25);
+    }
+
+    .cam-tile img {
+      width: 100%;
+      height: 110px;
+      object-fit: cover;
+      background: #000;
+      display: block;
+      transition: transform 0.35s var(--ease-out);
+    }
+
+    .cam-tile:hover img {
+      transform: scale(1.04);
+    }
+
+    .cam-tile .tile-noimg {
+      width: 100%;
+      height: 110px;
+      background: radial-gradient(circle, #161d2a 0%, #0b0f17 100%);
+      color: #475569;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .cam-tile .tile-info {
+      padding: 8px 11px;
+      font-size: 12.5px;
+      font-weight: 600;
+      background: var(--bg-surface);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ================= MULTI-CAMERA GRID VIEW ================= */
+    .grid-view {
+      display: none;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      max-width: var(--max-w);
+      margin: 16px auto;
+      padding: 0 16px;
+    }
+
+    .grid-view.g9 {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .grid-tile {
+      position: relative;
+      background: #000;
+      border: 1.5px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+      cursor: pointer;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+      transition: transform 0.2s var(--ease-out), border-color 0.2s;
+    }
+
+    .grid-tile:hover {
+      transform: translateY(-2px);
+      border-color: #3b82f6;
+    }
+
+    .grid-tile video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+      display: block;
+    }
+
+    .grid-tile .gname {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      background: rgba(9, 12, 18, 0.75);
+      backdrop-filter: blur(4px);
+      color: #f8fafc;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    /* ================= MAIN VIDEO PLAYER ================= */
+    .player-box {
+      width: calc(100% - 32px);
+      max-width: calc(var(--max-w) - 32px);
+      margin: 16px auto;
+      background: #000;
+      aspect-ratio: 16 / 9;
+      position: relative;
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* ================= TIMELINE & NVR CONTROL DECK ================= */
+    .timeline-container {
+      max-width: calc(var(--max-w) - 32px);
+      margin: 16px auto;
+      padding: 16px 18px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .timeline-bar {
+      height: 30px;
+      background: #0b0f17;
+      position: relative;
+      border-radius: 6px;
+      overflow: visible;
+      cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+      touch-action: none;
+      user-select: none;
+      margin: 6px 0 8px;
+    }
+
+    .timeline-bar .track {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      border-radius: 5px;
+    }
+
+    .seg-layer, .evt-layer, .motion-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .seg-mark {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 0.25%;
+      background: #059669;
+    }
+
+    .motion-mark {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: rgba(245, 158, 11, 0.5);
+      border-left: 1px solid #fbbf24;
+    }
+
+    .evt-mark {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #f43f5e;
+      z-index: 2;
+    }
+
+    .cursor-line {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      background: #fde047;
+      box-shadow: 0 0 8px #fde047;
+      z-index: 3;
+      pointer-events: none;
+    }
+
+    .cursor-handle {
+      position: absolute;
+      top: -6px;
+      width: 10px;
+      height: 42px;
+      margin-left: -5px;
+      background: #fde047;
+      border-radius: 5px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+      z-index: 5;
+      cursor: ew-resize;
+      touch-action: none;
+      transition: transform 0.12s;
+    }
+
+    .cursor-handle:hover {
+      transform: scaleX(1.2);
+    }
+
+    .cursor-handle::after {
+      content: "";
+      position: absolute;
+      top: 6px;
+      bottom: 6px;
+      left: 50%;
+      width: 2px;
+      background: rgba(0, 0, 0, 0.45);
+      transform: translateX(-50%);
+      border-radius: 1px;
+    }
+
+    .time-tip {
+      position: absolute;
+      top: -32px;
+      transform: translateX(-50%);
+      background: #090c12;
+      color: #fde047;
+      border: 1px solid rgba(253, 224, 71, 0.35);
+      font-size: 11.5px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      padding: 3px 8px;
+      border-radius: 6px;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 6;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+
+    .timeline-bar:hover .time-tip,
+    .timeline-bar.scrubbing .time-tip {
+      display: block;
+    }
+
+    .timeline-legend {
+      display: flex;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
+    .timeline-legend i {
+      display: inline-block;
+      width: 11px;
+      height: 11px;
+      border-radius: 3px;
+      margin-right: 5px;
+      vertical-align: -1px;
+    }
+
+    .rec-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-subtle);
+      font-size: 12.5px;
+      color: var(--text-muted);
+    }
+
+    .rec-tools input[type="time"] {
+      background: var(--bg-input);
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-family: inherit;
+    }
+
+    .export-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-left: auto;
+    }
+
+    .ptz-pad {
+      display: grid;
+      grid-template-columns: repeat(3, 46px);
+      grid-template-rows: repeat(3, 40px);
+      gap: 5px;
+      margin-top: 8px;
+      background: #0b0f17;
+      padding: 8px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .ptz-pad button {
+      padding: 0;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ================= EVENTS LIST GRID ================= */
+    .events-list {
+      max-width: var(--max-w);
+      margin: 20px auto;
+      padding: 0 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(225px, 1fr));
+      gap: 14px;
+    }
+
+    .event-card {
+      background: var(--bg-surface);
+      border-radius: var(--radius-md);
+      padding: 9px;
+      cursor: pointer;
+      border: 1px solid var(--border-subtle);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+      transition: transform 0.22s var(--ease-out), border-color 0.22s, box-shadow 0.22s;
+    }
+
+    .event-card:hover {
+      transform: translateY(-3px);
+      border-color: var(--border-hover);
+      box-shadow: 0 12px 26px rgba(0, 0, 0, 0.45);
+    }
+
+    .event-card img {
+      width: 100%;
+      height: 124px;
+      object-fit: cover;
+      border-radius: 7px;
+      background: #000;
+      display: block;
+    }
+
+    .evt-dl {
+      position: absolute;
+      right: 14px;
+      top: 14px;
+      padding: 4px 9px;
+      font-size: 12px;
+      background: rgba(15, 20, 30, 0.82);
+      backdrop-filter: blur(4px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 6px;
+    }
+
+    /* ================= MODALS & FORMS ================= */
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(5, 8, 14, 0.8);
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
+      align-items: center;
+      justify-content: center;
+      z-index: 60;
+      padding: 16px;
+      animation: modalBackdropIn 0.2s ease both;
+    }
+
+    .modal-box {
+      background: var(--bg-surface);
+      padding: 24px;
+      border-radius: 16px;
+      width: 100%;
+      max-width: 580px;
+      max-height: 90vh;
+      overflow-y: auto;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      animation: modalBoxIn 0.28s var(--ease-out) both;
+    }
+
+    .modal-box h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .form-row {
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 13px;
+      color: #cbd5e1;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .cam-item, .user-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      margin-bottom: 8px;
+      font-size: 13px;
+      flex-wrap: wrap;
+    }
+
+    .user-row > div:first-child {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      padding: 3px 8px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      margin-left: 6px;
+    }
+
+    .badge.motion {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      border-color: rgba(245, 158, 11, 0.35);
+    }
+
+    .badge.off {
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+      border-color: rgba(148, 163, 184, 0.25);
+    }
+
+    .log-badge {
+      display: inline-block;
+      min-width: 18px;
+      padding: 1px 6px;
+      border-radius: 99px;
+      background: #ef4444;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      text-align: center;
+      margin-left: 4px;
+    }
+
+    .log-cams {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .log-cam {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 11px;
+      background: var(--bg-elevated);
+      border-radius: var(--radius-sm);
+      font-size: 12.5px;
+      border-left: 3px solid #475569;
+    }
+
+    .log-cam.err { border-left-color: #ef4444; }
+    .log-cam.warn { border-left-color: #f59e0b; }
+    .log-cam.ok { border-left-color: #10b981; }
+    .log-cam .nm { font-weight: 600; }
+    .log-cam .msg {
+      color: var(--text-muted);
+      margin-left: auto;
+      text-align: right;
+      max-width: 60%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .log-filter {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 12.5px;
+      color: var(--text-muted);
+    }
+
+    .log-chk {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    .log-list {
+      background: #080b10;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      height: 38vh;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .log-line {
+      display: flex;
+      gap: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding: 2px 0;
+    }
+
+    .log-line .ts { color: #64748b; flex: none; }
+    .log-line .lv { flex: none; font-weight: 700; }
+    .log-line.info .lv { color: #60a5fa; }
+    .log-line.warn .lv { color: #fbbf24; }
+    .log-line.error .lv { color: #f87171; }
+    .log-line .cid { color: #a3e635; flex: none; }
+    .log-empty { color: #64748b; text-align: center; padding: 24px; }
+
+    .onvif-box {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .onvif-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      padding: 7px 10px;
+      background: var(--bg-input);
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }
+
+    .onvif-item .nm { font-weight: 600; }
+    .onvif-item .ip { color: var(--text-muted); margin-left: 8px; }
+
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .sched-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .sched-row input.s-days {
+      flex: 1;
+      min-width: 130px;
+    }
+
+    .sec-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .perm-grid, .cam-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 6px 12px;
+      font-size: 13px;
+      background: var(--bg-elevated);
+      padding: 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+    }
+
+    .audit-line {
+      font-size: 12px;
+      padding: 5px 6px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .audit-line .ts { color: #64748b; flex: none; }
+    .sec-warn { color: #fbbf24; font-size: 13px; margin: 4px 0; }
+    .sec-ok { color: #34d399; font-size: 13px; margin: 4px 0; }
+
+    /* ================= TABLET RESPONSIVE ================= */
+    @media (max-width: 960px) {
+      .btn-menu { display: inline-flex; align-items: center; justify-content: center; }
+      .tb-main { display: none; }
+      .tb-main.open {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 100%;
+        background: rgba(15, 20, 30, 0.98);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--border-subtle);
+        padding: 14px 16px;
+        gap: 9px;
+        z-index: 40;
+        max-height: calc(100dvh - 60px);
+        overflow-y: auto;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.65);
+        animation: menuDrop 0.22s var(--ease-out) both;
+      }
+      .tb-main button, .tb-main select, .tb-main input {
+        width: 100%;
+        text-align: left;
+        padding: 10px 14px;
+      }
+      .tb-main .spacer { display: none; }
+      .tb-main #statusText { text-align: center; }
+      .user-chip { justify-content: center; padding: 8px; }
+      .export-wrap { margin-left: 0; width: 100%; }
+    }
+
+    /* ================= MOBILE RESPONSIVE ================= */
     @media (max-width: 640px) {
-      .stats-bar { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
-      .stat-value { font-size: 17px; }
+      .topbar { padding: 10px 14px; }
+      .stats-bar { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; padding: 0 10px; }
+      .stat-card:last-child { grid-column: span 2; }
+      .stat-value, #cpuVal, #ramVal, #diskVal { font-size: 16px; }
       .stat-head { font-size: 11px; }
-      .cam-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
-      .cam-tile img, .cam-tile .tile-noimg { height: 84px; }
-      .events-list { grid-template-columns: 1fr; }
-      .timeline-container { margin: 10px auto; }
-      .timeline-bar { height: 34px; }
-      .cursor-handle { height: 46px; top: -6px; }
-      .player-box { border-radius: 0; margin: 8px 0; }
-      .modal { padding: 0; }
-      .modal-box { max-width: 100% !important; height: 100dvh; max-height: 100dvh; border-radius: 0; padding: 14px; border: 0; }
+      .cam-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; padding: 0 10px; }
+      .cam-tile img, .cam-tile .tile-noimg { height: 88px; }
+      .grid-view, .grid-view.g9 { grid-template-columns: 1fr; padding: 0 10px; }
+      .player-box { width: 100%; max-width: 100%; border-radius: 0; border-left: 0; border-right: 0; margin: 10px 0; }
+      .timeline-container { margin: 10px; padding: 12px; }
+      .timeline-bar { height: 36px; }
+      .cursor-handle { height: 48px; top: -6px; width: 12px; margin-left: -6px; }
+      .events-list { grid-template-columns: 1fr; padding: 0 10px; gap: 10px; }
+      .modal { padding: 0; align-items: flex-end; }
+      .modal-box {
+        max-width: 100% !important;
+        height: 94dvh;
+        max-height: 94dvh;
+        border-radius: 20px 20px 0 0;
+        padding: 18px 15px;
+        border-bottom: 0;
+      }
       input, select, textarea, button { font-size: 16px; }
       .grid-2 { grid-template-columns: 1fr; }
-      .ptz-pad { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 48px); }
+      .ptz-pad { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 48px); width: 100%; }
       .rec-tools { gap: 8px; }
       .rec-tools input[type="time"] { flex: 1; min-width: 90px; }
       .user-row { flex-direction: column; align-items: flex-start; }
       .user-row > div:last-child { width: 100%; }
       h3 { font-size: 17px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
     }
   </style>
 </head>
@@ -209,7 +1082,7 @@
   </div>
 
   <div class="timeline-container">
-    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#aaa; margin-bottom:4px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#94a3b8; margin-bottom:4px; font-variant-numeric:tabular-nums;">
       <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
     </div>
     <div class="timeline-bar" id="timelineBar" title="Kéo hoặc bấm để tua">
@@ -223,13 +1096,13 @@
       <div class="time-tip" id="timeTip" style="left:0%">00:00:00</div>
     </div>
     <div class="timeline-legend">
-      <span><i style="background:#2e7d32"></i>Bản ghi 24/7</span>
-      <span><i style="background:rgba(255,152,0,.6)"></i>Có chuyển động</span>
-      <span><i style="background:#ff1744"></i>Sự kiện</span>
+      <span><i style="background:#059669"></i>Bản ghi 24/7</span>
+      <span><i style="background:rgba(245,158,11,.7)"></i>Có chuyển động</span>
+      <span><i style="background:#f43f5e"></i>Sự kiện</span>
     </div>
-    <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-top:6px;">
+    <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#cbd5e1; margin-top:8px; font-weight:500;">
       <span id="scrubTime">Bản ghi: 00:00:00</span>
-      <span id="liveBadge" style="color:#4caf50;">● Live</span>
+      <span id="liveBadge" style="color:#10b981; font-weight:700;">● Live</span>
     </div>
     <div class="rec-tools">
       <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)" data-perm="ptz">🎮 PTZ</button>
@@ -241,11 +1114,11 @@
         <span>→</span>
         <input type="time" id="expTo" step="1" aria-label="Đến giờ">
         <button class="primary" onclick="exportClip(false)">⬇️ Tải đoạn</button>
-        <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="expHc" style="width:auto;"> chuyển H.264</label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="expHc" style="width:auto;"> chuyển H.264</label>
       </span>
     </div>
     <div id="ptzBox" style="display:none; margin-top:8px;">
-      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start;">
+      <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start;">
         <div class="ptz-pad">
           <button onclick="ptz('upleft')" title="Chéo lên trái">↖</button>
           <button onclick="ptz('up')" title="Lên">▲</button>
@@ -257,18 +1130,18 @@
           <button onclick="ptz('down')" title="Xuống">▼</button>
           <button onclick="ptz('downright')" title="Chéo xuống phải">↘</button>
         </div>
-        <div style="display:flex; flex-direction:column; gap:6px; font-size:12px; color:#aaa;">
+        <div style="display:flex; flex-direction:column; gap:8px; font-size:12.5px; color:#94a3b8; padding-top:8px;">
           <div style="display:flex; gap:6px;">
             <button onclick="ptz('zoomin')" title="Zoom vào">➕ Zoom</button>
             <button onclick="ptz('zoomout')" title="Zoom ra">➖ Zoom</button>
           </div>
-          <label>Tốc độ: <input type="range" id="ptzSpeed" min="0.2" max="1" step="0.1" value="0.6" style="width:100px;vertical-align:middle;" oninput="document.getElementById('ptzSpeedVal').textContent=this.value"> <span id="ptzSpeedVal">0.6</span></label>
-          <label>Thời gian (giây): <input type="number" id="ptzDur" value="0.5" min="0.1" max="5" step="0.1" style="width:60px;"></label>
+          <label>Tốc độ: <input type="range" id="ptzSpeed" min="0.2" max="1" step="0.1" value="0.6" style="width:110px;vertical-align:middle;" oninput="document.getElementById('ptzSpeedVal').textContent=this.value"> <span id="ptzSpeedVal">0.6</span></label>
+          <label>Thời gian (giây): <input type="number" id="ptzDur" value="0.5" min="0.1" max="5" step="0.1" style="width:68px;"></label>
           <div style="display:flex; gap:6px;">
-            <select id="ptzPreset" style="background:#2a2a2a;color:#eee;border:1px solid #444;border-radius:5px;padding:4px;"></select>
+            <select id="ptzPreset"></select>
             <button onclick="ptzPresetGo()">📍 Đến preset</button>
           </div>
-          <span id="ptzMsg" style="color:#aaa;"></span>
+          <span id="ptzMsg" style="color:#cbd5e1;"></span>
         </div>
       </div>
     </div>
@@ -279,7 +1152,7 @@
   <!-- Modal Quản lý Camera -->
   <div class="modal" id="camModal">
     <div class="modal-box">
-      <h3 style="margin-top:0">Quản lý & Thêm Camera Đa Hãng</h3>
+      <h3 style="margin-top:0">Quản lý &amp; Thêm Camera Đa Hãng</h3>
       <div id="camListBox" style="margin-bottom:14px;"></div>
 
       <div style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
@@ -321,7 +1194,7 @@
         </div>
       </div>
 
-      <div class="grid-2" id="quickGenBox" style="display:none; background:#252525; padding:10px; border-radius:6px; margin-bottom:10px;">
+      <div class="grid-2" id="quickGenBox" style="display:none; background:#181f2e; padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); margin-bottom:12px;">
         <div class="form-row">
           <label>IP Camera:</label>
           <input id="genIp" placeholder="192.168.1.105" oninput="applyBrandPreset()">
@@ -395,7 +1268,7 @@
       </div>
 
       <div class="form-row">
-        <label style="flex-direction:row; align-items:center; gap:8px;">
+        <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" id="inpSchedEnabled" style="width:auto;">
           📅 Bật lịch ghi hình theo giờ (ngoài mọi khung giờ = KHÔNG ghi)
         </label>
@@ -403,7 +1276,7 @@
       <div id="schedRows"></div>
       <button style="margin-bottom:10px;" onclick="addSchedRow()">+ Thêm khung giờ</button>
 
-      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button onclick="closeCamModal()">Đóng</button>
         <button class="primary" onclick="saveCamera()">Lưu Camera</button>
       </div>
@@ -413,7 +1286,7 @@
   <!-- Modal Cài đặt Lưu trữ & Dọn dẹp ổ cứng -->
   <div class="modal" id="storageModal">
     <div class="modal-box">
-      <h3 style="margin-top:0">Cài đặt Lưu trữ & Tự động Xóa</h3>
+      <h3 style="margin-top:0">Cài đặt Lưu trữ &amp; Tự động Xóa</h3>
       <div class="form-row">
         <label>Số ngày lưu tối đa (Quá số ngày này tự động xóa):</label>
         <input type="number" id="inpRetDays" min="1" max="365" step="1">
@@ -440,21 +1313,21 @@
           <button class="primary" onclick="saveStorage()">Lưu cấu hình</button>
         </div>
       </div>
-      <hr style="border-color:#333; margin:16px 0 10px;">
+      <hr style="border:0; border-top:1px solid var(--border-subtle); margin:18px 0 12px;">
       <h4 style="margin:0 0 8px;">💾 Sao lưu / Khôi phục toàn bộ cấu hình</h4>
-      <div style="font-size:12px;color:#888;margin-bottom:8px;">Bao gồm camera, lịch ghi hình, Home Assistant, thông báo Telegram/Webhook.</div>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">Bao gồm camera, lịch ghi hình, Home Assistant, thông báo Telegram/Webhook.</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button onclick="window.location='/api/config/export'">⬇️ Xuất cấu hình (.json)</button>
         <button onclick="document.getElementById('restoreFile').click()">⬆️ Nhập cấu hình</button>
         <input type="file" id="restoreFile" accept="application/json,.json" style="display:none;" onchange="importConfigFile(this)">
       </div>
-      <div id="backupMsg" style="font-size:12px;color:#aaa;margin-top:8px;"></div>
+      <div id="backupMsg" style="font-size:12px;color:#94a3b8;margin-top:8px;"></div>
     </div>
   </div>
 
   <!-- Modal Nhật ký / Log lỗi -->
   <div class="modal" id="logsModal">
-    <div class="modal-box" style="max-width:640px;">
+    <div class="modal-box" style="max-width:660px;">
       <h3 style="margin-top:0">📋 Nhật ký &amp; Lỗi</h3>
       <div id="logSys" class="log-filter"></div>
       <div id="logCams" class="log-cams"></div>
@@ -475,7 +1348,7 @@
     <div class="modal-box">
       <h3 style="margin-top:0">Liên kết Home Assistant (lấy Motion)</h3>
       <div class="form-row">
-        <label style="flex-direction:row; align-items:center; gap:8px;">
+        <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" id="hassEnabled" style="width:auto;">
           Bật lấy chuyển động trực tiếp từ Home Assistant
         </label>
@@ -488,12 +1361,12 @@
         <label>Long-Lived Access Token (HA &gt; Hồ sơ &gt; Security &gt; Create Token):</label>
         <input type="password" id="hassToken" placeholder="Dán token HA...">
       </div>
-      <div id="hassStatus" style="font-size:12px;color:#aaa;margin:6px 0 12px;"></div>
+      <div id="hassStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-        <h4 style="margin:4px 0 6px;">Gán cảm biến & nhãn sự kiện cho từng Camera</h4>
+        <h4 style="margin:4px 0 6px;">Gán cảm biến &amp; nhãn sự kiện cho từng Camera</h4>
         <button class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor</button>
       </div>
-      <div style="font-size:12px;color:#888;margin-bottom:8px;">Gõ tên hoặc chọn từ danh sách. Nhãn sự kiện VD: "Người quen", "Người lạ", tên người...</div>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">Gõ tên hoặc chọn từ danh sách. Nhãn sự kiện VD: "Người quen", "Người lạ", tên người...</div>
       <div id="hassEntityBox"></div>
 
       <datalist id="hassSensorList"></datalist>
@@ -520,7 +1393,7 @@
     <div class="modal-box">
       <h3 style="margin-top:0">🔔 Thông báo khi có chuyển động</h3>
       <div class="form-row">
-        <label style="flex-direction:row; align-items:center; gap:8px;">
+        <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" id="ntEnabled" style="width:auto;">
           Bật thông báo Telegram
         </label>
@@ -529,7 +1402,7 @@
         <label>Bot Token (tạo bot qua @BotFather):</label>
         <input type="password" id="ntToken" placeholder="123456:ABC-DEF...">
       </div>
-      <div id="ntTokenHint" style="font-size:12px;color:#4caf50;margin:-6px 0 10px;"></div>
+      <div id="ntTokenHint" style="font-size:12px;color:#10b981;margin:-6px 0 10px;"></div>
       <div class="form-row">
         <label>Chat ID (nhóm/cá nhân nhận tin):</label>
         <input id="ntChatId" placeholder="VD: 123456789">
@@ -541,7 +1414,7 @@
         <label>Webhook URL (tùy chọn - nhận POST JSON, dùng cho Node-RED/HASS/n8n):</label>
         <input id="ntWebhook" placeholder="http://...">
       </div>
-      <div id="ntStatus" style="font-size:12px;color:#aaa;margin:6px 0 12px;"></div>
+      <div id="ntStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="testNotify()">📨 Gửi thử</button>
         <div style="display:flex; gap:8px;">
@@ -554,7 +1427,7 @@
 
   <!-- Modal Bảo mật & Tài khoản -->
   <div class="modal" id="secModal">
-    <div class="modal-box" style="max-width:640px;">
+    <div class="modal-box" style="max-width:660px;">
       <h3 style="margin-top:0">🔐 Bảo mật &amp; Tài khoản</h3>
       <div class="sec-tabs" id="secTabs">
         <button data-tab="me" class="active" onclick="secTab('me')">Tài khoản của tôi</button>
@@ -565,22 +1438,22 @@
 
       <div id="secTabMe">
         <h4 style="margin:0 0 6px;">Đổi mật khẩu</h4>
-        <div id="pwRootNote" hidden style="font-size:12px;color:#aaa;">Tài khoản gốc đổi mật khẩu bằng biến môi trường <b>NVR_PASS</b> trong docker-compose (mục environment).</div>
+        <div id="pwRootNote" hidden style="font-size:12px;color:#94a3b8;">Tài khoản gốc đổi mật khẩu bằng biến môi trường <b>NVR_PASS</b> trong docker-compose (mục environment).</div>
         <div id="pwBox">
           <div class="form-row"><label>Mật khẩu hiện tại:</label><input type="password" id="pwOld" autocomplete="current-password"></div>
           <div class="form-row"><label>Mật khẩu mới (tối thiểu 6 ký tự):</label><input type="password" id="pwNew" autocomplete="new-password"></div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="primary" onclick="saveMyPassword()">Lưu mật khẩu</button><span id="pwMsg" style="font-size:12px;"></span></div>
         </div>
 
-        <h4 style="margin:16px 0 6px;">Xác thực 2 lớp (2FA)</h4>
-        <div id="tfaState" style="font-size:13px;color:#aaa;">Đang tải...</div>
+        <h4 style="margin:18px 0 6px;">Xác thực 2 lớp (2FA)</h4>
+        <div id="tfaState" style="font-size:13px;color:#94a3b8;">Đang tải...</div>
         <div id="tfaInitBox" hidden style="margin-top:8px;">
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <button onclick="tfaInit()">🔑 Tạo mã 2FA</button>
-            <span style="font-size:12px;color:#888;">Dùng app Google Authenticator / Authy / 1Password</span>
+            <span style="font-size:12px;color:#94a3b8;">Dùng app Google Authenticator / Authy / 1Password</span>
           </div>
           <div id="tfaSecretBox" hidden>
-            <div style="font-size:12px;color:#888;margin:8px 0 4px;">Nhập mã dưới đây vào app Authenticator, rồi điền mã 6 số để xác nhận:</div>
+            <div style="font-size:12px;color:#94a3b8;margin:8px 0 4px;">Nhập mã dưới đây vào app Authenticator, rồi điền mã 6 số để xác nhận:</div>
             <div class="onvif-box" style="font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;" id="tfaSecret"></div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
               <input id="tfaCode" placeholder="Mã 6 số" inputmode="numeric" maxlength="6" style="width:120px;">
@@ -589,7 +1462,7 @@
           </div>
         </div>
         <div id="tfaOffBox" hidden style="margin-top:8px;">
-          <div style="font-size:12px;color:#888;margin-bottom:6px;">Nhập mã 6 số hiện tại trong app để tắt 2FA:</div>
+          <div style="font-size:12px;color:#94a3b8;margin-bottom:6px;">Nhập mã 6 số hiện tại trong app để tắt 2FA:</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <input id="tfaOffCode" placeholder="Mã 6 số" inputmode="numeric" maxlength="6" style="width:130px;">
             <button class="warn" onclick="tfaDisable()">Tắt 2FA</button>
@@ -600,7 +1473,7 @@
 
       <div id="secTabUsers" hidden>
         <div id="secUsers"></div>
-        <h4 id="userFormTitle" style="margin:16px 0 6px;">➕ Tạo tài khoản con</h4>
+        <h4 id="userFormTitle" style="margin:16px 0 8px;">➕ Tạo tài khoản con</h4>
         <div class="grid-2">
           <div class="form-row"><label>Tên đăng nhập:</label><input id="nuName" autocomplete="off" placeholder="vd: nguoi_xem"></div>
           <div class="form-row"><label>Mật khẩu:</label><input type="password" id="nuPass" autocomplete="new-password" placeholder="tối thiểu 6 ký tự"></div>
@@ -624,17 +1497,17 @@
           </div>
         </div>
         <div class="form-row"><label>Camera được phép xem (bỏ trống = tất cả):</label><div class="cam-grid" id="nuCams"></div></div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
           <button class="primary" onclick="saveUser()">💾 Lưu tài khoản</button>
           <button onclick="resetUserForm()">Huỷ / Tạo mới</button>
           <span id="userFormMsg" style="font-size:12px;"></span>
         </div>
-        <div style="font-size:12px;color:#888;margin-top:8px;">Đổi mật khẩu hoặc tạm khoá tài khoản sẽ đăng xuất ngay các phiên đang mở của tài khoản đó. Tài khoản con không thấy được mật khẩu camera.</div>
+        <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Đổi mật khẩu hoặc tạm khoá tài khoản sẽ đăng xuất ngay các phiên đang mở của tài khoản đó. Tài khoản con không thấy được mật khẩu camera.</div>
       </div>
 
       <div id="secTabAudit" hidden>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <h4 style="margin:0 0 6px;">Nhật ký đăng nhập &amp; thao tác tài khoản</h4>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+          <h4 style="margin:0;">Nhật ký đăng nhập &amp; thao tác tài khoản</h4>
           <button onclick="loadAudit()">↻ Tải lại</button>
         </div>
         <div id="auditList" class="log-list" style="height:42vh;">Đang tải...</div>
@@ -642,10 +1515,10 @@
 
       <div id="secTabStatus" hidden>
         <h4 style="margin:0 0 6px;">Trạng thái bảo mật</h4>
-        <div id="secStatusBox" style="font-size:13px;color:#ccc;">Đang tải...</div>
+        <div id="secStatusBox" style="font-size:13px;color:#cbd5e1;">Đang tải...</div>
       </div>
 
-      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
         <button class="primary" onclick="closeSecModal()">Đóng</button>
       </div>
     </div>
@@ -1070,11 +1943,11 @@
       const box = document.getElementById("hassEntityBox");
       box.innerHTML = "";
       const ids = Object.keys(cameras);
-      if (!ids.length) { box.innerHTML = '<div style="color:#aaa">Chưa có camera. Hãy thêm camera trước.</div>'; return; }
+      if (!ids.length) { box.innerHTML = '<div style="color:#94a3b8">Chưa có camera. Hãy thêm camera trước.</div>'; return; }
       ids.forEach(cid => {
         const wrap = document.createElement("div");
         wrap.className = "form-row";
-        wrap.style.cssText = "background:#252525;padding:8px;border-radius:6px;margin-bottom:8px;";
+        wrap.style.cssText = "background:#181f2e;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);margin-bottom:8px;";
         wrap.innerHTML = `<label style="font-weight:600;">${hassEsc(cameras[cid].name)} (${hassEsc(cid)})</label>
           <div id="hassRules_${cid}"></div>
           <button type="button" onclick="addHassRule('${cid}')">+ Thêm cảm biến / nhãn</button>`;
@@ -1267,7 +2140,6 @@
         segLayer.appendChild(el);
       });
 
-      // Tô màu vùng có chuyển động trên bản ghi liên tục (gộp các khoảng trùng nhau)
       const post = data.post_motion_sec || 60;
       const spans = (data.events || [])
         .map(e => [e.sec_of_day, Math.min(86400, e.sec_of_day + post)])
@@ -1300,7 +2172,7 @@
         card.className = "event-card";
         card.onclick = () => playAtSecond(e.sec_of_day);
         card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
-                          <div style="margin-top:6px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>
+                          <div style="margin-top:8px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>
                           <button class="evt-dl" title="Tải clip quanh sự kiện này" onclick="event.stopPropagation(); exportEvent(${e.sec_of_day})">⬇️</button>`;
         list.appendChild(card);
       });
@@ -1726,20 +2598,20 @@
       };
       const r = await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const st = document.getElementById("ntStatus");
-      st.style.color = r.ok ? "#4caf50" : "#ef5350";
+      st.style.color = r.ok ? "#10b981" : "#f87171";
       st.textContent = r.ok ? "✔ Đã lưu cấu hình thông báo." : "❌ Lưu lỗi.";
     }
     async function testNotify() {
       const st = document.getElementById("ntStatus");
-      st.style.color = "#aaa";
+      st.style.color = "#94a3b8";
       st.textContent = "⏳ Đang gửi thử...";
       try {
         const r = await fetch("/api/notify/test", { method: "POST" });
         const d = await r.json();
-        st.style.color = r.ok ? "#4caf50" : "#ef5350";
+        st.style.color = r.ok ? "#10b981" : "#f87171";
         st.textContent = r.ok ? "✔ " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
       } catch (e) {
-        st.style.color = "#ef5350";
+        st.style.color = "#f87171";
         st.textContent = "❌ " + e;
       }
     }
@@ -1756,11 +2628,11 @@
         const r = await fetch("/api/config/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: text });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || r.status);
-        msg.style.color = "#4caf50";
+        msg.style.color = "#10b981";
         msg.textContent = `✔ Đã khôi phục ${d.cameras} camera (khởi động ${d.started} luồng).`;
         await init();
       } catch (e) {
-        msg.style.color = "#ef5350";
+        msg.style.color = "#f87171";
         msg.textContent = "❌ " + e;
       }
       input.value = "";
@@ -1799,7 +2671,7 @@
       const chip = document.getElementById("userChip");
       if (chip) {
         chip.hidden = false;
-        const badge = ME.auth_enabled === false ? ' <span style="color:#ffb74d;">bảo mật đang tắt</span>'
+        const badge = ME.auth_enabled === false ? ' <span style="color:#fbbf24;">bảo mật đang tắt</span>'
           : (ME.role === "admin" ? ' <span class="badge">admin</span>' : "");
         chip.innerHTML = "👤 <b>" + esc(ME.username) + "</b>" + badge + (ME.totp_enabled ? " 🔐" : "");
       }
@@ -1841,10 +2713,10 @@
       document.getElementById("btnMenu").setAttribute("aria-expanded", "false");
     }
     document.getElementById("tbMain").addEventListener("click", (e) => {
-      if (e.target.closest("button") && window.innerWidth <= 900) closeMenu();
+      if (e.target.closest("button") && window.innerWidth <= 960) closeMenu();
     });
     window.addEventListener("resize", () => {
-      if (window.innerWidth > 900) {
+      if (window.innerWidth > 960) {
         const m = document.getElementById("tbMain");
         m.classList.remove("open");
         document.getElementById("btnMenu").setAttribute("aria-expanded", "false");
@@ -1868,6 +2740,19 @@
       loadTfaState();
     }
     function closeSecModal() { document.getElementById("secModal").style.display = "none"; }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      const open = [...document.querySelectorAll(".modal")].filter(m => m.style.display && m.style.display !== "none");
+      if (!open.length) { closeMenu(); return; }
+      const top = open[open.length - 1];
+      const closers = {
+        camModal: closeCamModal, storageModal: closeStorageModal, logsModal: closeLogsModal,
+        hassModal: closeHassModal, notifyModal: closeNotifyModal, secModal: closeSecModal
+      };
+      const fn = closers[top.id];
+      if (fn) fn(); else top.style.display = "none";
+    });
 
     function secTab(name) {
       document.querySelectorAll("#secTabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
@@ -1915,8 +2800,8 @@
       const r = await fetch("/api/me/totp/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
       const d = await r.json().catch(() => ({}));
       const msg = document.getElementById("tfaMsg");
-      if (!r.ok) { msg.style.color = "#ef5350"; msg.textContent = "❌ " + (d.detail || r.status); return; }
-      msg.style.color = "#4caf50"; msg.textContent = "✔ Đã bật 2FA.";
+      if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "#10b981"; msg.textContent = "✔ Đã bật 2FA.";
       ME.totp_enabled = true;
       loadTfaState();
     }
@@ -1925,8 +2810,8 @@
       const r = await fetch("/api/me/totp/disable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
       const d = await r.json().catch(() => ({}));
       const msg = document.getElementById("tfaMsg");
-      if (!r.ok) { msg.style.color = "#ef5350"; msg.textContent = "❌ " + (d.detail || r.status); return; }
-      msg.style.color = "#4caf50"; msg.textContent = "✔ Đã tắt 2FA.";
+      if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "#10b981"; msg.textContent = "✔ Đã tắt 2FA.";
       ME.totp_enabled = false;
       loadTfaState();
     }
@@ -1937,8 +2822,8 @@
         body: JSON.stringify({ old_password: document.getElementById("pwOld").value, new_password: document.getElementById("pwNew").value })
       });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { msg.style.color = "#ef5350"; msg.textContent = "❌ " + (d.detail || r.status); return; }
-      msg.style.color = "#4caf50"; msg.textContent = "✔ Đổi xong — chuyển về trang đăng nhập...";
+      if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "#10b981"; msg.textContent = "✔ Đổi xong — chuyển về trang đăng nhập...";
       setTimeout(() => { location.href = "/login"; }, 1200);
     }
 
@@ -1953,7 +2838,7 @@
     }
     function renderSecUsers() {
       const box = document.getElementById("secUsers");
-      if (!SEC_USERS.length) { box.innerHTML = '<div style="color:#666;font-size:13px;">Chưa có tài khoản con.</div>'; return; }
+      if (!SEC_USERS.length) { box.innerHTML = '<div style="color:#64748b;font-size:13px;">Chưa có tài khoản con.</div>'; return; }
       box.innerHTML = SEC_USERS.map(u => {
         const role = u.role === "admin" ? ' <span class="badge">admin</span>' : "";
         const dis = u.enabled ? "" : ' <span class="badge off">tạm khoá</span>';
@@ -1963,20 +2848,20 @@
         else permsTxt = PERM_LABELS.filter(([k]) => u.perms && u.perms[k]).map(([, l]) => l).join(", ") || "chưa cấp quyền nào";
         const cams = (u.cameras && u.cameras.length) ? ("camera: " + u.cameras.join(", ")) : "tất cả camera";
         const actions = u.is_root
-          ? '<span style="font-size:12px;color:#888;">đổi mật khẩu trong docker-compose (NVR_PASS)</span>'
+          ? '<span style="font-size:12px;color:#94a3b8;">đổi mật khẩu trong docker-compose (NVR_PASS)</span>'
           : `<div style="display:flex;gap:6px;flex-wrap:wrap;">
                <button onclick="editUser('${esc(u.username)}')">✏️ Sửa</button>
                ${u.totp_enabled ? `<button class="warn" onclick="tfaOff('${esc(u.username)}')">🔓 Tắt 2FA</button>` : ""}
                <button class="warn" onclick="delUser('${esc(u.username)}')">🗑 Xoá</button>
              </div>`;
-        return `<div class="user-row"><div><b>${esc(u.username)}</b>${u.is_root ? ' <span class="badge" style="background:#1976d2">gốc</span>' : ""}${role}${dis}${tfa}<div style="color:#999;font-size:12px;">${esc(permsTxt)} · ${esc(cams)}</div></div>${actions}</div>`;
+        return `<div class="user-row"><div><b>${esc(u.username)}</b>${u.is_root ? ' <span class="badge" style="background:rgba(37,99,235,0.2);color:#60a5fa;border-color:rgba(37,99,235,0.4);">gốc</span>' : ""}${role}${dis}${tfa}<div style="color:#94a3b8;font-size:12px;margin-top:2px;">${esc(permsTxt)} · ${esc(cams)}</div></div>${actions}</div>`;
       }).join("");
     }
     function renderNuCams(selected) {
       const sel = selected || [];
       document.getElementById("nuCams").innerHTML = SEC_ALL_CAMS.map(c =>
         `<label class="log-chk"><input type="checkbox" value="${esc(c)}" ${sel.includes(c) ? "checked" : ""}> ${esc((cameras[c] && cameras[c].name) || c)}</label>`
-      ).join("") || '<span style="color:#666;font-size:12px;">Chưa có camera</span>';
+      ).join("") || '<span style="color:#64748b;font-size:12px;">Chưa có camera</span>';
     }
     function resetUserForm() {
       SEC_EDIT = "";
@@ -2042,7 +2927,7 @@
         r = await fetch("/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       }
       const d = await r.json().catch(() => ({}));
-      msg.style.color = r.ok ? "#4caf50" : "#ef5350";
+      msg.style.color = r.ok ? "#10b981" : "#f87171";
       msg.textContent = r.ok ? "✔ Đã lưu." : "❌ " + (d.detail || r.status);
       if (r.ok) { resetUserForm(); loadSecUsers(); }
     }
@@ -2072,7 +2957,7 @@
           totp_enable: "🔐 bật 2FA", totp_disable: "🔓 tắt 2FA"
         };
         el.innerHTML = (d.events || []).map(e =>
-          `<div class="audit-line"><span class="ts">${new Date(e.t * 1000).toLocaleString("vi-VN")}</span><span class="act">${labels[e.action] || esc(e.action)}</span><span>${esc(e.username)}</span><span style="color:#777;">${esc(e.ip || "")}</span><span style="color:#999;">${esc(e.detail || "")}</span></div>`
+          `<div class="audit-line"><span class="ts">${new Date(e.t * 1000).toLocaleString("vi-VN")}</span><span class="act">${labels[e.action] || esc(e.action)}</span><span>${esc(e.username)}</span><span style="color:#64748b;">${esc(e.ip || "")}</span><span style="color:#94a3b8;">${esc(e.detail || "")}</span></div>`
         ).join("") || '<div class="log-empty">Chưa có sự kiện</div>';
       } catch (e) { el.textContent = "Lỗi tải nhật ký"; }
     }
@@ -2086,7 +2971,7 @@
           ${warns || (d.auth_enabled ? '<div class="sec-ok">✅ Không phát hiện vấn đề bảo mật.</div>' : "")}
           <div style="margin-top:6px;">Tài khoản gốc: <b>${esc(d.root_user)}</b></div>
           <div>Tài khoản con: <b>${d.users}</b> · Có 2FA: <b>${d.totp_users}</b> · Phiên đang mở: <b>${d.active_sessions}</b></div>
-          <div style="font-size:12px;color:#888;margin-top:8px;">Gợi ý: đổi mật khẩu gốc mạnh (12+ ký tự), tài khoản người xem chỉ cấp quyền xem trực tiếp, bật 2FA cho tài khoản quản trị. Nhật ký đăng nhập lưu trên ổ cứng, không bị xoá tự động khi dọn bản ghi.</div>`;
+          <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Gợi ý: đổi mật khẩu gốc mạnh (12+ ký tự), tài khoản người xem chỉ cấp quyền xem trực tiếp, bật 2FA cho tài khoản quản trị. Nhật ký đăng nhập lưu trên ổ cứng, không bị xoá tự động khi dọn bản ghi.</div>`;
       } catch (e) { el.textContent = "Lỗi tải trạng thái"; }
     }
 
