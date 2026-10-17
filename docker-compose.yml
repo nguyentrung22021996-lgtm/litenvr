@@ -1,0 +1,49 @@
+name: litenvr
+services:
+  litenvr:
+    image: ghcr.io/TEN_GITHUB_CUA_BAN/litenvr:latest
+    container_name: litenvr
+    restart: unless-stopped
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    volumes:
+      - type: bind
+        source: /DATA/AppData/litenvr
+        target: /storage
+    tmpfs:
+      - /dev/shm/hls:size=256m
+    x-casaos:
+      envs:
+        - container: TZ
+          description:
+            en_us: Timezone
+      ports:
+        - container: "8080"
+          description:
+            en_us: Web UI Port
+      volumes:
+        - container: /storage
+          description:
+            en_us: Thư mục ổ cứng HDD lưu video ghi hình và cấu hình
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  author: LiteNVR
+  category: Media
+  description:
+    en_us: Lightweight NVR with RTSP Direct Stream Copy and Home Assistant Motion Webhook
+  icon: https://cdn-icons-png.flaticon.com/512/4019/4019704.png
+  index: /
+  main: litenvr
+  port_map: "8080"
+  scheme: http
+  store_app_id: litenvr
+  tagline:
+    en_us: Siêu nhẹ NVR kết nối Home Assistant
+  title:
+    en_us: LiteNVR
