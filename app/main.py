@@ -7,9 +7,11 @@ import sqlite3
 import secrets
 import threading
 import subprocess
+import urllib.request
+import urllib.error
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -36,6 +38,7 @@ async def lifespan(app: FastAPI):
         start_camera_worker(cam_id)
     threading.Thread(target=motion_buffer_manager, daemon=True).start()
     threading.Thread(target=cleanup_worker, daemon=True).start()
+    threading.Thread(target=hass_motion_listener, daemon=True).start()
     yield
 
 app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
@@ -63,22 +66,31 @@ DEFAULT_CONFIG = {
     "max_storage_gb": 0,       # 0 = Không giới hạn theo GB
     "max_disk_percent": 85,    # Tự xóa file cũ nhất nếu ổ cứng đầy quá 85%
     "post_motion_sec": 60,     # Thời gian ghi tiếp sau khi có chuyển động (giây)
-    "cameras": {}
+    "cameras": {},
+    "homeassistant": {
+        "enabled": False,
+        "base_url": "",       # VD: http://homeassistant.local:8123
+        "token": "",          # Long-Lived Access Token của Home Assistant
+        "entities": {}        # cam_id -> [entity_id cảm biến chuyển động, ...]
+    }
 }
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
-        return DEFAULT_CONFIG.copy()
+        return json.loads(json.dumps(DEFAULT_CONFIG))
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
             for k, v in DEFAULT_CONFIG.items():
                 cfg.setdefault(k, v)
+            ha = cfg.setdefault("homeassistant", {})
+            for k, v in DEFAULT_CONFIG["homeassistant"].items():
+                ha.setdefault(k, v)
             return cfg
     except Exception:
-        return DEFAULT_CONFIG.copy()
+        return json.loads(json.dumps(DEFAULT_CONFIG))
 
 def save_config(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -423,22 +435,22 @@ def delete_camera(cam_id: str):
         save_config(CONFIG)
     return {"status": "ok"}
 
-@app.post("/api/motion")
-def trigger_motion(payload: MotionPayload):
-    cam_info = CONFIG.get("cameras", {}).get(payload.cam_id)
+def handle_motion(cam_id: str, label: str):
+    """Ghi nhận 1 sự kiện chuyển động: kích hoạt ghi hình + chụp snapshot + lưu event."""
+    cam_info = CONFIG.get("cameras", {}).get(cam_id)
     if not cam_info:
-        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+        return None
 
     now = datetime.now()
     ts = int(now.timestamp())
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M:%S")
-    snap_filename = f"{payload.cam_id}_{ts}.jpg"
+    snap_filename = f"{cam_id}_{ts}.jpg"
     snap_path = os.path.join(SNAPSHOTS_DIR, snap_filename)
 
     # Kích hoạt cờ lưu video từ RAM xuống ổ cứng nếu camera đang ở chế độ Motion Only
     post_sec = int(CONFIG.get("post_motion_sec", 60))
-    motion_active_until[payload.cam_id] = time.time() + post_sec
+    motion_active_until[cam_id] = time.time() + post_sec
 
     # Ưu tiên chụp Snapshot từ luồng phụ để lấy ảnh cực nhanh
     snap_rtsp = cam_info.get("sub_rtsp_url") or cam_info["rtsp_url"]
@@ -450,13 +462,13 @@ def trigger_motion(payload: MotionPayload):
             "-frames:v", "1", "-q:v", "3", snap_path
         ])
     except Exception as e:
-        print(f"[LiteNVR] Không chụp được snapshot cho {payload.cam_id}: {e}", flush=True)
+        print(f"[LiteNVR] Không chụp được snapshot cho {cam_id}: {e}", flush=True)
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
         "INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) VALUES (?, ?, ?, ?, ?, ?)",
-        (payload.cam_id, ts, date_str, time_str, payload.label, snap_filename)
+        (cam_id, ts, date_str, time_str, label, snap_filename)
     )
     conn.commit()
     conn.close()
@@ -464,8 +476,202 @@ def trigger_motion(payload: MotionPayload):
         "status": "ok",
         "timestamp": ts,
         "record_mode": cam_info.get("record_mode", "continuous"),
-        "recording_until": motion_active_until[payload.cam_id]
+        "recording_until": motion_active_until[cam_id]
     }
+
+@app.post("/api/motion")
+def trigger_motion(payload: MotionPayload):
+    result = handle_motion(payload.cam_id, payload.label)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+    return result
+
+# Cấu hình liên kết Home Assistant
+class HassSettings(BaseModel):
+    enabled: bool = False
+    base_url: str = ""
+    token: str = ""            # Để trống khi lưu = giữ token cũ
+    entities: Dict[str, List[str]] = {}
+
+# Trạng thái kết nối HA để hiển thị lên UI
+hass_state = {"connected": False, "last_error": "", "last_event": "", "last_event_at": 0}
+
+def _hass_default_headers(token: str):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+def hass_ping(base_url: str, token: str):
+    """Gọi REST /api/ để kiểm tra URL + token HA."""
+    url = base_url.strip().rstrip("/") + "/api/"
+    req = urllib.request.Request(url, headers=_hass_default_headers(token))
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def _hass_ws_url(base_url: str):
+    base = base_url.strip().rstrip("/")
+    if base.startswith("https://"):
+        base = "wss://" + base[len("https://"):]
+    elif base.startswith("http://"):
+        base = "ws://" + base[len("http://"):]
+    elif not (base.startswith("ws://") or base.startswith("wss://")):
+        base = "ws://" + base
+    return base + "/api/websocket"
+
+MOTION_STATES = ("on", "detected", "motion", "true", "active")
+
+def hass_motion_listener():
+    """Kết nối WebSocket tới HA, lắng nghe state_changed của các entity đã map
+    và kích hoạt ghi hình khi cảm biến chuyển sang trạng thái phát hiện."""
+    try:
+        import websocket  # websocket-client
+    except Exception as e:
+        print(f"[LiteNVR] Thiếu thư viện websocket-client, tắt liên kết HA: {e}", flush=True)
+        return
+
+    ws = None
+    last_sig = None
+    backoff = 5
+
+    def close_ws():
+        nonlocal ws
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+            ws = None
+
+    while True:
+        ha = CONFIG.get("homeassistant", {}) or {}
+        enabled = bool(ha.get("enabled"))
+        base_url = (ha.get("base_url") or "").strip()
+        token = (ha.get("token") or "").strip()
+        entities: Dict[str, list] = ha.get("entities") or {}
+
+        if not enabled or not base_url or not token:
+            close_ws()
+            last_sig = None
+            hass_state["connected"] = False
+            time.sleep(3)
+            continue
+
+        # Bảng tra: entity_id -> cam_id
+        watch = {}
+        for cam_id, ent_list in entities.items():
+            for ent in (ent_list or []):
+                ent = (ent or "").strip()
+                if ent:
+                    watch[ent] = cam_id
+
+        sig = (base_url, token, tuple(sorted(watch.items())))
+        if ws is not None and sig != last_sig:
+            close_ws()
+
+        if ws is None:
+            try:
+                ws = websocket.create_connection(_hass_ws_url(base_url), timeout=15)
+                ws.recv()  # auth_required
+                ws.send(json.dumps({"type": "auth", "access_token": token}))
+                resp = json.loads(ws.recv())
+                if resp.get("type") != "auth_ok":
+                    raise RuntimeError(f"Xác thực HA thất bại: {resp.get('type')}")
+                ws.send(json.dumps({
+                    "id": 1, "type": "subscribe_events",
+                    "event_type": "state_changed"
+                }))
+                ws.recv()  # ack subscribe
+                last_sig = sig
+                backoff = 5
+                hass_state["connected"] = True
+                hass_state["last_error"] = ""
+                print("[LiteNVR] Đã kết nối Home Assistant, đang lắng nghe chuyển động.", flush=True)
+            except Exception as e:
+                hass_state["connected"] = False
+                hass_state["last_error"] = str(e)
+                print(f"[LiteNVR] Lỗi kết nối HA: {e}", flush=True)
+                close_ws()
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
+
+        try:
+            ws.settimeout(1)
+            raw = ws.recv()
+        except websocket.WebSocketTimeoutException:
+            continue
+        except Exception as e:
+            hass_state["connected"] = False
+            hass_state["last_error"] = str(e)
+            print(f"[LiteNVR] Mất kết nối HA, thử lại: {e}", flush=True)
+            close_ws()
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            continue
+
+        if not raw:
+            continue
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            continue
+        if msg.get("type") != "event":
+            continue
+        event = msg.get("event") or {}
+        if event.get("event_type") != "state_changed":
+            continue
+        data = event.get("data") or {}
+        entity_id = data.get("entity_id")
+        new_state = data.get("new_state") or {}
+        state = str(new_state.get("state", "")).lower()
+        cam_id = watch.get(entity_id)
+        if not cam_id or state not in MOTION_STATES:
+            continue
+        label = f"Chuyển động (HA: {entity_id})"
+        try:
+            handle_motion(cam_id, label)
+            hass_state["last_event"] = f"{cam_id} <- {entity_id} ({state})"
+            hass_state["last_event_at"] = int(time.time())
+            print(f"[LiteNVR] HA motion: {hass_state['last_event']}", flush=True)
+        except Exception as e:
+            print(f"[LiteNVR] Lỗi xử lý HA motion: {e}", flush=True)
+
+@app.get("/api/hass")
+def get_hass_settings():
+    ha = CONFIG.get("homeassistant", {}) or {}
+    return {
+        "enabled": bool(ha.get("enabled")),
+        "base_url": ha.get("base_url", ""),
+        "has_token": bool((ha.get("token") or "").strip()),
+        "entities": ha.get("entities", {}) or {},
+        "status": hass_state,
+    }
+
+@app.post("/api/hass")
+def update_hass_settings(settings: HassSettings):
+    ha = CONFIG.setdefault("homeassistant", {})
+    ha["enabled"] = settings.enabled
+    ha["base_url"] = settings.base_url.strip()
+    if settings.token.strip():
+        ha["token"] = settings.token.strip()
+    ha["entities"] = {
+        cam_id: [e.strip() for e in (ents or []) if e and e.strip()]
+        for cam_id, ents in (settings.entities or {}).items()
+    }
+    save_config(CONFIG)
+    return {"status": "ok"}
+
+@app.post("/api/hass/test")
+def test_hass_connection(settings: HassSettings):
+    token = settings.token.strip() or (CONFIG.get("homeassistant", {}).get("token") or "").strip()
+    base_url = settings.base_url.strip() or (CONFIG.get("homeassistant", {}).get("base_url") or "").strip()
+    if not base_url or not token:
+        raise HTTPException(status_code=400, detail="Thiếu URL hoặc Token của Home Assistant")
+    try:
+        info = hass_ping(base_url, token)
+        return {"status": "ok", "message": info.get("message", "API running")}
+    except urllib.error.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"HA trả về lỗi HTTP {e.code} (sai token?)")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Không kết nối được HA: {e}")
 
 @app.get("/api/timeline/{cam_id}")
 def get_timeline(cam_id: str, date: str):

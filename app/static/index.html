@@ -41,6 +41,7 @@
     <button class="warn" onclick="testMotion()">⚡ Test Motion</button>
     <button class="primary" onclick="openCamModal()">+ Quản lý Camera</button>
     <button onclick="openStorageModal()">⚙️ Cài đặt Lưu trữ</button>
+    <button onclick="openHassModal()">🛰️ Home Assistant</button>
     <span id="statusText" style="font-size:13px;color:#ccc;">Đang khởi tạo...</span>
     <div class="disk-badge" id="diskBadge" onclick="openStorageModal()">HDD: --</div>
   </header>
@@ -173,6 +174,38 @@
         <div style="display:flex; gap:8px;">
           <button onclick="closeStorageModal()">Đóng</button>
           <button class="primary" onclick="saveStorage()">Lưu cấu hình</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Liên kết Home Assistant -->
+  <div class="modal" id="hassModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">Liên kết Home Assistant (lấy Motion)</h3>
+      <div class="form-row">
+        <label style="flex-direction:row; align-items:center; gap:8px;">
+          <input type="checkbox" id="hassEnabled" style="width:auto;">
+          Bật lấy chuyển động trực tiếp từ Home Assistant
+        </label>
+      </div>
+      <div class="form-row">
+        <label>Địa chỉ Home Assistant (URL):</label>
+        <input id="hassUrl" placeholder="http://homeassistant.local:8123">
+      </div>
+      <div class="form-row">
+        <label>Long-Lived Access Token (HA &gt; Hồ sơ &gt; Security &gt; Create Token):</label>
+        <input type="password" id="hassToken" placeholder="Dán token HA...">
+      </div>
+      <div id="hassStatus" style="font-size:12px;color:#aaa;margin:6px 0 12px;"></div>
+      <h4 style="margin:4px 0 6px;">Gán cảm biến chuyển động cho từng Camera</h4>
+      <div style="font-size:12px;color:#888;margin-bottom:8px;">Nhập entity_id của binary_sensor (nhiều thì cách nhau dấu phẩy), VD: binary_sensor.cong_motion</div>
+      <div id="hassEntityBox"></div>
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
+        <button class="warn" onclick="testHass()">Kiểm tra kết nối</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeHassModal()">Đóng</button>
+          <button class="primary" onclick="saveHass()">Lưu</button>
         </div>
       </div>
     </div>
@@ -340,9 +373,81 @@
       await loadTimeline();
     }
 
+    async function openHassModal() {
+      const res = await fetch("/api/hass");
+      const cfg = await res.json();
+      document.getElementById("hassEnabled").checked = !!cfg.enabled;
+      document.getElementById("hassUrl").value = cfg.base_url || "";
+      const tok = document.getElementById("hassToken");
+      tok.value = "";
+      tok.placeholder = cfg.has_token ? "Đã lưu token (bỏ trống để giữ nguyên)" : "Dán Long-Lived Access Token...";
+      renderHassEntities(cfg.entities || {});
+      const st = cfg.status || {};
+      const el = document.getElementById("hassStatus");
+      if (!cfg.enabled) el.textContent = "Trạng thái: Đang tắt.";
+      else if (st.connected) el.textContent = "✅ Đã kết nối HA, đang lắng nghe chuyển động." + (st.last_event ? ` Lần cuối: ${st.last_event}` : "");
+      else el.textContent = "⏳ Chưa kết nối" + (st.last_error ? ` (${st.last_error})` : "");
+      document.getElementById("hassModal").style.display = "flex";
+    }
+    function closeHassModal() { document.getElementById("hassModal").style.display = "none"; }
+
+    function renderHassEntities(entities) {
+      const box = document.getElementById("hassEntityBox");
+      box.innerHTML = "";
+      const ids = Object.keys(cameras);
+      if (!ids.length) { box.innerHTML = '<div style="color:#aaa">Chưa có camera. Hãy thêm camera trước.</div>'; return; }
+      ids.forEach(cid => {
+        const val = (entities[cid] || []).join(", ");
+        const row = document.createElement("div");
+        row.className = "form-row";
+        row.innerHTML = `<label>${cameras[cid].name} (${cid})</label>
+                         <input id="hassEnt_${cid}" placeholder="binary_sensor.ten_cam_motion" value="${val.replace(/"/g, "&quot;")}">`;
+        box.appendChild(row);
+      });
+    }
+
+    async function saveHass() {
+      const entities = {};
+      Object.keys(cameras).forEach(cid => {
+        const el = document.getElementById("hassEnt_" + cid);
+        if (el && el.value.trim()) entities[cid] = el.value.split(",").map(s => s.trim()).filter(Boolean);
+      });
+      await fetch("/api/hass", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          enabled: document.getElementById("hassEnabled").checked,
+          base_url: document.getElementById("hassUrl").value.trim(),
+          token: document.getElementById("hassToken").value.trim(),
+          entities
+        })
+      });
+      closeHassModal();
+    }
+
+    async function testHass() {
+      const el = document.getElementById("hassStatus");
+      el.textContent = "Đang kiểm tra kết nối...";
+      try {
+        const res = await fetch("/api/hass/test", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            enabled: true,
+            base_url: document.getElementById("hassUrl").value.trim(),
+            token: document.getElementById("hassToken").value.trim(),
+            entities: {}
+          })
+        });
+        const data = await res.json();
+        el.textContent = res.ok ? ("✅ Kết nối OK: " + (data.message || "")) : ("❌ " + (data.detail || "Lỗi"));
+      } catch (e) {
+        el.textContent = "❌ " + e;
+      }
+    }
+
     async function testMotion() {
-      if (!currentCam) return;
-      await fetch("/api/motion", {
+      if (!currentCam) return;      await fetch("/api/motion", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({cam_id: currentCam, label: "Kích hoạt thử (Test)"})

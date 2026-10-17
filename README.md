@@ -8,8 +8,17 @@ Web UI được bảo vệ bằng HTTP Basic Auth. Cấu hình qua biến môi t
 - `NVR_PASS` (mặc định `admin`) — **nên đổi ngay**
 - `NVR_AUTH=off` để tắt đăng nhập (chỉ dùng trong LAN tin cậy)
 
-## Tích hợp Home Assistant (Motion Webhook)
-Gọi webhook khi HA phát hiện chuyển động:
+## Liên kết Home Assistant (lấy Motion bằng Token)
+Trên Web UI, bấm **🛰️ Home Assistant**:
+1. Nhập **Địa chỉ HA** (VD `http://homeassistant.local:8123`).
+2. Dán **Long-Lived Access Token** (HA → Hồ sơ người dùng → Security → Create Token). Token được lưu trong `config.json` và chỉ dùng ở phía server.
+3. Gán `entity_id` cảm biến chuyển động cho từng camera (VD `binary_sensor.cong_motion`), nhiều entity cách nhau dấu phẩy.
+4. Bấm **Kiểm tra kết nối** rồi **Lưu**.
+
+LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; khi entity chuyển sang trạng thái chuyển động (`on`/`detected`/`motion`) thì kích hoạt ghi hình + snapshot cho camera tương ứng. Tự kết nối lại khi mất mạng.
+
+## Tích hợp Home Assistant (Motion Webhook - không cần token)
+HA chủ động gọi webhook khi phát hiện chuyển động:
 ```yaml
 rest_command:
   litenvr_motion:
