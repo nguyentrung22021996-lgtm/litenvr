@@ -124,4 +124,318 @@
       </div>
 
       <div class="grid-2">
-        <div class="form
+        <div class="form-row">
+          <label>Giao thức truyền tải:</label>
+          <select id="inpTransport">
+            <option value="tcp">TCP (Ổn định, khuyên dùng)</option>
+            <option value="udp">UDP (Dành cho cam Yoosee đời cũ)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Xử lý Âm thanh (Audio):</label>
+          <select id="inpAudio">
+            <option value="aac">Bật âm thanh (Chuẩn AAC)</option>
+            <option value="none">Tắt âm thanh (Tránh lỗi cam kén tiếng)</option>
+            <option value="copy">Giữ nguyên gốc (Copy)</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
+        <button onclick="closeCamModal()">Đóng</button>
+        <button class="primary" onclick="saveCamera()">Lưu Camera</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Cài đặt Lưu trữ & Dọn dẹp ổ cứng -->
+  <div class="modal" id="storageModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">Cài đặt Lưu trữ & Tự động Xóa</h3>
+      <div class="form-row">
+        <label>Số ngày lưu tối đa (Quá số ngày này tự động xóa):</label>
+        <input type="number" id="inpRetDays" min="1" max="365" step="1">
+      </div>
+      <div class="form-row">
+        <label>Giới hạn dung lượng tối đa cho NVR (GB - Nhập 0 nếu không giới hạn):</label>
+        <input type="number" id="inpMaxGb" min="0" step="10">
+      </div>
+      <div class="form-row">
+        <label>Ngưỡng đầy ổ cứng tối đa (% - Vượt ngưỡng này sẽ tự xóa video cũ nhất):</label>
+        <input type="number" id="inpMaxPct" min="10" max="98" step="1">
+      </div>
+      <div class="form-row">
+        <label>Thời gian ghi hình mỗi lần có chuyển động (Giây - Áp dụng chế độ Motion):</label>
+        <input type="number" id="inpPostMotion" min="15" max="600" step="5">
+      </div>
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
+        <button class="warn" onclick="cleanNow()">🧹 Dọn ổ cứng ngay</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeStorageModal()">Đóng</button>
+          <button class="primary" onclick="saveStorage()">Lưu cấu hình</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null;
+    const video = document.getElementById("videoPlayer");
+    const dateInput = document.getElementById("dateInput");
+    dateInput.value = new Date().toISOString().split("T")[0];
+
+    async function loadSystem() {
+      const res = await fetch("/api/system");
+      sysInfo = await res.json();
+      document.getElementById("diskBadge").textContent =
+        `NVR: ${sysInfo.nvr_used_gb}GB | HDD: ${sysInfo.disk_used_gb}/${sysInfo.disk_total_gb}GB (${sysInfo.disk_percent}%)`;
+    }
+
+    async function init() {
+      await loadSystem();
+      const res = await fetch("/api/cameras");
+      cameras = await res.json();
+      const sel = document.getElementById("camSelect");
+      sel.innerHTML = "";
+      for (const [id, info] of Object.entries(cameras)) {
+        const opt = document.createElement("option");
+        const modeTxt = info.record_mode === "motion" ? " [Motion]" : (info.record_mode === "off" ? " [Live]" : " [24/7]");
+        opt.value = id; opt.textContent = info.name + modeTxt;
+        sel.appendChild(opt);
+      }
+      if (Object.keys(cameras).length === 0) {
+        document.getElementById("statusText").textContent = "Chưa có camera. Bấm '+ Quản lý Camera' để thêm.";
+        openCamModal();
+        return;
+      }
+      currentCam = sel.value;
+      sel.onchange = () => { currentCam = sel.value; loadTimeline(); playLive(); };
+      dateInput.onchange = () => loadTimeline();
+      await loadTimeline();
+      playLive();
+    }
+
+    function applyBrandPreset() {
+      const brand = document.getElementById("inpBrand").value;
+      const box = document.getElementById("quickGenBox");
+      if (brand === "custom") { box.style.display = "none"; return; }
+      box.style.display = "grid";
+      const ip = document.getElementById("genIp").value.trim() || "192.168.1.100";
+      const u = encodeURIComponent(document.getElementById("genUser").value.trim() || "admin");
+      const p = encodeURIComponent(document.getElementById("genPass").value.trim() || "password");
+
+      let main = "", sub = "";
+      if (brand === "imou") {
+        main = `rtsp://${u}:${p}@${ip}:554/cam/realmonitor?channel=1&subtype=0`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/cam/realmonitor?channel=1&subtype=1`;
+      } else if (brand === "ezviz") {
+        main = `rtsp://${u}:${p}@${ip}:554/Streaming/Channels/101`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/Streaming/Channels/102`;
+      } else if (brand === "tapo") {
+        main = `rtsp://${u}:${p}@${ip}:554/stream1`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/stream2`;
+      } else if (brand === "yoosee") {
+        main = `rtsp://${u}:${p}@${ip}:554/onvif1`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/onvif2`;
+      } else if (brand === "xiaomi") {
+        main = `rtsp://${u}:${p}@${ip}:554/ch0_0.h264`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/ch0_1.h264`;
+      }
+      document.getElementById("inpRtsp").value = main;
+      document.getElementById("inpSubRtsp").value = sub;
+    }
+
+    function openCamModal() {
+      const box = document.getElementById("camListBox");
+      box.innerHTML = "";
+      for (const [id, info] of Object.entries(cameras)) {
+        const mode = info.record_mode || "continuous";
+        const modeLabel = mode === "motion" ? "Chỉ lưu Motion" : (mode === "off" ? "Chỉ Live" : "Lưu 24/7");
+        const div = document.createElement("div");
+        div.className = "cam-item";
+        div.innerHTML = `<div><b>${info.name}</b> (${id}) <span class="badge ${mode}">${modeLabel}</span></div>
+                         <div style="display:flex;gap:6px;">
+                           <button onclick="editCam('${id}')">Sửa</button>
+                           <button onclick="removeCam('${id}')">Xóa</button>
+                         </div>`;
+        box.appendChild(div);
+      }
+      document.getElementById("camModal").style.display = "flex";
+    }
+    function closeCamModal() { document.getElementById("camModal").style.display = "none"; }
+
+    function editCam(id) {
+      const c = cameras[id];
+      document.getElementById("inpCamId").value = id;
+      document.getElementById("inpCamName").value = c.name || "";
+      document.getElementById("inpBrand").value = c.brand || "custom";
+      document.getElementById("inpRecordMode").value = c.record_mode || "continuous";
+      document.getElementById("inpRtsp").value = c.rtsp_url || "";
+      document.getElementById("inpSubRtsp").value = c.sub_rtsp_url || "";
+      document.getElementById("inpTransport").value = c.rtsp_transport || "tcp";
+      document.getElementById("inpAudio").value = c.audio_mode || "aac";
+    }
+
+    async function saveCamera() {
+      const payload = {
+        cam_id: document.getElementById("inpCamId").value.trim(),
+        name: document.getElementById("inpCamName").value.trim(),
+        brand: document.getElementById("inpBrand").value,
+        record_mode: document.getElementById("inpRecordMode").value,
+        rtsp_url: document.getElementById("inpRtsp").value.trim(),
+        sub_rtsp_url: document.getElementById("inpSubRtsp").value.trim(),
+        rtsp_transport: document.getElementById("inpTransport").value,
+        audio_mode: document.getElementById("inpAudio").value
+      };
+      if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
+        return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
+      }
+      await fetch("/api/cameras", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      closeCamModal();
+      await init();
+    }
+
+    async function removeCam(id) {
+      if (!confirm(`Xóa camera ${id}?`)) return;
+      await fetch(`/api/cameras/${id}`, {method: "DELETE"});
+      await init();
+      openCamModal();
+    }
+
+    async function openStorageModal() {
+      await loadSystem();
+      document.getElementById("inpRetDays").value = sysInfo.retention_days;
+      document.getElementById("inpMaxGb").value = sysInfo.max_storage_gb;
+      document.getElementById("inpMaxPct").value = sysInfo.max_disk_percent;
+      document.getElementById("inpPostMotion").value = sysInfo.post_motion_sec;
+      document.getElementById("storageModal").style.display = "flex";
+    }
+    function closeStorageModal() { document.getElementById("storageModal").style.display = "none"; }
+
+    async function saveStorage() {
+      const payload = {
+        retention_days: parseFloat(document.getElementById("inpRetDays").value) || 7,
+        max_storage_gb: parseFloat(document.getElementById("inpMaxGb").value) || 0,
+        max_disk_percent: parseFloat(document.getElementById("inpMaxPct").value) || 85,
+        post_motion_sec: parseInt(document.getElementById("inpPostMotion").value) || 60
+      };
+      await fetch("/api/storage", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      closeStorageModal();
+      await loadSystem();
+    }
+
+    async function cleanNow() {
+      const res = await fetch("/api/storage/clean", {method: "POST"});
+      const data = await res.json();
+      alert(`Đã dọn dẹp ${data.deleted_files} file video/ảnh quá hạn!`);
+      await loadSystem();
+      await loadTimeline();
+    }
+
+    async function testMotion() {
+      if (!currentCam) return;
+      await fetch("/api/motion", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({cam_id: currentCam, label: "Kích hoạt thử (Test)"})
+      });
+      setTimeout(() => { loadTimeline(); loadSystem(); }, 1500);
+    }
+
+    function playLive() {
+      if (!currentCam) return;
+      document.getElementById("btnLive").classList.add("active");
+      document.getElementById("statusText").textContent = "Đang xem trực tiếp (Live)";
+      const hlsUrl = `/hls/${currentCam}/live.m3u8`;
+      if (Hls.isSupported()) {
+        if (hls) hls.destroy();
+        hls = new Hls();
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = hlsUrl;
+      }
+    }
+
+    async function loadTimeline() {
+      if (!currentCam) return;
+      const res = await fetch(`/api/timeline/${currentCam}?date=${dateInput.value}`);
+      const data = await res.json();
+      segments = data.segments;
+      const bar = document.getElementById("timelineBar");
+      bar.innerHTML = '<div class="cursor-line" id="cursorLine"></div>';
+
+      segments.forEach(s => {
+        const el = document.createElement("div");
+        el.className = "seg-mark";
+        el.style.left = (s.start_sec / 86400 * 100) + "%";
+        bar.appendChild(el);
+      });
+
+      const list = document.getElementById("eventsList");
+      list.innerHTML = "";
+      data.events.forEach(e => {
+        const mark = document.createElement("div");
+        mark.className = "evt-mark";
+        mark.style.left = (e.sec_of_day / 86400 * 100) + "%";
+        mark.title = `${e.time} - ${e.label}`;
+        bar.appendChild(mark);
+
+        const card = document.createElement("div");
+        card.className = "event-card";
+        card.onclick = () => playAtSecond(e.sec_of_day);
+        card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
+                          <div style="margin-top:6px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>`;
+        list.appendChild(card);
+      });
+    }
+
+    function seekTimeline(ev) {
+      const rect = ev.currentTarget.getBoundingClientRect();
+      const clickSec = Math.floor(((ev.clientX - rect.left) / rect.width) * 86400);
+      playAtSecond(clickSec);
+    }
+
+    function playAtSecond(targetSec) {
+      if (hls) { hls.destroy(); hls = null; }
+      document.getElementById("btnLive").classList.remove("active");
+      document.getElementById("cursorLine").style.left = (targetSec / 86400 * 100) + "%";
+
+      let chosenIdx = -1;
+      for (let i = 0; i < segments.length; i++) {
+        if (segments[i].start_sec <= targetSec) chosenIdx = i;
+        else break;
+      }
+      if (chosenIdx === -1) {
+        document.getElementById("statusText").textContent = "Không có bản ghi ở khung giờ này";
+        return;
+      }
+
+      const seg = segments[chosenIdx];
+      const offset = Math.max(0, targetSec - seg.start_sec);
+      document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
+      video.src = seg.file;
+      video.currentTime = offset;
+      video.play();
+
+      video.onended = () => {
+        if (chosenIdx + 1 < segments.length) {
+          chosenIdx++;
+          video.src = segments[chosenIdx].file;
+          video.play();
+        }
+      };
+    }
+
+    init();
+  </script>
+</body>
+</html>
