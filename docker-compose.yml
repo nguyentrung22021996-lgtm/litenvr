@@ -14,6 +14,7 @@ services:
       - NVR_PASS=admin
       - NVR_AUTH=on
       - LIVE_IDLE_STOP_SEC=30
+      - LIVE_MAX_HEIGHT=720
       - GO2RTC=auto
     volumes:
       - type: bind
@@ -46,6 +47,10 @@ services:
           description:
             en_us: "auto (default), on or off - internal go2rtc restream shares one camera session"
             vi_vn: "auto (mặc định), on hoặc off - restream go2rtc nội bộ dùng chung 1 phiên camera"
+        - container: LIVE_MAX_HEIGHT
+          description:
+            en_us: Max height of the transcoded live preview; lower = less CPU (0 keeps original). Recording always keeps the original quality
+            vi_vn: Chiều cao tối đa của live khi phải chuyển mã; nhỏ hơn = nhẹ CPU hơn (0 = giữ nguyên). Bản ghi luôn giữ nguyên gốc
       ports:
         - container: "8080"
           description:

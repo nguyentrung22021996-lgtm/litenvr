@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastapi uvicorn pydantic websocket-client
+RUN pip install --no-cache-dir fastapi uvicorn pydantic websocket-client pyyaml
 
 COPY app/ /app/
 

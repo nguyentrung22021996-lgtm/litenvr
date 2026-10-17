@@ -251,7 +251,7 @@
       </div>
       <div class="form-row">
         <label>Luồng phụ (Tùy chọn giúp xem Live nhẹ hơn - cũng hỗ trợ RTSP/HTTP):</label>
-        <input id="inpSubRtsp" placeholder="Để trống nếu dùng chung luồng chính">
+        <input id="inpSubRtsp" placeholder="vd: rtsp://admin:pass@ip:554/.../subtype=1 (thường H.264, nhẹ CPU)">
       </div>
 
       <div class="grid-2">
@@ -1168,6 +1168,9 @@
         if (g.running) txt += `đang chạy → ${g.restream} (1 phiên/camera chia sẻ)`;
         else if (g.available) txt += "có sẵn nhưng chưa chạy";
         else txt += "không có (bản Docker chính thức đã kèm go2rtc)";
+        const h = (sysInfo && sysInfo.host) || {};
+        if (h.load1 != null) txt += ` · CPU load: ${h.load1} / ${h.load5} / ${h.load15}`;
+        if (h.ram_percent != null) txt += ` · RAM: ${h.ram_percent}% (${h.ram_used_gb}/${h.ram_total_gb} GB)`;
         sys.textContent = txt;
       }
       const cams = _logsData.cameras || {};

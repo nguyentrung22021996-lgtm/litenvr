@@ -12,6 +12,7 @@ import threading
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 import uuid
 import re
 import xml.etree.ElementTree as ET
@@ -147,6 +148,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=live_supervisor, daemon=True).start()
     threading.Thread(target=go2rtc_monitor, daemon=True).start()
     yield
+    stop_go2rtc()
 
 app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
 
@@ -274,6 +276,9 @@ worker_lock = threading.Lock()
 cam_viewers: Dict[str, float] = {}
 viewer_lock = threading.Lock()
 LIVE_IDLE_STOP_SEC = int(os.environ.get("LIVE_IDLE_STOP_SEC", "30"))
+# Chiều cao tối đa cho live HLS khi phải chuyển mã (0 = giữ nguyên gốc).
+# Hạ độ phân giải live giúp CPU giảm mạnh với camera 2K/4K (bản ghi vẫn giữ nguyên gốc).
+LIVE_MAX_HEIGHT = int(os.environ.get("LIVE_MAX_HEIGHT", "720") or "0")
 # Theo dõi cảnh báo đầy ổ (tránh spam log)
 _disk_warn = {"t": 0.0}
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
@@ -313,7 +318,7 @@ def detect_video_codec(cam_id: str, cam_info: dict):
         "-rtsp_transport", cam_info.get("rtsp_transport", "tcp"),
         "-timeout", "8000000",
         "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name,profile,pix_fmt",
+        "-show_entries", "stream=codec_name,profile,pix_fmt,width,height",
         "-of", "default=nw=1",
         feed_url,
     ]
@@ -586,6 +591,11 @@ GO2RTC_API = "127.0.0.1:1984"
 GO2RTC_CONFIG = os.path.join(STORAGE_DIR, "go2rtc.yaml")
 _go2rtc = {"proc": None, "running": False, "error": "", "enabled": False}
 
+try:
+    import yaml as _yaml
+except Exception:
+    _yaml = None
+
 def go2rtc_available() -> bool:
     return bool(shutil.which(GO2RTC_BIN))
 
@@ -607,7 +617,19 @@ def _go2rtc_streams() -> Dict[str, str]:
     return streams
 
 def write_go2rtc_config():
-    streams = _go2rtc_streams()
+    """Ghi cấu hình go2rtc. GIỮ NGUYÊN stream người dùng tự thêm
+    (vd hanet_nhatren, san) — chỉ thêm/cập nhật stream theo camera LiteNVR."""
+    streams: Dict[str, Any] = {}
+    existing: Dict[str, Any] = {}
+    if _yaml and os.path.exists(GO2RTC_CONFIG):
+        try:
+            with open(GO2RTC_CONFIG, "r", encoding="utf-8") as f:
+                existing = _yaml.safe_load(f) or {}
+            if isinstance(existing.get("streams"), dict):
+                streams.update(existing["streams"])
+        except Exception:
+            existing = {}
+    streams.update(_go2rtc_streams())
     lines = [
         "log:",
         "  level: error",
@@ -620,9 +642,27 @@ def write_go2rtc_config():
         "streams:",
     ]
     for name, url in streams.items():
-        lines.append(f"  {name}: {json.dumps(url)}")
+        try:
+            lines.append(f"  {name}: {json.dumps(url, ensure_ascii=False)}")
+        except Exception:
+            continue
+    for key, val in existing.items():
+        if key in ("log", "api", "rtsp", "webrtc", "streams"):
+            continue
+        if _yaml:
+            try:
+                lines.append(_yaml.safe_dump({key: val}, allow_unicode=True, sort_keys=False).rstrip())
+            except Exception:
+                pass
     with open(GO2RTC_CONFIG, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+def _port_in_use(host: str, port: int, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except Exception:
+        return False
 
 def start_go2rtc():
     """Chạy go2rtc nội bộ (nếu có binary) để chia 1 phiên RTSP cho nhiều client."""
@@ -636,6 +676,12 @@ def start_go2rtc():
         return
     proc = _go2rtc.get("proc")
     if proc and proc.poll() is None:
+        return
+    if _port_in_use("127.0.0.1", 8554) or _port_in_use("127.0.0.1", 1984):
+        _go2rtc["enabled"] = False
+        _go2rtc["running"] = False
+        _go2rtc["error"] = "Cổng 8554/1984 đang được dùng bởi go2rtc khác"
+        log_event("warn", "Cổng 8554/1984 đang có go2rtc khác chạy — không khởi động restream nội bộ, camera sẽ kết nối trực tiếp")
         return
     try:
         write_go2rtc_config()
@@ -657,8 +703,20 @@ def stop_go2rtc():
     proc = _go2rtc.get("proc")
     if proc and proc.poll() is None:
         proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except Exception:
+                pass
     _go2rtc["proc"] = None
     _go2rtc["running"] = False
+    for _ in range(10):
+        if not _port_in_use("127.0.0.1", 8554):
+            break
+        time.sleep(0.2)
 
 def refresh_go2rtc():
     """Cập nhật danh sách stream khi thêm/sửa/xóa camera."""
@@ -688,8 +746,17 @@ def cam_source_urls(cam_id: str, cam_info: dict):
         name = _g2_name(cam_id)
         streams = _go2rtc_streams()
         if name in streams:
-            main_url = f"{GO2RTC_RTSP}/{name}"
-            sub_url = f"{GO2RTC_RTSP}/{name}_sub" if f"{name}_sub" in streams else main_url
+            parsed = urllib.parse.urlparse(cam_info["rtsp_url"])
+            paths = {name, f"{name}_sub"}
+            if parsed.hostname in ("127.0.0.1", "localhost") and parsed.port == 8554 \
+                    and parsed.path.strip("/") in paths:
+                st = cam_status.setdefault(cam_id, {})
+                if not st.get("_self_loop_warn"):
+                    st["_self_loop_warn"] = True
+                    log_event("warn", f"Camera {cam_id} đang trỏ vào chính restream nội bộ — bỏ qua restream để tránh vòng lặp", cam_id)
+            else:
+                main_url = f"{GO2RTC_RTSP}/{name}"
+                sub_url = f"{GO2RTC_RTSP}/{name}_sub" if f"{name}_sub" in streams else main_url
     return main_url, sub_url
 
 def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None, include_live: bool = True):
@@ -765,9 +832,14 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     # include_live=False khi không ai xem (tiết kiệm CPU transcode).
     if include_live:
         live_input_idx = "1:v:0" if use_dual_input else "0:v:0"
+        live_args = list(vcodec_args)
+        if video_codec == "h264" and LIVE_MAX_HEIGHT > 0:
+            src_h = int((codec_cache.get(cam_id) or ({}, {}))[1].get("height") or 0)
+            if src_h > LIVE_MAX_HEIGHT:
+                live_args = ["-vf", f"scale=-2:{LIVE_MAX_HEIGHT}"] + live_args
         cmd.extend([
             "-map", live_input_idx,
-            *vcodec_args, "-an",
+            *live_args, "-an",
             "-f", "hls",
             "-hls_time", "2",
             "-hls_list_size", "5",
@@ -1174,6 +1246,33 @@ class MotionPayload(BaseModel):
     cam_id: str
     label: str = "Chuyển động (HASS)"
 
+def _host_load():
+    """Tải CPU + RAM của máy chủ (đọc /proc, không cần thư viện ngoài)."""
+    load = []
+    try:
+        with open("/proc/loadavg") as f:
+            load = [float(x) for x in f.read().split()[:3]]
+    except Exception:
+        pass
+    mem_total = mem_avail = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1]) * 1024
+                elif line.startswith("MemAvailable:"):
+                    mem_avail = int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    info = {"load1": load[0] if load else None,
+            "load5": load[1] if len(load) > 1 else None,
+            "load15": load[2] if len(load) > 2 else None}
+    if mem_total:
+        info["ram_total_gb"] = round(mem_total / (1024**3), 2)
+        info["ram_used_gb"] = round((mem_total - mem_avail) / (1024**3), 2)
+        info["ram_percent"] = round(((mem_total - mem_avail) / mem_total) * 100, 1)
+    return info
+
 @app.get("/api/system")
 def get_system_info():
     total, used, free = shutil.disk_usage(STORAGE_DIR)
@@ -1184,6 +1283,8 @@ def get_system_info():
         "max_disk_percent": CONFIG.get("max_disk_percent", 85),
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
         "ram_buffer": bool(CONFIG.get("ram_buffer", True)),
+        "live_idle_stop_sec": LIVE_IDLE_STOP_SEC,
+        "live_max_height": LIVE_MAX_HEIGHT,
         "go2rtc": {
             "mode": GO2RTC_MODE,
             "available": go2rtc_available(),
@@ -1191,6 +1292,7 @@ def get_system_info():
             "running": bool(_go2rtc.get("running")),
             "restream": GO2RTC_RTSP,
         },
+        "host": _host_load(),
         "nvr_used_gb": round(nvr_used_bytes / (1024**3), 2),
         "disk_total_gb": round(total / (1024**3), 2),
         "disk_used_gb": round(used / (1024**3), 2),
