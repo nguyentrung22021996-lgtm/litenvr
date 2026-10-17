@@ -923,6 +923,7 @@
           `HLS sẵn sàng: ${d.hls_ready ? "Có" : "Chưa"}`,
           `Codec dò được: ${d.detected_codec || "(chưa dò / cam chưa kết nối)"}`,
           d.detect_failed ? "Lưu ý: chưa dò được codec (camera có thể đang bận/đã bị app khác như Frigate/go2rtc chiếm session) → tạm chuyển mã H.264." : "",
+          d.rate_limited ? "Camera đang TỪ CHỐI kết nối (5XX): đã đủ số phiên RTSP hoặc camera tạm khoá do kết nối quá nhanh. Giảm số app kéo stream (Frigate/go2rtc/app hãng) hoặc dùng restream của go2rtc." : "",
           d.last_error ? `Lỗi cuối: ${d.last_error}` : "",
           (d.log && d.log.length) ? "Log gần nhất:\n" + d.log.slice(-8).join("\n") : ""
         ].filter(Boolean);

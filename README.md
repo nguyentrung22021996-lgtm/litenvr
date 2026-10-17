@@ -30,6 +30,11 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 
 **Lưu ý luồng HEVC/H.265 4K (Imou/Dahua/Hanet/EZVIZ):** live view phải chuyển mã realtime nên tốn CPU. Nếu box yếu, dùng **luồng phụ H.264** làm `sub_rtsp_url` cho live (Imou `subtype=1`; Hanet `/user:hanet;pwd:...` kèm stream phụ) và để luồng chính HEVC cho ghi hình.
 
+**Camera Hikvision/EZVIZ (đường dẫn `.../h264/ch01/main/av_stream`) bị đen / báo lỗi:** các camera này giới hạn số phiên RTSP đồng thời (~3) và **tự khoá tạm khi có quá nhiều kết nối nhanh**, trả lỗi `500/503 SETUP failed` cho tới khi hết khoá. Cách xử lý:
+- Chỉ để **một** ứng dụng kéo luồng trực tiếp; nếu đang dùng Frigate/go2rtc, trỏ LiteNVR vào **restream của go2rtc** (`rtsp://<ip-go2rtc>:8554/<ten_cam>`) thay vì kéo trực tiếp camera.
+- LiteNVR đã tự tăng thời gian chờ (backoff 15–120s) khi camera trả 5XX để nhả khoá; xem nút **🔍 Chẩn đoán** (dòng "Camera đang TỪ CHỐI kết nối").
+- Nếu camera vẫn 500 dù đã chờ, khởi động lại (rút điện) camera.
+
 **Thanh thời gian:** kéo hoặc bấm trên thanh để tua; rê chuột để xem mốc giờ; vạch vàng hiển thị vị trí đang phát.
 
 ## Dashboard giám sát

@@ -373,7 +373,7 @@ def start_camera_worker(cam_id: str):
     threading.Thread(target=_camera_worker_loop, args=(cam_id, token), daemon=True).start()
 
 def _camera_worker_loop(cam_id: str, token: threading.Event):
-    backoff = 5
+    backoff = 2
     while not token.is_set():
         cam_info = CONFIG.get("cameras", {}).get(cam_id)
         if not cam_info:
@@ -398,16 +398,36 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         st["running"] = True
         st["last_start"] = int(started)
 
+        def _hint(line: str) -> str:
+            low = line.lower()
+            if "5xx" in low or "server returned 5" in low or "453" in low or "454" in low or "461" in low:
+                return ("Camera từ chối kết nối RTSP (có thể đã đủ số phiên đồng thời — "
+                        "kiểm tra Frigate/go2rtc/app hãng đang chiếm stream): " + line)
+            if "401" in low or "unauthorized" in low or "authentication" in low:
+                return "Sai tài khoản/mật khẩu RTSP hoặc thiếu xác thực: " + line
+            if "connection refused" in low or "timed out" in low or "no route" in low:
+                return "Không kết nối được tới camera (IP/port/mạng): " + line
+            if "invalid data found" in low or "could not find codec" in low:
+                return "Luồng RTSP không hợp lệ hoặc sai đường dẫn: " + line
+            return line
+
         def _drain(p, cid, status):
             try:
                 for line in p.stderr:
                     line = line.strip()
-                    if line:
-                        status["log"].append(line)
-                        status["last_error"] = line
+                    if not line:
+                        continue
+                    status["log"].append(line)
+                    status["last_error"] = _hint(line)
+                    low = line.lower()
+                    if ("5xx" in low or "server returned 5" in low
+                            or " 453 " in low or "453 " in low
+                            or "500 internal" in low or "503 " in low or "461 " in low):
+                        status["rate_limited"] = True
             except Exception:
                 pass
 
+        st["rate_limited"] = False
         threading.Thread(target=_drain, args=(proc, cam_id, st), daemon=True).start()
         proc.wait()
         st["running"] = False
@@ -415,9 +435,17 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             ffmpeg_processes.pop(cam_id, None)
         if token.is_set():
             break
-        # Backoff: cam offline liên tục thì giãn dần, tránh spam ffmpeg
+        # Backoff:
+        #  - vừa chạy ổn trong >10s: chờ ngắn rồi thử lại
+        #  - camera trả 5XX (đủ phiên / chống spam → khoá tạm): chờ DÀI để nhả khoá
+        #  - lỗi nhanh khác: chờ ngắn
         ran = time.time() - started
-        backoff = 5 if ran > 10 else min(backoff * 2, 60)
+        if ran > 10:
+            backoff = 5
+        elif st.get("rate_limited"):
+            backoff = min(max(backoff * 2, 15), 120)
+        else:
+            backoff = min(max(backoff, 2), 30)
         if token.wait(backoff):
             break
 
@@ -1010,6 +1038,7 @@ def get_cam_status(cam_id: str):
         "hls_ready": hls_ready,
         "detected_codec": st.get("detected_codec", ""),
         "detect_failed": bool(st.get("detect_failed", False)),
+        "rate_limited": bool(st.get("rate_limited", False)),
         "last_error": st.get("last_error", ""),
         "log": list(st.get("log", [])),
     }
