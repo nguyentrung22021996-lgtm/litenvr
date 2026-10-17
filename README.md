@@ -46,6 +46,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **Nhóm/Phòng và Nhãn**: điền khi thêm/sửa camera để phân loại; hiển thị trong danh sách và ô chọn nhanh.
 
 ## Tiết kiệm CPU / RAM
+- **Restream nội bộ (go2rtc)**: bản Docker đã kèm `go2rtc`; LiteNVR tự tạo cấu hình và đẩy mọi nguồn qua restream `rtsp://127.0.0.1:8554`, nhờ đó **mỗi camera chỉ tốn 1 phiên RTSP** dù có ghi hình + xem live + chụp snapshot (tránh lỗi "đủ số phiên" của Hikvision/EZVIZ). Tắt bằng biến môi trường `GO2RTC=off` (hoặc `GO2RTC=on` để bắt buộc).
 - **Live theo nhu cầu**: khi không có ai xem, LiteNVR tự bỏ nhánh HLS (nhất là với camera phải chuyển mã HEVC/H.265 → H.264). Khi mở lại live, luồng tự khởi động trong vài giây. Có thể chỉnh thời gian chờ: biến môi trường `LIVE_IDLE_STOP_SEC` (mặc định 30 giây).
 - **Ghi hình lưu nguyên codec (`-c:v copy`)**: CPU gần như bằng 0; chỉ chuyển mã khi bạn thực sự xem.
 - **Preset transcode nhẹ**: `ultrafast` + 2 luồng, `zerolatency`.
@@ -56,6 +57,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - Nút **📋 Nhật ký** hiển thị: trạng thái từng camera (chạy / lỗi / bị từ chối 5XX / chưa dò được codec) và **danh sách sự kiện** (INFO/WARN/ERR) kèm gợi ý tiếng Việt cho các lỗi RTSP thường gặp.
 - Badge đỏ trên nút đếm số lỗi; có thể lọc "chỉ hiện lỗi/cảnh báo" và **📄 Sao chép** toàn bộ để gửi hỗ trợ.
 - Lỗi từ trình duyệt (HLS/playback) cũng được đẩy về nhật ký này; cảnh báo ổ đĩa đầy xuất hiện tại đây.
+- Trạng thái **restream nội bộ (go2rtc)** hiển thị ngay đầu hộp Nhật ký; file ghi rỗng/hỏng được tự phát hiện và xoá (file 0 byte) kèm cảnh báo.
 - Nhật ký lưu trong RAM, tự xoá khi khởi động lại container.
 
 ## Dashboard giám sát

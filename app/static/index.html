@@ -325,6 +325,7 @@
   <div class="modal" id="logsModal">
     <div class="modal-box" style="max-width:640px;">
       <h3 style="margin-top:0">📋 Nhật ký &amp; Lỗi</h3>
+      <div id="logSys" class="log-filter"></div>
       <div id="logCams" class="log-cams"></div>
       <div class="log-filter">
         <label class="log-chk"><input type="checkbox" id="logOnlyErr" onchange="renderLogs()"> Chỉ hiện lỗi/cảnh báo</label>
@@ -1160,6 +1161,15 @@
     }
     function renderLogs() {
       if (!_logsData) return;
+      const sys = document.getElementById("logSys");
+      if (sys) {
+        const g = (sysInfo && sysInfo.go2rtc) || {};
+        let txt = "🔁 Restream nội bộ (go2rtc): ";
+        if (g.running) txt += `đang chạy → ${g.restream} (1 phiên/camera chia sẻ)`;
+        else if (g.available) txt += "có sẵn nhưng chưa chạy";
+        else txt += "không có (bản Docker chính thức đã kèm go2rtc)";
+        sys.textContent = txt;
+      }
       const cams = _logsData.cameras || {};
       const box = document.getElementById("logCams");
       box.innerHTML = Object.entries(cams).map(([id, c]) => {

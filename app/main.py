@@ -136,6 +136,7 @@ def stats_sampler():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    start_go2rtc()
     for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
         if cam.get("record_mode", "continuous") != "off":
             start_camera_worker(cam_id)
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=hass_motion_listener, daemon=True).start()
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
+    threading.Thread(target=go2rtc_monitor, daemon=True).start()
     yield
 
 app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
@@ -301,7 +303,8 @@ def detect_video_codec(cam_id: str, cam_info: dict):
     """Dò codec + profile + pix_fmt của luồng RTSP (chỉ cache khi thành công).
     Trả về dict {'codec','profile','pix_fmt'} hoặc {} nếu không dò được."""
     url = cam_info.get("rtsp_url")
-    key = (url, cam_info.get("sub_rtsp_url"))
+    feed_url, _ = cam_source_urls(cam_id, cam_info)
+    key = (url, cam_info.get("sub_rtsp_url"), _go2rtc.get("running", False))
     cached = codec_cache.get(cam_id)
     if cached and cached[0] == key:
         return cached[1]
@@ -312,7 +315,7 @@ def detect_video_codec(cam_id: str, cam_info: dict):
         "-select_streams", "v:0",
         "-show_entries", "stream=codec_name,profile,pix_fmt",
         "-of", "default=nw=1",
-        url,
+        feed_url,
     ]
     info = {}
     try:
@@ -575,9 +578,122 @@ def buffer_root() -> str:
     đặt ram_buffer=false để ghi ra đĩa (RAM nhỏ / ổn định hơn)."""
     return BUFFER_DIR if CONFIG.get("ram_buffer", True) else os.path.join(STORAGE_DIR, "buffer")
 
-def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None, include_live: bool = True):
-    main_url = cam_info["rtsp_url"]
+# ---------------- go2rtc (restream nội bộ: 1 phiên/camera chia nhiều nguồn) ----------------
+GO2RTC_MODE = os.environ.get("GO2RTC", "auto").lower()   # auto | on | off
+GO2RTC_BIN = os.environ.get("GO2RTC_BIN", "go2rtc")
+GO2RTC_RTSP = "rtsp://127.0.0.1:8554"
+GO2RTC_API = "127.0.0.1:1984"
+GO2RTC_CONFIG = os.path.join(STORAGE_DIR, "go2rtc.yaml")
+_go2rtc = {"proc": None, "running": False, "error": "", "enabled": False}
+
+def go2rtc_available() -> bool:
+    return bool(shutil.which(GO2RTC_BIN))
+
+def _g2_name(cam_id: str) -> str:
+    """Tên stream an toàn cho go2rtc (không dấu cách/ký tự đặc biệt)."""
+    return re.sub(r"[^A-Za-z0-9_.\-]", "_", cam_id)
+
+def _go2rtc_streams() -> Dict[str, str]:
+    """Tên stream go2rtc -> URL gốc. Camera có luồng phụ tạo thêm <cam>_sub."""
+    streams = {}
+    for cam_id, cam in CONFIG.get("cameras", {}).items():
+        name = _g2_name(cam_id)
+        url = (cam.get("rtsp_url") or "").strip()
+        if url:
+            streams[name] = url
+        sub = (cam.get("sub_rtsp_url") or "").strip()
+        if sub and sub != url:
+            streams[f"{name}_sub"] = sub
+    return streams
+
+def write_go2rtc_config():
+    streams = _go2rtc_streams()
+    lines = [
+        "log:",
+        "  level: error",
+        "api:",
+        f'  listen: "{GO2RTC_API}"',
+        "rtsp:",
+        f'  listen: "127.0.0.1:8554"',
+        "webrtc:",
+        '  listen: "127.0.0.1:8555"',
+        "streams:",
+    ]
+    for name, url in streams.items():
+        lines.append(f"  {name}: {json.dumps(url)}")
+    with open(GO2RTC_CONFIG, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+def start_go2rtc():
+    """Chạy go2rtc nội bộ (nếu có binary) để chia 1 phiên RTSP cho nhiều client."""
+    if GO2RTC_MODE == "off":
+        _go2rtc["enabled"] = False
+        return
+    if not go2rtc_available():
+        _go2rtc["enabled"] = False
+        if GO2RTC_MODE == "on":
+            log_event("error", "GO2RTC=on nhưng không tìm thấy binary go2rtc")
+        return
+    proc = _go2rtc.get("proc")
+    if proc and proc.poll() is None:
+        return
+    try:
+        write_go2rtc_config()
+        proc = subprocess.Popen(
+            [GO2RTC_BIN, "-config", GO2RTC_CONFIG],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _go2rtc["proc"] = proc
+        _go2rtc["enabled"] = True
+        _go2rtc["running"] = True
+        _go2rtc["error"] = ""
+        log_event("info", f"go2rtc khởi động (restream nội bộ {GO2RTC_RTSP})")
+    except Exception as e:
+        _go2rtc["running"] = False
+        _go2rtc["error"] = str(e)
+        log_event("warn", f"Không chạy được go2rtc: {e}")
+
+def stop_go2rtc():
+    proc = _go2rtc.get("proc")
+    if proc and proc.poll() is None:
+        proc.terminate()
+    _go2rtc["proc"] = None
+    _go2rtc["running"] = False
+
+def refresh_go2rtc():
+    """Cập nhật danh sách stream khi thêm/sửa/xóa camera."""
+    if not _go2rtc.get("enabled"):
+        return
+    write_go2rtc_config()
+    stop_go2rtc()
+    start_go2rtc()
+
+def go2rtc_monitor():
+    while True:
+        time.sleep(10)
+        if not _go2rtc.get("enabled"):
+            continue
+        proc = _go2rtc.get("proc")
+        if proc and proc.poll() is not None:
+            log_event("warn", "go2rtc dừng bất thường, đang khởi động lại")
+            _go2rtc["running"] = False
+            start_go2rtc()
+
+def cam_source_urls(cam_id: str, cam_info: dict):
+    """URL đầu vào cho ffmpeg. Nếu go2rtc đang chạy, dùng restream nội bộ
+    (1 phiên/camera cho mọi nhu cầu ghi + live + snapshot)."""
+    main_url = cam_info.get("rtsp_url", "")
     sub_url = cam_info.get("sub_rtsp_url") or main_url
+    if _go2rtc.get("running") and (cam_info.get("rtsp_url") or "").strip():
+        name = _g2_name(cam_id)
+        streams = _go2rtc_streams()
+        if name in streams:
+            main_url = f"{GO2RTC_RTSP}/{name}"
+            sub_url = f"{GO2RTC_RTSP}/{name}_sub" if f"{name}_sub" in streams else main_url
+    return main_url, sub_url
+
+def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None, include_live: bool = True):
+    main_url, sub_url = cam_source_urls(cam_id, cam_info)
     transport = cam_info.get("rtsp_transport", "tcp")
     audio_mode = cam_info.get("audio_mode", "aac")  # aac | none | copy
     record_mode = cam_info.get("record_mode", "continuous")  # continuous | motion | off
@@ -963,10 +1079,57 @@ def run_cleanup_now():
     _size_cache["t"] = 0.0
     return deleted_count
 
+def check_corrupt_recordings():
+    """Phát hiện file ghi hỏng: 0 byte, hoặc không có header moov/ftyp.
+    Tự xoá file 0 byte cũ (>60s) và ghi cảnh báo để người dùng biết."""
+    removed = 0
+    bad = []
+    now = time.time()
+    for cam_id in list(CONFIG.get("cameras", {})):
+        cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
+        if not os.path.isdir(cam_dir):
+            continue
+        for fname in os.listdir(cam_dir):
+            if not fname.endswith(".mp4"):
+                continue
+            fp = os.path.join(cam_dir, fname)
+            try:
+                size = os.path.getsize(fp)
+                mtime = os.path.getmtime(fp)
+            except Exception:
+                continue
+            if size == 0:
+                if now - mtime > 60:
+                    try:
+                        os.remove(fp)
+                        removed += 1
+                    except Exception:
+                        pass
+                continue
+            if size < 4096:  # quá nhỏ để có header video
+                bad.append(f"{cam_id}/{fname}")
+                continue
+            try:
+                with open(fp, "rb") as f:
+                    head = f.read(64)
+                if b"moov" not in head and b"ftyp" not in head:
+                    bad.append(f"{cam_id}/{fname}")
+            except Exception:
+                continue
+    if removed:
+        log_event("warn", f"Đã xoá {removed} file ghi rỗng (0 byte)")
+    if bad:
+        st = cam_status.setdefault("_system", {})
+        if now - st.get("_corrupt_ts", 0) > 1800:
+            st["_corrupt_ts"] = now
+            log_event("warn", f"Phát hiện {len(bad)} file ghi nghi hỏng (thiếu header) — kiểm tra ổ đĩa/camera: " + ", ".join(bad[:5]))
+    return removed, len(bad)
+
 def cleanup_worker():
     while True:
         try:
             run_cleanup_now()
+            check_corrupt_recordings()
         except Exception:
             pass
         time.sleep(300)  # Kiểm tra dọn ổ cứng mỗi 5 phút
@@ -1019,6 +1182,13 @@ def get_system_info():
         "max_disk_percent": CONFIG.get("max_disk_percent", 85),
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
         "ram_buffer": bool(CONFIG.get("ram_buffer", True)),
+        "go2rtc": {
+            "mode": GO2RTC_MODE,
+            "available": go2rtc_available(),
+            "enabled": bool(_go2rtc.get("enabled")),
+            "running": bool(_go2rtc.get("running")),
+            "restream": GO2RTC_RTSP,
+        },
         "nvr_used_gb": round(nvr_used_bytes / (1024**3), 2),
         "disk_total_gb": round(total / (1024**3), 2),
         "disk_used_gb": round(used / (1024**3), 2),
@@ -1092,6 +1262,7 @@ def add_or_update_camera(item: CameraItem):
         "tags": item.tags,
     }
     save_config(CONFIG)
+    refresh_go2rtc()
     start_camera_worker(cam_id)
     return {"status": "ok", "cameras": CONFIG["cameras"]}
 
@@ -1115,6 +1286,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
         start_camera_worker(cam_id)
         added += 1
     save_config(CONFIG)
+    refresh_go2rtc()
     log_event("info", f"Thêm hàng loạt {added} camera")
     return {"status": "ok", "added": added, "cameras": CONFIG["cameras"]}
 
@@ -1168,7 +1340,10 @@ def delete_camera(cam_id: str):
     if cam_id in CONFIG.get("cameras", {}):
         stop_camera_worker(cam_id)
         del CONFIG["cameras"][cam_id]
+        codec_cache.pop(cam_id, None)
+        cam_status.pop(cam_id, None)
         save_config(CONFIG)
+        refresh_go2rtc()
     return {"status": "ok"}
 
 def handle_motion(cam_id: str, label: str):
@@ -1190,7 +1365,7 @@ def handle_motion(cam_id: str, label: str):
     log_event("info", f"Phát hiện chuyển động: {label}", cam_id)
 
     # Ưu tiên chụp Snapshot từ luồng phụ để lấy ảnh cực nhanh
-    snap_rtsp = cam_info.get("sub_rtsp_url") or cam_info["rtsp_url"]
+    snap_rtsp, _ = cam_source_urls(cam_id, cam_info)
     try:
         subprocess.Popen([
             "ffmpeg", "-hide_banner", "-loglevel", "error",

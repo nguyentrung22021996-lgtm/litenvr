@@ -1,8 +1,17 @@
 FROM python:3.11-slim
 
+ARG TARGETARCH=amd64
+ARG GO2RTC_VERSION=v1.9.14
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     tzdata \
+    curl \
+    && curl -fsSL -o /usr/local/bin/go2rtc \
+       "https://github.com/AlexxIT/go2rtc/releases/download/${GO2RTC_VERSION}/go2rtc_linux_${TARGETARCH}" \
+    && chmod +x /usr/local/bin/go2rtc \
+    && apt-get purge -y curl \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

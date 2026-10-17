@@ -14,6 +14,7 @@ services:
       - NVR_PASS=admin
       - NVR_AUTH=on
       - LIVE_IDLE_STOP_SEC=30
+      - GO2RTC=auto
     volumes:
       - type: bind
         source: /DATA/AppData/litenvr
@@ -41,6 +42,10 @@ services:
           description:
             en_us: Seconds without viewers before the live branch pauses (saves CPU)
             vi_vn: Số giây không có người xem thì tạm dừng luồng live (tiết kiệm CPU)
+        - container: GO2RTC
+          description:
+            en_us: "auto (default), on or off - internal go2rtc restream shares one camera session"
+            vi_vn: "auto (mặc định), on hoặc off - restream go2rtc nội bộ dùng chung 1 phiên camera"
       ports:
         - container: "8080"
           description:
