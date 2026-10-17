@@ -12,18 +12,52 @@
     button.active { background: #e53935; border-color: #e53935; }
     button.primary { background: #1976d2; border-color: #1976d2; }
     button.warn { background: #ef6c00; border-color: #ef6c00; }
-    .disk-badge { margin-left: auto; font-size: 12px; color: #ddd; background: #252525; padding: 6px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #444; }
+    .topbar { display: flex; gap: 10px; padding: 10px 14px; background: #181818; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #2c2c2c; position: sticky; top: 0; z-index: 20; }
+    .brand { font-weight: 700; font-size: 15px; letter-spacing: .3px; margin-right: 4px; }
+    .brand span { color: #e53935; }
+    .topbar .spacer { margin-left: auto; }
+    button { transition: background .15s, border-color .15s; }
+    button:hover { background: #3a3a3a; }
+    button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid #64b5f6; outline-offset: 2px; }
+    .disk-badge { font-size: 12px; color: #ddd; background: #252525; padding: 6px 10px; border-radius: 6px; cursor: pointer; border: 1px solid #444; }
+
+    .stats-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; max-width: 1000px; margin: 12px auto 0; padding: 0 12px; }
+    .stat-card { background: #1b1b1b; border: 1px solid #2e2e2e; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .stat-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: #9e9e9e; text-transform: uppercase; letter-spacing: .4px; }
+    .stat-value { font-size: 20px; font-weight: 600; }
+    .stat-sub { font-size: 11px; color: #888; }
+    .stat-card canvas { width: 100%; height: 34px; display: block; }
+    .bar { height: 5px; background: #2a2a2a; border-radius: 3px; overflow: hidden; margin-top: 2px; }
+    .bar > i { display: block; height: 100%; width: 0; background: #4caf50; transition: width .3s; }
+    .bar.warn > i { background: #ff9800; }
+    .bar.crit > i { background: #e53935; }
+
+    .cam-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; max-width: 1000px; margin: 12px auto 0; padding: 0 12px; }
+    .cam-tile { background: #1b1b1b; border: 2px solid #2e2e2e; border-radius: 8px; overflow: hidden; cursor: pointer; position: relative; transition: border-color .15s; }
+    .cam-tile:hover { border-color: #555; }
+    .cam-tile.active { border-color: #e53935; }
+    .cam-tile img { width: 100%; height: 100px; object-fit: cover; background: #000; display: block; }
+    .cam-tile .tile-noimg { width: 100%; height: 100px; background: #111; color: #555; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+    .cam-tile .tile-info { padding: 6px 8px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+    .cam-tile .dot { width: 8px; height: 8px; border-radius: 50%; background: #e53935; flex: 0 0 auto; }
+    .cam-tile .dot.on { background: #4caf50; }
+
     .player-box { width: 100%; max-width: 1000px; margin: 12px auto; background: #000; aspect-ratio: 16/9; position: relative; border-radius: 8px; overflow: hidden; }
     video { width: 100%; height: 100%; }
     .timeline-container { max-width: 1000px; margin: 15px auto; padding: 0 12px; }
-    .timeline-bar { height: 46px; background: #252525; position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 1px solid #444; touch-action: none; user-select: none; }
-    .seg-layer, .evt-layer { position: absolute; inset: 0; pointer-events: none; }
+    .timeline-bar { height: 26px; background: #252525; position: relative; border-radius: 4px; overflow: visible; cursor: pointer; border: 1px solid #444; touch-action: none; user-select: none; }
+    .timeline-bar .track { position: absolute; inset: 0; overflow: hidden; border-radius: 4px; }
+    .seg-layer, .evt-layer, .motion-layer { position: absolute; inset: 0; pointer-events: none; }
     .seg-mark { position: absolute; top: 0; bottom: 0; width: 0.25%; background: #2e7d32; }
-    .evt-mark { position: absolute; top: 0; bottom: 0; width: 3px; background: #ff1744; z-index: 2; }
-    .cursor-line { position: absolute; top: 0; bottom: 0; width: 2px; background: #ffeb3b; z-index: 3; pointer-events: none; }
-    .cursor-handle { position: absolute; top: -3px; width: 16px; height: 52px; margin-left: -8px; background: #ffeb3b; border-radius: 4px; z-index: 5; cursor: ew-resize; box-shadow: 0 0 6px rgba(255,235,59,.7); touch-action: none; }
-    .time-tip { position: absolute; top: -26px; transform: translateX(-50%); background: #000; color: #ffeb3b; font-size: 11px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; pointer-events: none; z-index: 6; display: none; }
+    .motion-mark { position: absolute; top: 0; bottom: 0; background: rgba(255,152,0,.45); border-left: 1px solid #ffb300; }
+    .evt-mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff1744; z-index: 2; }
+    .cursor-line { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #ffeb3b; z-index: 3; pointer-events: none; }
+    .cursor-handle { position: absolute; top: -6px; width: 8px; height: 38px; margin-left: -4px; background: #ffeb3b; border-radius: 4px; z-index: 5; cursor: ew-resize; touch-action: none; }
+    .cursor-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: rgba(0,0,0,.5); transform: translateX(-50%); }
+    .time-tip { position: absolute; top: -28px; transform: translateX(-50%); background: #000; color: #ffeb3b; font-size: 11px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; pointer-events: none; z-index: 6; display: none; }
     .timeline-bar:hover .time-tip, .timeline-bar.scrubbing .time-tip { display: block; }
+    .timeline-legend { display: flex; gap: 14px; font-size: 11px; color: #999; margin-top: 6px; flex-wrap: wrap; }
+    .timeline-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
     .events-list { max-width: 1000px; margin: 20px auto; padding: 0 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
     .event-card { background: #1e1e1e; border-radius: 8px; padding: 8px; cursor: pointer; border: 1px solid #333; }
     .event-card img { width: 100%; height: 115px; object-fit: cover; border-radius: 4px; background: #000; }
@@ -38,18 +72,40 @@
   </style>
 </head>
 <body>
-  <header>
-    <select id="camSelect"></select>
-    <input type="date" id="dateInput">
+  <header class="topbar">
+    <div class="brand">Lite<span>NVR</span> Pro</div>
+    <select id="camSelect" aria-label="Chọn camera"></select>
+    <input type="date" id="dateInput" aria-label="Chọn ngày">
     <button id="btnLive" class="active" onclick="playLive()">Trực tiếp (Live)</button>
     <button class="warn" onclick="testMotion()">⚡ Test Motion</button>
     <button onclick="showDiagnostics()">🔍 Chẩn đoán</button>
     <button class="primary" onclick="openCamModal()">+ Quản lý Camera</button>
-    <button onclick="openStorageModal()">⚙️ Cài đặt Lưu trữ</button>
+    <button onclick="openStorageModal()">⚙️ Lưu trữ</button>
     <button onclick="openHassModal()">🛰️ Home Assistant</button>
+    <div class="spacer"></div>
     <span id="statusText" style="font-size:13px;color:#ccc;">Đang khởi tạo...</span>
-    <div class="disk-badge" id="diskBadge" onclick="openStorageModal()">HDD: --</div>
   </header>
+
+  <section class="stats-bar" id="statsBar">
+    <div class="stat-card">
+      <div class="stat-head"><span>CPU</span><span id="cpuVal">--</span></div>
+      <canvas id="cpuChart" width="240" height="34" aria-label="Biểu đồ CPU"></canvas>
+      <div class="stat-sub" id="cpuSub">toàn hệ thống</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-head"><span>RAM</span><span id="ramVal">--</span></div>
+      <canvas id="ramChart" width="240" height="34" aria-label="Biểu đồ RAM"></canvas>
+      <div class="bar" id="ramBar"><i></i></div>
+      <div class="stat-sub" id="ramSub">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-head"><span>Bộ nhớ</span><span id="diskVal">--</span></div>
+      <div class="bar" id="diskBar"><i></i></div>
+      <div class="stat-sub" id="diskSub">--</div>
+    </div>
+  </section>
+
+  <section class="cam-strip" id="camStrip"></section>
 
   <div class="player-box">
     <video id="videoPlayer" controls autoplay muted playsinline></video>
@@ -60,11 +116,19 @@
       <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
     </div>
     <div class="timeline-bar" id="timelineBar" title="Kéo hoặc bấm để tua">
-      <div class="seg-layer" id="segLayer"></div>
-      <div class="evt-layer" id="evtLayer"></div>
+      <div class="track">
+        <div class="seg-layer" id="segLayer"></div>
+        <div class="motion-layer" id="motionLayer"></div>
+        <div class="evt-layer" id="evtLayer"></div>
+      </div>
       <div class="cursor-line" id="cursorLine" style="left:0%"></div>
       <div class="cursor-handle" id="cursorHandle" style="left:0%"></div>
       <div class="time-tip" id="timeTip" style="left:0%">00:00:00</div>
+    </div>
+    <div class="timeline-legend">
+      <span><i style="background:#2e7d32"></i>Bản ghi 24/7</span>
+      <span><i style="background:rgba(255,152,0,.6)"></i>Có chuyển động</span>
+      <span><i style="background:#ff1744"></i>Sự kiện</span>
     </div>
     <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-top:6px;">
       <span id="scrubTime">Bản ghi: 00:00:00</span>
@@ -255,8 +319,84 @@
     async function loadSystem() {
       const res = await fetch("/api/system");
       sysInfo = await res.json();
-      document.getElementById("diskBadge").textContent =
-        `NVR: ${sysInfo.nvr_used_gb}GB | HDD: ${sysInfo.disk_used_gb}/${sysInfo.disk_total_gb}GB (${sysInfo.disk_percent}%)`;
+    }
+
+    // ---- Giám sát tài nguyên + biểu đồ ----
+    let statsHist = { cpu: [], mem: [] };
+    function drawSpark(canvas, data, color) {
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      if (!data.length) return;
+      const n = Math.min(data.length, 120);
+      const pts = data.slice(-n);
+      const step = w / Math.max(1, n - 1);
+      const pad = 4;
+      ctx.beginPath();
+      pts.forEach((v, i) => {
+        const x = i * step;
+        const y = (h - pad) - (Math.max(0, Math.min(100, v)) / 100) * (h - pad * 2);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+      ctx.fillStyle = color.replace("rgb", "rgba").replace(")", ",0.15)");
+      ctx.fill();
+    }
+    function setBar(id, pct) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.firstElementChild.style.width = Math.max(0, Math.min(100, pct)) + "%";
+      el.className = "bar" + (pct >= 90 ? " crit" : pct >= 75 ? " warn" : "");
+    }
+    async function loadStats() {
+      try {
+        const [cur, hist] = await Promise.all([
+          fetch("/api/stats").then(r => r.json()),
+          fetch("/api/stats/history").then(r => r.json())
+        ]);
+        statsHist.cpu = hist.samples.map(s => s.cpu_percent);
+        statsHist.mem = hist.samples.map(s => s.mem_percent);
+        document.getElementById("cpuVal").textContent = cur.cpu_percent.toFixed(0) + "%";
+        const camCpu = Object.entries(cur.cam_cpu || {});
+        document.getElementById("cpuSub").textContent =
+          camCpu.length ? camCpu.map(([c, v]) => `${c} ${v}%`).join(" · ") : "toàn hệ thống";
+        document.getElementById("ramVal").textContent = cur.mem_percent.toFixed(0) + "%";
+        document.getElementById("ramSub").textContent =
+          `${(cur.mem_used_mb / 1024).toFixed(1)} / ${(cur.mem_total_mb / 1024).toFixed(1)} GB`;
+        setBar("ramBar", cur.mem_percent);
+        document.getElementById("diskVal").textContent = cur.disk_free_gb + " GB trống";
+        document.getElementById("diskSub").textContent =
+          `${cur.disk_used_gb} / ${cur.disk_total_gb} GB (${cur.disk_percent}%)`;
+        setBar("diskBar", cur.disk_percent);
+        drawSpark(document.getElementById("cpuChart"), statsHist.cpu, "rgb(100,181,246)");
+        drawSpark(document.getElementById("ramChart"), statsHist.mem, "rgb(129,199,132)");
+      } catch (e) {}
+    }
+
+    function renderCamStrip(stats) {
+      const strip = document.getElementById("camStrip");
+      const status = (stats && stats) || {};
+      strip.innerHTML = "";
+      for (const [id, info] of Object.entries(cameras)) {
+        const tile = document.createElement("div");
+        tile.className = "cam-tile" + (id === currentCam ? " active" : "");
+        tile.tabIndex = 0;
+        tile.setAttribute("role", "button");
+        tile.setAttribute("aria-label", "Chọn camera " + info.name);
+        const modeTxt = info.record_mode === "motion" ? "Motion" : (info.record_mode === "off" ? "Live" : "24/7");
+        const snap = info._snapshot
+          ? `<img src="${info._snapshot}" alt="">`
+          : `<div class="tile-noimg">Không có ảnh</div>`;
+        tile.innerHTML = `${snap}
+          <div class="tile-info"><span>${info.name}</span><span class="badge ${info.record_mode === 'motion' ? 'motion' : (info.record_mode === 'off' ? 'off' : '')}">${modeTxt}</span></div>`;
+        const pick = () => { currentCam = id; document.getElementById("camSelect").value = id; renderCamStrip(stats); loadTimeline(); playLive(); };
+        tile.onclick = pick;
+        tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+        strip.appendChild(tile);
+      }
     }
 
     async function init() {
@@ -277,7 +417,7 @@
         return;
       }
       currentCam = sel.value;
-      sel.onchange = () => { currentCam = sel.value; loadTimeline(); playLive(); };
+      sel.onchange = () => { currentCam = sel.value; renderCamStrip(); loadTimeline(); playLive(); };
       dateInput.onchange = () => loadTimeline();
       initScrubber();
       video.addEventListener("timeupdate", () => {
@@ -286,8 +426,20 @@
         setCursor(sec, false);
         document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(sec);
       });
+      await refreshSnapshots();
+      renderCamStrip();
+      await loadStats();
+      setInterval(loadStats, 5000);
+      setInterval(refreshSnapshots, 30000);
       await loadTimeline();
       playLive();
+    }
+
+    async function refreshSnapshots() {
+      try {
+        const snaps = await fetch("/api/latest_snapshots").then(r => r.json());
+        for (const [id, info] of Object.entries(cameras)) info._snapshot = snaps[id] || "";
+      } catch (e) {}
     }
 
     function applyBrandPreset() {
@@ -606,8 +758,10 @@
       segments = data.segments;
       const segLayer = document.getElementById("segLayer");
       const evtLayer = document.getElementById("evtLayer");
+      const motionLayer = document.getElementById("motionLayer");
       segLayer.innerHTML = "";
       evtLayer.innerHTML = "";
+      motionLayer.innerHTML = "";
 
       segments.forEach(s => {
         const el = document.createElement("div");
@@ -616,6 +770,26 @@
         el.title = "Có bản ghi: " + s.time;
         segLayer.appendChild(el);
       });
+
+      // Tô màu vùng có chuyển động trên bản ghi liên tục (gộp các khoảng trùng nhau)
+      const post = data.post_motion_sec || 60;
+      const spans = data.events
+        .map(e => [e.sec_of_day, Math.min(86400, e.sec_of_day + post)])
+        .sort((a, b) => a[0] - b[0]);
+      const merged = [];
+      for (const [s, e] of spans) {
+        const last = merged[merged.length - 1];
+        if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+        else merged.push([s, e]);
+      }
+      for (const [s, e] of merged) {
+        const band = document.createElement("div");
+        band.className = "motion-mark";
+        band.style.left = (s / 86400 * 100) + "%";
+        band.style.width = Math.max(0.15, ((e - s) / 86400) * 100) + "%";
+        band.title = `Chuyển động ${fmtHMS(s)} – ${fmtHMS(e)}`;
+        motionLayer.appendChild(band);
+      }
 
       const list = document.getElementById("eventsList");
       list.innerHTML = "";

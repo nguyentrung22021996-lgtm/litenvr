@@ -38,6 +38,96 @@ BUFFER_DIR = "/dev/shm/buffer"
 for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR]:
     os.makedirs(d, exist_ok=True)
 
+# ---- Giám sát tài nguyên (CPU / RAM / ổ đĩa) cho dashboard ----
+_cpu_prev = {"idle": 0, "total": 0, "init": False}
+stats_history: deque = deque(maxlen=360)   # ~30 phút nếu lấy mẫu mỗi 5s
+
+def read_cpu_percent() -> float:
+    try:
+        with open("/proc/stat", "r") as f:
+            parts = [int(x) for x in f.readline().split()[1:]]
+    except Exception:
+        return 0.0
+    idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
+    total = sum(parts)
+    if not _cpu_prev["init"]:
+        _cpu_prev.update(idle=idle, total=total, init=True)
+        return 0.0
+    didle = idle - _cpu_prev["idle"]
+    dtotal = total - _cpu_prev["total"]
+    _cpu_prev.update(idle=idle, total=total)
+    return round(100.0 * (1 - didle / dtotal), 1) if dtotal > 0 else 0.0
+
+def read_mem() -> dict:
+    info = {}
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                k, v = line.split(":", 1)
+                info[k] = int(v.split()[0])
+    except Exception:
+        return {"mem_total_mb": 0.0, "mem_used_mb": 0.0, "mem_percent": 0.0}
+    total = info.get("MemTotal", 0)
+    avail = info.get("MemAvailable", info.get("MemFree", 0))
+    used = max(0, total - avail)
+    return {
+        "mem_total_mb": round(total / 1024, 1),
+        "mem_used_mb": round(used / 1024, 1),
+        "mem_percent": round(used / total * 100, 1) if total else 0.0,
+    }
+
+def read_disk() -> dict:
+    try:
+        s = os.statvfs(STORAGE_DIR)
+        total = s.f_blocks * s.f_frsize
+        free = s.f_bavail * s.f_frsize
+        used = total - free
+        return {
+            "disk_total_gb": round(total / 1e9, 2),
+            "disk_used_gb": round(used / 1e9, 2),
+            "disk_free_gb": round(free / 1e9, 2),
+            "disk_percent": round(used / total * 100, 1) if total else 0.0,
+        }
+    except Exception:
+        return {"disk_total_gb": 0.0, "disk_used_gb": 0.0, "disk_free_gb": 0.0, "disk_percent": 0.0}
+
+_ff_cpu_prev: Dict[str, tuple] = {}
+def read_cam_cpu() -> Dict[str, float]:
+    """%CPU của tiến trình ffmpeg từng camera (đọc /proc/<pid>/stat)."""
+    out: Dict[str, float] = {}
+    try:
+        ticks = os.sysconf("SC_CLK_TCK")
+    except Exception:
+        ticks = 100
+    now = time.time()
+    for cam_id, proc in list(ffmpeg_processes.items()):
+        try:
+            with open(f"/proc/{proc.pid}/stat", "r") as f:
+                parts = f.read().split()
+            cpu_ticks = int(parts[13]) + int(parts[14])
+        except Exception:
+            continue
+        prev = _ff_cpu_prev.get(cam_id)
+        _ff_cpu_prev[cam_id] = (now, cpu_ticks)
+        if prev:
+            dt = now - prev[0]
+            dcpu = (cpu_ticks - prev[1]) / ticks
+            out[cam_id] = round(100.0 * dcpu / dt, 1) if dt > 0 else 0.0
+    return out
+
+def collect_stats() -> dict:
+    s = {"t": int(time.time()), "cpu_percent": read_cpu_percent(), "cam_cpu": read_cam_cpu()}
+    s.update(read_mem())
+    s.update(read_disk())
+    return s
+
+def stats_sampler():
+    # Lấy mẫu đầu để có baseline CPU (lần đầu luôn trả 0)
+    collect_stats()
+    while True:
+        stats_history.append(collect_stats())
+        time.sleep(5)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     for cam_id in list(CONFIG.get("cameras", {})):
@@ -45,6 +135,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=motion_buffer_manager, daemon=True).start()
     threading.Thread(target=cleanup_worker, daemon=True).start()
     threading.Thread(target=hass_motion_listener, daemon=True).start()
+    threading.Thread(target=stats_sampler, daemon=True).start()
     yield
 
 app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
@@ -509,6 +600,30 @@ def manual_clean():
     deleted = run_cleanup_now()
     return {"status": "ok", "deleted_files": deleted}
 
+@app.get("/api/stats")
+def api_stats():
+    return collect_stats()
+
+@app.get("/api/stats/history")
+def api_stats_history():
+    return {"samples": list(stats_history)}
+
+@app.get("/api/latest_snapshots")
+def api_latest_snapshots():
+    """Ảnh snapshot mới nhất của mỗi camera (làm ảnh đại diện cho lưới camera)."""
+    out: Dict[str, str] = {}
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT cam_id, snapshot FROM events WHERE snapshot IS NOT NULL ORDER BY timestamp ASC")
+        for cam_id, snap in c.fetchall():
+            if snap:
+                out[cam_id] = f"/snapshots/{snap}"
+        conn.close()
+    except Exception:
+        pass
+    return out
+
 @app.get("/api/cameras")
 def get_cameras():
     return CONFIG.get("cameras", {})
@@ -866,7 +981,10 @@ def get_timeline(cam_id: str, date: str):
     )
     events = []
     for row in c.fetchall():
-        h, m, s = map(int, row[2].split(":"))
+        try:
+            h, m, s = map(int, row[2].replace("-", ":").split(":"))
+        except Exception:
+            continue
         events.append({
             "id": row[0],
             "timestamp": row[1],
@@ -876,7 +994,11 @@ def get_timeline(cam_id: str, date: str):
             "snapshot": f"/snapshots/{row[4]}"
         })
     conn.close()
-    return {"segments": segments, "events": events}
+    return {
+        "segments": segments,
+        "events": events,
+        "post_motion_sec": CONFIG.get("post_motion_sec", 60),
+    }
 
 @app.get("/api/status/{cam_id}")
 def get_cam_status(cam_id: str):
