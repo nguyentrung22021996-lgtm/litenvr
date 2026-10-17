@@ -236,8 +236,11 @@ cam_status: Dict[str, dict] = {}
 # Cache codec đã dò được: cam_id -> (url_key, codec_name)
 codec_cache: Dict[str, tuple] = {}
 
+H264_BROWSER_SAFE_PIXFMT = {"yuv420p", "yuvj420p"}
+
 def detect_video_codec(cam_id: str, cam_info: dict):
-    """Dò codec video thật của luồng RTSP bằng ffprobe (chỉ cache khi thành công)."""
+    """Dò codec + profile + pix_fmt của luồng RTSP (chỉ cache khi thành công).
+    Trả về dict {'codec','profile','pix_fmt'} hoặc {} nếu không dò được."""
     url = cam_info.get("rtsp_url")
     key = (url, cam_info.get("sub_rtsp_url"))
     cached = codec_cache.get(cam_id)
@@ -248,28 +251,44 @@ def detect_video_codec(cam_id: str, cam_info: dict):
         "-rtsp_transport", cam_info.get("rtsp_transport", "tcp"),
         "-timeout", "8000000",
         "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name",
-        "-of", "default=nw=1:nk=1",
+        "-show_entries", "stream=codec_name,profile,pix_fmt",
+        "-of", "default=nw=1",
         url,
     ]
-    codec = ""
+    info = {}
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout
-        codec = (out or "").strip().splitlines()[0].strip().lower() if out.strip() else ""
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout or ""
+        for line in out.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                info[k.strip()] = v.strip().lower()
     except Exception:
-        codec = ""
-    if codec:
-        codec_cache[cam_id] = (key, codec)
-    return codec
+        info = {}
+    if info.get("codec_name"):
+        codec_cache[cam_id] = (key, info)
+        return info
+    return {}
+
+def _is_browser_safe_h264(codec: str, pix_fmt: str) -> bool:
+    """H.264 mà Chrome/Edge/Firefox giải mã được: profile thường + màu 8-bit 4:2:0.
+    Các biến thể 4:2:2/4:4:4/10-bit (một số camera Hanet dùng) gây hình rác ('vỡ')."""
+    if codec not in ("h264", "avc1", "avc"):
+        return False
+    if pix_fmt and pix_fmt not in H264_BROWSER_SAFE_PIXFMT:
+        return False
+    return True
 
 def resolve_video_codec(cam_id: str, cam_info: dict):
     """Trả về 'copy' hoặc 'h264'. Chế độ 'auto' dò codec thật của camera."""
     requested = cam_info.get("video_codec", "auto")
     if requested in ("copy", "h264"):
         return requested
-    codec = detect_video_codec(cam_id, cam_info)
+    info = detect_video_codec(cam_id, cam_info)
+    codec = info.get("codec_name", "")
     st = cam_status.setdefault(cam_id, {})
     st["detected_codec"] = codec
+    st["detected_profile"] = info.get("profile", "")
+    st["detected_pix_fmt"] = info.get("pix_fmt", "")
     if not codec:
         # Không dò được (camera bận/đang bị chiếm session, mạng chậm...).
         # Chọn H.264 để LUÔN phát được; nếu camera vốn H.264 thì ffprobe
@@ -277,7 +296,8 @@ def resolve_video_codec(cam_id: str, cam_info: dict):
         st["detect_failed"] = True
         return "h264"
     st["detect_failed"] = False
-    return "copy" if codec in ("h264", "avc1", "avc", "h264_vaapi") else "h264"
+    # HEVC, hoặc H.264 ở profile/màu mà trình duyệt không giải mã -> chuyển mã.
+    return "copy" if _is_browser_safe_h264(codec, info.get("pix_fmt", "")) else "h264"
 
 def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None):
     main_url = cam_info["rtsp_url"]
@@ -309,6 +329,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-fflags", "+genpts+igndts+discardcorrupt",
         "-rtsp_transport", transport,
+        "-rtsp_flags", "prefer_tcp",
         "-timeout", "10000000",
         "-i", main_url
     ]
@@ -319,6 +340,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
         cmd.extend([
             "-fflags", "+genpts+igndts+discardcorrupt",
             "-rtsp_transport", transport,
+            "-rtsp_flags", "prefer_tcp",
             "-timeout", "10000000",
             "-i", sub_url
         ])
@@ -1037,6 +1059,8 @@ def get_cam_status(cam_id: str):
         "running": bool(st.get("running")),
         "hls_ready": hls_ready,
         "detected_codec": st.get("detected_codec", ""),
+        "detected_profile": st.get("detected_profile", ""),
+        "detected_pix_fmt": st.get("detected_pix_fmt", ""),
         "detect_failed": bool(st.get("detect_failed", False)),
         "rate_limited": bool(st.get("rate_limited", False)),
         "last_error": st.get("last_error", ""),

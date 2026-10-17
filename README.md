@@ -37,6 +37,8 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 
 **Thanh thời gian:** kéo hoặc bấm trên thanh để tua; rê chuột để xem mốc giờ; vạch vàng hiển thị vị trí đang phát.
 
+**Hình bị "vỡ"/rác khi xem qua go2rtc/restream:** thường do luồng H.264 ở profile/màu mà trình duyệt không giải mã (High 4:2:2, 4:4:4, 10-bit). LiteNVR tự dò `profile` + `pix_fmt`; nếu không phải H.264 8-bit 4:2:0 (`yuv420p`/`yuvj420p`) sẽ tự chuyển mã sang H.264 chuẩn. Có thể ép thủ công bằng **Codec video = Luôn chuyển sang H.264**. Ngoài ra LiteNVR ưu tiên TCP (`prefer_tcp`) để tránh mất gói.
+
 ## Dashboard giám sát
 - Thẻ **CPU / RAM / Bộ nhớ** cập nhật mỗi 5 giây kèm biểu đồ mini (sparkline) theo thời gian thực.
 - **CPU** hiển thị % toàn hệ thống và %CPU riêng của từng tiến trình ffmpeg (dưới mỗi camera).
