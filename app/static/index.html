@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LiteNVR Pro - ZimaOS Camera NVR</title>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="/static/hls.min.js"></script>
   <style>
     body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #121212; color: #eee; }
     header { display: flex; gap: 8px; padding: 12px 16px; background: #1e1e1e; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #333; }
@@ -355,7 +355,7 @@
       document.getElementById("btnLive").classList.add("active");
       document.getElementById("statusText").textContent = "Đang xem trực tiếp (Live)";
       const hlsUrl = `/hls/${currentCam}/live.m3u8`;
-      if (Hls.isSupported()) {
+      if (typeof Hls !== "undefined" && Hls.isSupported()) {
         if (hls) hls.destroy();
         hls = new Hls();
         hls.loadSource(hlsUrl);

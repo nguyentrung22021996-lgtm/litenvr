@@ -1,18 +1,23 @@
 import os
 import json
 import time
+import base64
 import shutil
 import sqlite3
+import secrets
 import threading
 import subprocess
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="LiteNVR Pro for ZimaOS")
+NVR_USER = os.environ.get("NVR_USER", "admin")
+NVR_PASS = os.environ.get("NVR_PASS", "admin")
+AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
 
 STORAGE_DIR = "/storage"
 CONFIG_PATH = os.path.join(STORAGE_DIR, "config.json")
@@ -24,6 +29,34 @@ BUFFER_DIR = "/dev/shm/buffer"
 
 for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR]:
     os.makedirs(d, exist_ok=True)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    for cam_id in list(CONFIG.get("cameras", {})):
+        start_camera_worker(cam_id)
+    threading.Thread(target=motion_buffer_manager, daemon=True).start()
+    threading.Thread(target=cleanup_worker, daemon=True).start()
+    yield
+
+app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    if not AUTH_ENABLED or request.url.path == "/health":
+        return await call_next(request)
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            user, _, pw = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
+            if secrets.compare_digest(user, NVR_USER) and secrets.compare_digest(pw, NVR_PASS):
+                return await call_next(request)
+        except Exception:
+            pass
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="LiteNVR"'},
+        content="Unauthorized",
+    )
 
 DEFAULT_CONFIG = {
     "retention_days": 7,
@@ -74,7 +107,8 @@ def init_db():
 init_db()
 
 ffmpeg_processes: Dict[str, subprocess.Popen] = {}
-worker_flags: Dict[str, bool] = {}
+worker_tokens: Dict[str, threading.Event] = {}
+worker_lock = threading.Lock()
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
 motion_active_until: Dict[str, float] = {}
 
@@ -95,7 +129,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict):
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-fflags", "+genpts+igndts+discardcorrupt",
         "-rtsp_transport", transport,
-        "-stimeout", "10000000",
+        "-timeout", "10000000",
         "-i", main_url
     ]
 
@@ -105,7 +139,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict):
         cmd.extend([
             "-fflags", "+genpts+igndts+discardcorrupt",
             "-rtsp_transport", transport,
-            "-stimeout", "10000000",
+            "-timeout", "10000000",
             "-i", sub_url
         ])
 
@@ -144,21 +178,48 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict):
     return cmd
 
 def start_camera_worker(cam_id: str):
-    worker_flags[cam_id] = True
-    while worker_flags.get(cam_id, False):
+    with worker_lock:
+        old = worker_tokens.get(cam_id)
+        if old:
+            old.set()
+        token = threading.Event()
+        worker_tokens[cam_id] = token
+    threading.Thread(target=_camera_worker_loop, args=(cam_id, token), daemon=True).start()
+
+def _camera_worker_loop(cam_id: str, token: threading.Event):
+    backoff = 5
+    while not token.is_set():
         cam_info = CONFIG.get("cameras", {}).get(cam_id)
         if not cam_info:
             break
         cmd = build_ffmpeg_cmd(cam_id, cam_info)
-        proc = subprocess.Popen(cmd)
+        started = time.time()
+        try:
+            proc = subprocess.Popen(cmd)
+        except Exception as e:
+            print(f"[LiteNVR] ffmpeg lỗi khởi động cho {cam_id}: {e}", flush=True)
+            if token.wait(backoff):
+                break
+            backoff = min(backoff * 2, 60)
+            continue
         ffmpeg_processes[cam_id] = proc
         proc.wait()
-        if worker_flags.get(cam_id, False):
-            time.sleep(5)
+        if ffmpeg_processes.get(cam_id) is proc:
+            ffmpeg_processes.pop(cam_id, None)
+        if token.is_set():
+            break
+        # Backoff: cam offline liên tục thì giãn dần, tránh spam ffmpeg
+        ran = time.time() - started
+        backoff = 5 if ran > 10 else min(backoff * 2, 60)
+        if token.wait(backoff):
+            break
 
 def stop_camera_worker(cam_id: str):
-    worker_flags[cam_id] = False
-    proc = ffmpeg_processes.pop(cam_id, None)
+    with worker_lock:
+        token = worker_tokens.pop(cam_id, None)
+    if token:
+        token.set()
+    proc = ffmpeg_processes.get(cam_id)
     if proc and proc.poll() is None:
         proc.terminate()
 
@@ -174,10 +235,13 @@ def motion_buffer_manager():
             if not os.path.exists(cam_buf_dir):
                 continue
 
-            files = sorted([
-                os.path.join(cam_buf_dir, f)
-                for f in os.listdir(cam_buf_dir) if f.endswith(".mp4")
-            ])
+            files = sorted(
+                [
+                    os.path.join(cam_buf_dir, f)
+                    for f in os.listdir(cam_buf_dir) if f.endswith(".mp4")
+                ],
+                key=os.path.getmtime,
+            )
             # Bỏ qua file cuối cùng vì FFmpeg đang ghi dở
             completed_files = files[:-1] if len(files) > 1 else []
             is_motion_active = now <= motion_active_until.get(cam_id, 0)
@@ -197,8 +261,12 @@ def motion_buffer_manager():
                             pass
         time.sleep(2)
 
-# Hàm tính tổng dung lượng thư mục lưu trữ (Bytes)
-def get_storage_dir_size():
+# Hàm tính tổng dung lượng thư mục lưu trữ (Bytes), có cache để tránh walk ổ cứng liên tục
+_size_cache = {"t": 0.0, "v": 0}
+def get_storage_dir_size(force: bool = False):
+    now = time.time()
+    if not force and now - _size_cache["t"] < 60:
+        return _size_cache["v"]
     total_size = 0
     for root, _, files in os.walk(STORAGE_DIR):
         for f in files:
@@ -207,6 +275,8 @@ def get_storage_dir_size():
                 total_size += os.path.getsize(fp)
             except Exception:
                 pass
+    _size_cache["t"] = now
+    _size_cache["v"] = total_size
     return total_size
 
 # Bộ dọn dẹp ổ cứng thông minh (Theo số ngày + Giới hạn GB + Giới hạn % ổ cứng)
@@ -232,9 +302,9 @@ def run_cleanup_now():
 
     # 2. Xóa cuốn chiếu file cũ nhất nếu vượt quá giới hạn GB hoặc % ổ cứng
     all_media = []
-    for root, _, files in os.walk(RECORDINGS_DIR):
-        for file in files:
-            if file.endswith(".mp4"):
+    for folder in [RECORDINGS_DIR, SNAPSHOTS_DIR]:
+        for root, _, files in os.walk(folder):
+            for file in files:
                 fp = os.path.join(root, file)
                 try:
                     all_media.append((os.path.getmtime(fp), os.path.getsize(fp), fp))
@@ -242,24 +312,25 @@ def run_cleanup_now():
                     pass
 
     all_media.sort(key=lambda x: x[0])  # Sắp xếp từ cũ nhất đến mới nhất
-    current_dir_bytes = get_storage_dir_size()
+    media_bytes = sum(size for _, size, _ in all_media)
     max_bytes = max_storage_gb * (1024 ** 3) if max_storage_gb > 0 else 0
 
     for mtime, fsize, fp in all_media:
         total, used, _ = shutil.disk_usage(STORAGE_DIR)
         disk_pct = (used / total) * 100 if total else 0
-        over_gb = (max_bytes > 0 and current_dir_bytes > max_bytes)
+        over_gb = (max_bytes > 0 and media_bytes > max_bytes)
         over_pct = (max_disk_percent > 0 and disk_pct > max_disk_percent)
 
         if not (over_gb or over_pct):
             break
         try:
             os.remove(fp)
-            current_dir_bytes -= fsize
+            media_bytes -= fsize
             deleted_count += 1
         except Exception:
             pass
 
+    _size_cache["t"] = 0.0
     return deleted_count
 
 def cleanup_worker():
@@ -269,13 +340,6 @@ def cleanup_worker():
         except Exception:
             pass
         time.sleep(300)  # Kiểm tra dọn ổ cứng mỗi 5 phút
-
-@app.on_event("startup")
-def on_startup():
-    for cam_id in CONFIG.get("cameras", {}):
-        threading.Thread(target=start_camera_worker, args=(cam_id,), daemon=True).start()
-    threading.Thread(target=motion_buffer_manager, daemon=True).start()
-    threading.Thread(target=cleanup_worker, daemon=True).start()
 
 class CameraItem(BaseModel):
     cam_id: str
@@ -337,8 +401,7 @@ def add_or_update_camera(item: CameraItem):
     cam_id = item.cam_id.strip()
     if not cam_id:
         raise HTTPException(status_code=400, detail="Mã camera không hợp lệ")
-    if cam_id in ffmpeg_processes:
-        stop_camera_worker(cam_id)
+    stop_camera_worker(cam_id)
     CONFIG.setdefault("cameras", {})[cam_id] = {
         "name": item.name,
         "brand": item.brand,
@@ -349,7 +412,7 @@ def add_or_update_camera(item: CameraItem):
         "record_mode": item.record_mode
     }
     save_config(CONFIG)
-    threading.Thread(target=start_camera_worker, args=(cam_id,), daemon=True).start()
+    start_camera_worker(cam_id)
     return {"status": "ok", "cameras": CONFIG["cameras"]}
 
 @app.delete("/api/cameras/{cam_id}")
@@ -380,11 +443,14 @@ def trigger_motion(payload: MotionPayload):
     # Ưu tiên chụp Snapshot từ luồng phụ để lấy ảnh cực nhanh
     snap_rtsp = cam_info.get("sub_rtsp_url") or cam_info["rtsp_url"]
     transport = cam_info.get("rtsp_transport", "tcp")
-    subprocess.Popen([
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-rtsp_transport", transport, "-i", snap_rtsp,
-        "-frames:v", "1", "-q:v", "3", snap_path
-    ])
+    try:
+        subprocess.Popen([
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-rtsp_transport", transport, "-i", snap_rtsp,
+            "-frames:v", "1", "-q:v", "3", snap_path
+        ])
+    except Exception as e:
+        print(f"[LiteNVR] Không chụp được snapshot cho {payload.cam_id}: {e}", flush=True)
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -444,6 +510,10 @@ app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOTS_DIR), name="snapshots")
 app.mount("/hls", StaticFiles(directory=HLS_DIR), name="hls")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/")
 def index():

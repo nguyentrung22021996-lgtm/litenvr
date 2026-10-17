@@ -1,7 +1,7 @@
 name: litenvr
 services:
   litenvr:
-    image: ghcr.io/TEN_GITHUB_CUA_BAN/litenvr:latest
+    image: ghcr.io/trankhanhduy2929-beep/litenvr:latest
     container_name: litenvr
     restart: unless-stopped
     ports:
@@ -10,6 +10,9 @@ services:
         protocol: tcp
     environment:
       - TZ=Asia/Ho_Chi_Minh
+      - NVR_USER=admin
+      - NVR_PASS=admin
+      - NVR_AUTH=on
     volumes:
       - type: bind
         source: /DATA/AppData/litenvr
@@ -21,6 +24,18 @@ services:
         - container: TZ
           description:
             en_us: Timezone
+        - container: NVR_USER
+          description:
+            en_us: Web login username
+            vi_vn: Tên đăng nhập web
+        - container: NVR_PASS
+          description:
+            en_us: Web login password (change this!)
+            vi_vn: Mật khẩu đăng nhập web (nên đổi)
+        - container: NVR_AUTH
+          description:
+            en_us: Set "off" to disable login
+            vi_vn: Đặt "off" để tắt đăng nhập
       ports:
         - container: "8080"
           description:
