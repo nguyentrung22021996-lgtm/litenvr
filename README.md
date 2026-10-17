@@ -12,10 +12,18 @@ Web UI được bảo vệ bằng HTTP Basic Auth. Cấu hình qua biến môi t
 Trên Web UI, bấm **🛰️ Home Assistant**:
 1. Nhập **Địa chỉ HA** (VD `http://homeassistant.local:8123`).
 2. Dán **Long-Lived Access Token** (HA → Hồ sơ người dùng → Security → Create Token). Token được lưu trong `config.json` và chỉ dùng ở phía server.
-3. Gán `entity_id` cảm biến chuyển động cho từng camera (VD `binary_sensor.cong_motion`), nhiều entity cách nhau dấu phẩy.
-4. Bấm **Kiểm tra kết nối** rồi **Lưu**.
+3. Bấm **↻ Tải danh sách sensor** để LiteNVR lấy toàn bộ `binary_sensor`/`input_boolean`/`switch`/`device_tracker` từ HA. Trong ô cảm biến có thể **gõ tên hoặc chọn** từ danh sách gợi ý.
+4. Mỗi cảm biến gán kèm **Nhãn sự kiện** (VD `Người quen`, `Người lạ`, hoặc tên người). Nhãn này hiển thị trên timeline/event khi cảm biến đó kích hoạt.
+5. Bấm **Kiểm tra kết nối** rồi **Lưu**.
 
-LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; khi entity chuyển sang trạng thái chuyển động (`on`/`detected`/`motion`) thì kích hoạt ghi hình + snapshot cho camera tương ứng. Tự kết nối lại khi mất mạng.
+LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; khi entity chuyển sang trạng thái chuyển động (`on`/`detected`/`motion`) thì kích hoạt ghi hình + snapshot cho camera tương ứng (chỉ kích hoạt khi đổi trạng thái, không lặp). Tự kết nối lại khi mất mạng.
+
+## Xem Live / Bản ghi bị đen hoặc không phát
+Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chrome/Edge/Firefox) không giải mã được.
+- Vào **+ Quản lý Camera** → sửa camera → **Codec video** → chọn **Chuyển sang H.264** → Lưu.
+- Sau đó cả Live (HLS) và bản ghi `.mp4` đều phát được trên trình duyệt.
+- Camera H.264 thì để **Copy** để giữ CPU thấp nhất.
+
 
 ## Tích hợp Home Assistant (Motion Webhook - không cần token)
 HA chủ động gọi webhook khi phát hiện chuyển động:

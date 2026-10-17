@@ -5,17 +5,22 @@ import base64
 import shutil
 import sqlite3
 import secrets
+import mimetypes
 import threading
 import subprocess
 import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
+
+# Đảm bảo trình duyệt nhận đúng MIME cho HLS (nếu thiếu, live view không phát được)
+mimetypes.add_type("application/vnd.apple.mpegurl", ".m3u8")
+mimetypes.add_type("video/mp2t", ".ts")
 
 NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
@@ -60,6 +65,13 @@ async def basic_auth(request: Request, call_next):
         headers={"WWW-Authenticate": 'Basic realm="LiteNVR"'},
         content="Unauthorized",
     )
+
+@app.middleware("http")
+async def hls_no_cache(request: Request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith("/hls/"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 DEFAULT_CONFIG = {
     "retention_days": 7,
@@ -130,6 +142,14 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict):
     transport = cam_info.get("rtsp_transport", "tcp")
     audio_mode = cam_info.get("audio_mode", "aac")  # aac | none | copy
     record_mode = cam_info.get("record_mode", "continuous")  # continuous | motion | off
+    video_codec = cam_info.get("video_codec", "copy")  # copy | h264 (h264 = tương thích trình duyệt)
+
+    # H.264 transcode cho camera dùng H.265/HEVC (trình duyệt không phát được HEVC)
+    vcodec_args = (
+        ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+         "-g", "50", "-sc_threshold", "0", "-pix_fmt", "yuv420p"]
+        if video_codec == "h264" else ["-c:v", "copy"]
+    )
 
     cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
     cam_buf_dir = os.path.join(BUFFER_DIR, cam_id)
@@ -158,7 +178,13 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict):
     # Nhánh 1: Ghi hình (Continuous lưu thẳng HDD, Motion lưu tạm vào RAM buffer 15s/đoạn)
     if record_mode in ("continuous", "motion"):
         cmd.extend(["-map", "0:v:0"])
-        if audio_mode == "aac":
+        if video_codec == "h264":
+            cmd.extend(vcodec_args)
+            if audio_mode == "none":
+                cmd.extend(["-an"])
+            else:
+                cmd.extend(["-map", "0:a?", "-c:a", "aac"])
+        elif audio_mode == "aac":
             cmd.extend(["-map", "0:a?", "-c:v", "copy", "-c:a", "aac"])
         elif audio_mode == "copy":
             cmd.extend(["-map", "0:a?", "-c:v", "copy", "-c:a", "copy"])
@@ -180,7 +206,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict):
     live_input_idx = "1:v:0" if use_dual_input else "0:v:0"
     cmd.extend([
         "-map", live_input_idx,
-        "-c:v", "copy", "-an",
+        *vcodec_args, "-an",
         "-f", "hls",
         "-hls_time", "2",
         "-hls_list_size", "5",
@@ -362,6 +388,7 @@ class CameraItem(BaseModel):
     rtsp_transport: str = "tcp"
     audio_mode: str = "aac"
     record_mode: str = "continuous"  # continuous | motion | off
+    video_codec: str = "copy"        # copy | h264 (h264 = tương thích trình duyệt)
 
 class StorageSettings(BaseModel):
     retention_days: float
@@ -421,7 +448,8 @@ def add_or_update_camera(item: CameraItem):
         "sub_rtsp_url": (item.sub_rtsp_url or "").strip(),
         "rtsp_transport": item.rtsp_transport,
         "audio_mode": item.audio_mode,
-        "record_mode": item.record_mode
+        "record_mode": item.record_mode,
+        "video_codec": item.video_codec
     }
     save_config(CONFIG)
     start_camera_worker(cam_id)
@@ -487,11 +515,31 @@ def trigger_motion(payload: MotionPayload):
     return result
 
 # Cấu hình liên kết Home Assistant
+class HassRule(BaseModel):
+    entity_id: str
+    label: str = ""            # Nhãn sự kiện, VD: "Người quen", "Người lạ", tên người
+
 class HassSettings(BaseModel):
     enabled: bool = False
     base_url: str = ""
     token: str = ""            # Để trống khi lưu = giữ token cũ
-    entities: Dict[str, List[str]] = {}
+    entities: Dict[str, List[HassRule]] = {}
+
+def _hass_rules(entities: Dict[str, Any]) -> Dict[str, tuple]:
+    """Chuẩn hoá cấu hình entity -> bảng tra entity_id -> (cam_id, label).
+    Hỗ trợ cả định dạng cũ (list chuỗi) và mới (list {entity_id, label})."""
+    watch: Dict[str, tuple] = {}
+    for cam_id, ent_list in (entities or {}).items():
+        for ent in (ent_list or []):
+            if isinstance(ent, dict):
+                eid = (ent.get("entity_id") or "").strip()
+                label = (ent.get("label") or "").strip()
+            else:
+                eid = str(ent).strip()
+                label = ""
+            if eid:
+                watch[eid] = (cam_id, label)
+    return watch
 
 # Trạng thái kết nối HA để hiển thị lên UI
 hass_state = {"connected": False, "last_error": "", "last_event": "", "last_event_at": 0}
@@ -554,13 +602,8 @@ def hass_motion_listener():
             time.sleep(3)
             continue
 
-        # Bảng tra: entity_id -> cam_id
-        watch = {}
-        for cam_id, ent_list in entities.items():
-            for ent in (ent_list or []):
-                ent = (ent or "").strip()
-                if ent:
-                    watch[ent] = cam_id
+        # Bảng tra: entity_id -> (cam_id, label)
+        watch = _hass_rules(entities)
 
         sig = (base_url, token, tuple(sorted(watch.items())))
         if ws is not None and sig != last_sig:
@@ -619,13 +662,18 @@ def hass_motion_listener():
         if event.get("event_type") != "state_changed":
             continue
         data = event.get("data") or {}
-        entity_id = data.get("entity_id")
+        entity_id = str(data.get("entity_id") or "")
         new_state = data.get("new_state") or {}
+        prev_state = (data.get("old_state") or {}).get("state")
         state = str(new_state.get("state", "")).lower()
-        cam_id = watch.get(entity_id)
-        if not cam_id or state not in MOTION_STATES:
+        # Chỉ kích hoạt khi chuyển TỪ trạng thái khác SANG trạng thái phát hiện
+        if state == str(prev_state).lower():
             continue
-        label = f"Chuyển động (HA: {entity_id})"
+        rule = watch.get(entity_id)
+        if not rule or state not in MOTION_STATES:
+            continue
+        cam_id, custom_label = rule
+        label = custom_label or f"Chuyển động (HA: {entity_id})"
         try:
             handle_motion(cam_id, label)
             hass_state["last_event"] = f"{cam_id} <- {entity_id} ({state})"
@@ -637,11 +685,15 @@ def hass_motion_listener():
 @app.get("/api/hass")
 def get_hass_settings():
     ha = CONFIG.get("homeassistant", {}) or {}
+    watch = _hass_rules(ha.get("entities") or {})
+    rules: Dict[str, List[dict]] = {}
+    for eid, (cam_id, label) in watch.items():
+        rules.setdefault(cam_id, []).append({"entity_id": eid, "label": label})
     return {
         "enabled": bool(ha.get("enabled")),
         "base_url": ha.get("base_url", ""),
         "has_token": bool((ha.get("token") or "").strip()),
-        "entities": ha.get("entities", {}) or {},
+        "entities": rules,
         "status": hass_state,
     }
 
@@ -653,11 +705,47 @@ def update_hass_settings(settings: HassSettings):
     if settings.token.strip():
         ha["token"] = settings.token.strip()
     ha["entities"] = {
-        cam_id: [e.strip() for e in (ents or []) if e and e.strip()]
-        for cam_id, ents in (settings.entities or {}).items()
+        cam_id: [
+            {"entity_id": r.entity_id.strip(), "label": r.label.strip()}
+            for r in (rules or []) if r.entity_id.strip()
+        ]
+        for cam_id, rules in (settings.entities or {}).items()
     }
     save_config(CONFIG)
     return {"status": "ok"}
+
+@app.post("/api/hass/entities")
+def hass_available_entities(settings: HassSettings):
+    """Trả danh sách cảm biến/entity từ Home Assistant để UI gợi ý chọn."""
+    base_url = settings.base_url.strip() or (CONFIG.get("homeassistant", {}).get("base_url") or "").strip()
+    token = settings.token.strip() or (CONFIG.get("homeassistant", {}).get("token") or "").strip()
+    if not base_url or not token:
+        raise HTTPException(status_code=400, detail="Chưa cấu hình URL hoặc Token của Home Assistant")
+    url = base_url.rstrip("/") + "/api/states"
+    req = urllib.request.Request(url, headers=_hass_default_headers(token))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            states = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"HA trả về lỗi HTTP {e.code} (sai token?)")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Không lấy được danh sách sensor: {e}")
+
+    out = []
+    for s in states:
+        eid = str(s.get("entity_id", ""))
+        if not (eid.startswith("binary_sensor.") or eid.startswith("input_boolean.")
+                or eid.startswith("switch.") or eid.startswith("device_tracker.")):
+            continue
+        attrs = s.get("attributes") or {}
+        out.append({
+            "entity_id": eid,
+            "name": attrs.get("friendly_name", eid),
+            "device_class": attrs.get("device_class", "") or "",
+            "state": s.get("state", ""),
+        })
+    out.sort(key=lambda x: ((x["device_class"] or "zzz"), x["name"].lower()))
+    return {"entities": out}
 
 @app.post("/api/hass/test")
 def test_hass_connection(settings: HassSettings):

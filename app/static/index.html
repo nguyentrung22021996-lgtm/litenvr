@@ -142,6 +142,14 @@
         </div>
       </div>
 
+      <div class="form-row">
+        <label>Codec video (Chọn H.264 nếu xem Live/Bản ghi trên trình duyệt bị đen/không phát):</label>
+        <select id="inpVideoCodec">
+          <option value="copy">Copy (Nhẹ CPU nhất - dùng khi camera là H.264)</option>
+          <option value="h264">Chuyển sang H.264 (Tương thích mọi trình duyệt)</option>
+        </select>
+      </div>
+
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
         <button onclick="closeCamModal()">Đóng</button>
         <button class="primary" onclick="saveCamera()">Lưu Camera</button>
@@ -198,9 +206,22 @@
         <input type="password" id="hassToken" placeholder="Dán token HA...">
       </div>
       <div id="hassStatus" style="font-size:12px;color:#aaa;margin:6px 0 12px;"></div>
-      <h4 style="margin:4px 0 6px;">Gán cảm biến chuyển động cho từng Camera</h4>
-      <div style="font-size:12px;color:#888;margin-bottom:8px;">Nhập entity_id của binary_sensor (nhiều thì cách nhau dấu phẩy), VD: binary_sensor.cong_motion</div>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <h4 style="margin:4px 0 6px;">Gán cảm biến & nhãn sự kiện cho từng Camera</h4>
+        <button class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor</button>
+      </div>
+      <div style="font-size:12px;color:#888;margin-bottom:8px;">Gõ tên hoặc chọn từ danh sách. Nhãn sự kiện VD: "Người quen", "Người lạ", tên người...</div>
       <div id="hassEntityBox"></div>
+
+      <datalist id="hassSensorList"></datalist>
+      <datalist id="hassLabelList">
+        <option value="Người quen"></option>
+        <option value="Người lạ"></option>
+        <option value="Xe cộ"></option>
+        <option value="Chuyển động"></option>
+        <option value="Động vật"></option>
+      </datalist>
+
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="testHass()">Kiểm tra kết nối</button>
         <div style="display:flex; gap:8px;">
@@ -307,6 +328,7 @@
       document.getElementById("inpSubRtsp").value = c.sub_rtsp_url || "";
       document.getElementById("inpTransport").value = c.rtsp_transport || "tcp";
       document.getElementById("inpAudio").value = c.audio_mode || "aac";
+      document.getElementById("inpVideoCodec").value = c.video_codec || "copy";
     }
 
     async function saveCamera() {
@@ -318,7 +340,8 @@
         rtsp_url: document.getElementById("inpRtsp").value.trim(),
         sub_rtsp_url: document.getElementById("inpSubRtsp").value.trim(),
         rtsp_transport: document.getElementById("inpTransport").value,
-        audio_mode: document.getElementById("inpAudio").value
+        audio_mode: document.getElementById("inpAudio").value,
+        video_codec: document.getElementById("inpVideoCodec").value
       };
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
@@ -391,26 +414,84 @@
     }
     function closeHassModal() { document.getElementById("hassModal").style.display = "none"; }
 
+    function hassEsc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
     function renderHassEntities(entities) {
       const box = document.getElementById("hassEntityBox");
       box.innerHTML = "";
       const ids = Object.keys(cameras);
       if (!ids.length) { box.innerHTML = '<div style="color:#aaa">Chưa có camera. Hãy thêm camera trước.</div>'; return; }
       ids.forEach(cid => {
-        const val = (entities[cid] || []).join(", ");
-        const row = document.createElement("div");
-        row.className = "form-row";
-        row.innerHTML = `<label>${cameras[cid].name} (${cid})</label>
-                         <input id="hassEnt_${cid}" placeholder="binary_sensor.ten_cam_motion" value="${val.replace(/"/g, "&quot;")}">`;
-        box.appendChild(row);
+        const wrap = document.createElement("div");
+        wrap.className = "form-row";
+        wrap.style.cssText = "background:#252525;padding:8px;border-radius:6px;margin-bottom:8px;";
+        wrap.innerHTML = `<label style="font-weight:600;">${hassEsc(cameras[cid].name)} (${hassEsc(cid)})</label>
+          <div id="hassRules_${cid}"></div>
+          <button type="button" onclick="addHassRule('${cid}')">+ Thêm cảm biến / nhãn</button>`;
+        box.appendChild(wrap);
+        const rules = entities[cid] || [];
+        if (rules.length) rules.forEach(r => addHassRule(cid, r.entity_id, r.label));
+        else addHassRule(cid, "", "");
       });
+    }
+
+    function addHassRule(cid, entity, label) {
+      const box = document.getElementById("hassRules_" + cid);
+      if (!box) return;
+      const row = document.createElement("div");
+      row.className = "grid-2";
+      row.style.cssText = "grid-template-columns: 2fr 1.4fr auto; margin-bottom:6px;";
+      row.innerHTML = `<input class="hassSensor" list="hassSensorList" placeholder="binary_sensor.ten_cam" value="${hassEsc(entity || "")}">
+                       <input class="hassLabel" list="hassLabelList" placeholder="Nhãn: Người lạ..." value="${hassEsc(label || "")}">
+                       <button type="button" title="Xoá dòng" onclick="this.parentNode.remove()">✕</button>`;
+      box.appendChild(row);
+    }
+
+    async function loadHassSensors() {
+      const el = document.getElementById("hassStatus");
+      el.textContent = "Đang tải danh sách sensor từ Home Assistant...";
+      try {
+        const res = await fetch("/api/hass/entities", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            enabled: true,
+            base_url: document.getElementById("hassUrl").value.trim(),
+            token: document.getElementById("hassToken").value.trim(),
+            entities: {}
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) { el.textContent = "❌ " + (data.detail || "Lỗi"); return; }
+        const list = document.getElementById("hassSensorList");
+        list.innerHTML = "";
+        (data.entities || []).forEach(e => {
+          const opt = document.createElement("option");
+          opt.value = e.entity_id;
+          opt.label = e.name + (e.device_class ? ` [${e.device_class}]` : "");
+          list.appendChild(opt);
+        });
+        el.textContent = `✅ Đã tải ${(data.entities || []).length} sensor. Gõ hoặc chọn trong ô cảm biến.`;
+      } catch (e) {
+        el.textContent = "❌ " + e;
+      }
     }
 
     async function saveHass() {
       const entities = {};
       Object.keys(cameras).forEach(cid => {
-        const el = document.getElementById("hassEnt_" + cid);
-        if (el && el.value.trim()) entities[cid] = el.value.split(",").map(s => s.trim()).filter(Boolean);
+        const box = document.getElementById("hassRules_" + cid);
+        if (!box) return;
+        const list = [];
+        box.querySelectorAll("div").forEach(row => {
+          const s = row.querySelector(".hassSensor");
+          const l = row.querySelector(".hassLabel");
+          if (s && s.value.trim()) list.push({entity_id: s.value.trim(), label: l ? l.value.trim() : ""});
+        });
+        entities[cid] = list;
       });
       await fetch("/api/hass", {
         method: "POST",
@@ -447,7 +528,8 @@
     }
 
     async function testMotion() {
-      if (!currentCam) return;      await fetch("/api/motion", {
+      if (!currentCam) return;
+      await fetch("/api/motion", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({cam_id: currentCam, label: "Kích hoạt thử (Test)"})
@@ -458,15 +540,38 @@
     function playLive() {
       if (!currentCam) return;
       document.getElementById("btnLive").classList.add("active");
-      document.getElementById("statusText").textContent = "Đang xem trực tiếp (Live)";
+      const statusEl = document.getElementById("statusText");
+      statusEl.textContent = "Đang xem trực tiếp (Live)...";
       const hlsUrl = `/hls/${currentCam}/live.m3u8`;
+      video.onended = null;
       if (typeof Hls !== "undefined" && Hls.isSupported()) {
         if (hls) hls.destroy();
-        hls = new Hls();
+        hls = new Hls({liveDurationInfinity: true});
+        hls.on(Hls.Events.ERROR, (evt, data) => {
+          if (!data || !data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            statusEl.textContent = "Live: đang chờ luồng từ camera... (thử lại)";
+            hls.startLoad();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            statusEl.textContent = "Live: lỗi giải mã, đang thử lại...";
+            hls.recoverMediaError();
+          } else {
+            statusEl.textContent = "Live lỗi: " + data.details + " (kiểm tra camera/đổi codec H.264)";
+            hls.destroy(); hls = null;
+          }
+        });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          statusEl.textContent = "Đang xem trực tiếp (Live)";
+          video.play().catch(() => {});
+        });
         hls.loadSource(hlsUrl);
         hls.attachMedia(video);
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = hlsUrl;
+        statusEl.textContent = "Đang xem trực tiếp (Live)";
+        video.play().catch(() => {});
+      } else {
+        statusEl.textContent = "Trình duyệt không hỗ trợ HLS. Hãy dùng Chrome/Edge/Safari mới.";
       }
     }
 
@@ -527,6 +632,10 @@
       const seg = segments[chosenIdx];
       const offset = Math.max(0, targetSec - seg.start_sec);
       document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
+      video.onerror = () => {
+        document.getElementById("statusText").textContent =
+          "Không phát được bản ghi này (có thể camera dùng H.265). Sửa camera và chọn Codec = H.264.";
+      };
       video.src = seg.file;
       video.currentTime = offset;
       video.play();
