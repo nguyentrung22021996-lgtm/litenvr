@@ -88,6 +88,11 @@
     .log-line.error .lv { color: #ef5350; }
     .log-line .cid { color: #9ccc65; flex: none; }
     .log-empty { color: #666; text-align: center; padding: 20px; }
+    .onvif-box { background: #252525; border-radius: 6px; padding: 10px; margin-bottom: 10px; font-size: 13px; max-height: 200px; overflow-y: auto; }
+    .onvif-item { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 6px 8px; background: #2f2f2f; border-radius: 5px; margin-bottom: 6px; }
+    .onvif-item .nm { font-weight: 600; }
+    .onvif-item .ip { color: #aaa; margin-left: 8px; }
+    textarea { width: 100%; box-sizing: border-box; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 8px; font-family: inherit; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -164,6 +169,23 @@
       <h3 style="margin-top:0">Quản lý & Thêm Camera Đa Hãng</h3>
       <div id="camListBox" style="margin-bottom:14px;"></div>
 
+      <div style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+        <button onclick="onvifDiscover()">🔎 Tìm camera ONVIF</button>
+        <button onclick="toggleBulk()">➕ Thêm hàng loạt</button>
+      </div>
+      <div style="display:flex; gap:6px; margin-bottom:10px;">
+        <input id="onvifIp" placeholder="Hoặc nhập IP camera ONVIF (VD: 192.168.1.10 hoặc 192.168.1.10:8000)" style="flex:1;">
+        <button onclick="onvifProbe(document.getElementById('onvifIp').value.trim())">Lấy luồng RTSP</button>
+      </div>
+      <div id="onvifBox" class="onvif-box" style="display:none;"></div>
+      <div id="bulkBox" style="display:none; margin-bottom:10px;">
+        <div class="form-row">
+          <label>Mỗi dòng: mã | tên | rtsp_url | sub_url (tùy chọn)</label>
+          <textarea id="bulkText" rows="4" placeholder="cam1 | Camera 1 | rtsp://admin:pass@192.168.1.10/stream1&#10;cam2 | Camera 2 | rtsp://admin:pass@192.168.1.11/stream1"></textarea>
+        </div>
+        <button class="primary" onclick="bulkAdd()">Thêm tất cả</button>
+      </div>
+
       <div class="grid-2">
         <div class="form-row">
           <label>Chọn hãng Camera (Tự tạo link RTSP):</label>
@@ -212,18 +234,29 @@
         </div>
       </div>
 
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Nhóm / Phòng (để lọc):</label>
+          <input id="inpRoom" placeholder="VD: Tầng 1, Sân vườn">
+        </div>
+        <div class="form-row">
+          <label>Nhãn (cách nhau dấu phẩy):</label>
+          <input id="inpTags" placeholder="VD: ngoài trời, cổng">
+        </div>
+      </div>
+
       <div class="form-row">
-        <label>RTSP Luồng chính (Main Stream - Ghi hình nét):</label>
-        <input id="inpRtsp" placeholder="rtsp://admin:pass@192.168.1.100:554/...">
+        <label>Luồng chính (RTSP / HTTP-MJPEG / RTMP / HLS - dùng để ghi hình):</label>
+        <input id="inpRtsp" placeholder="rtsp://admin:pass@192.168.1.100:554/... hoặc http://ip/video.mjpg">
       </div>
       <div class="form-row">
-        <label>RTSP Luồng phụ (Sub Stream - Tùy chọn giúp xem Live nhẹ hơn):</label>
+        <label>Luồng phụ (Tùy chọn giúp xem Live nhẹ hơn - cũng hỗ trợ RTSP/HTTP):</label>
         <input id="inpSubRtsp" placeholder="Để trống nếu dùng chung luồng chính">
       </div>
 
       <div class="grid-2">
         <div class="form-row">
-          <label>Giao thức truyền tải:</label>
+          <label>Giao thức truyền tải (chỉ áp dụng cho RTSP):</label>
           <select id="inpTransport">
             <option value="tcp">TCP (Ổn định, khuyên dùng)</option>
             <option value="udp">UDP (Dành cho cam Yoosee đời cũ)</option>
@@ -275,6 +308,9 @@
         <label>Thời gian ghi hình mỗi lần có chuyển động (Giây - Áp dụng chế độ Motion):</label>
         <input type="number" id="inpPostMotion" min="15" max="600" step="5">
       </div>
+      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
+        <input type="checkbox" id="inpRamBuffer"> Đệm chuyển động trong RAM (nhanh; bỏ chọn để ghi ra đĩa nếu RAM nhỏ)
+      </label>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="cleanNow()">🧹 Dọn ổ cứng ngay</button>
         <div style="display:flex; gap:8px;">
@@ -348,7 +384,7 @@
   </div>
 
   <script>
-    let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null;
+    let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null;
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
     const dateInput = document.getElementById("dateInput");
@@ -446,7 +482,7 @@
       for (const [id, info] of Object.entries(cameras)) {
         const opt = document.createElement("option");
         const modeTxt = info.record_mode === "motion" ? " [Motion]" : (info.record_mode === "off" ? " [Live]" : " [24/7]");
-        opt.value = id; opt.textContent = info.name + modeTxt;
+        opt.value = id; opt.textContent = info.name + (info.room ? " · " + info.room : "") + modeTxt;
         sel.appendChild(opt);
       }
       if (Object.keys(cameras).length === 0) {
@@ -520,7 +556,7 @@
         const modeLabel = mode === "motion" ? "Chỉ lưu Motion" : (mode === "off" ? "Chỉ Live" : "Lưu 24/7");
         const div = document.createElement("div");
         div.className = "cam-item";
-        div.innerHTML = `<div><b>${info.name}</b> (${id}) <span class="badge ${mode}">${modeLabel}</span></div>
+        div.innerHTML = `<div><b>${esc(info.name)}</b> (${esc(id)}) <span class="badge ${mode}">${modeLabel}</span>${info.room ? ` <span class="badge off">${esc(info.room)}</span>` : ""}</div>
                          <div style="display:flex;gap:6px;">
                            <button onclick="editCam('${id}')">Sửa</button>
                            <button onclick="removeCam('${id}')">Xóa</button>
@@ -542,6 +578,8 @@
       document.getElementById("inpTransport").value = c.rtsp_transport || "tcp";
       document.getElementById("inpAudio").value = c.audio_mode || "aac";
       document.getElementById("inpVideoCodec").value = c.video_codec || "auto";
+      document.getElementById("inpRoom").value = c.room || "";
+      document.getElementById("inpTags").value = c.tags || "";
     }
 
     async function saveCamera() {
@@ -554,7 +592,9 @@
         sub_rtsp_url: document.getElementById("inpSubRtsp").value.trim(),
         rtsp_transport: document.getElementById("inpTransport").value,
         audio_mode: document.getElementById("inpAudio").value,
-        video_codec: document.getElementById("inpVideoCodec").value
+        video_codec: document.getElementById("inpVideoCodec").value,
+        room: document.getElementById("inpRoom").value.trim(),
+        tags: document.getElementById("inpTags").value.trim()
       };
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
@@ -575,12 +615,97 @@
       openCamModal();
     }
 
+    function toggleBulk() {
+      const b = document.getElementById("bulkBox");
+      b.style.display = b.style.display === "none" ? "block" : "none";
+    }
+
+    async function bulkAdd() {
+      const lines = document.getElementById("bulkText").value.split("\n").map(l => l.trim()).filter(Boolean);
+      if (!lines.length) return alert("Chưa nhập dòng nào.");
+      const items = [];
+      for (const line of lines) {
+        const parts = line.split("|").map(s => s.trim());
+        if (parts.length < 3) { alert("Dòng sai định dạng: " + line); return; }
+        items.push({
+          cam_id: parts[0], name: parts[1], rtsp_url: parts[2],
+          sub_rtsp_url: parts[3] || "", brand: "custom",
+          record_mode: document.getElementById("inpRecordMode").value,
+          rtsp_transport: document.getElementById("inpTransport").value,
+          audio_mode: document.getElementById("inpAudio").value,
+          video_codec: document.getElementById("inpVideoCodec").value,
+          room: document.getElementById("inpRoom").value.trim(),
+          tags: document.getElementById("inpTags").value.trim()
+        });
+      }
+      const r = await fetch("/api/cameras/bulk", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({items})
+      });
+      const d = await r.json();
+      alert(`Đã thêm ${d.added} camera.`);
+      closeCamModal();
+      await init();
+    }
+
+    async function onvifDiscover() {
+      const box = document.getElementById("onvifBox");
+      box.style.display = "block";
+      box.innerHTML = "Đang tìm camera ONVIF trong mạng (3s)...";
+      try {
+        const d = await fetch("/api/onvif/discover?timeout=3").then(r => r.json());
+        const devs = d.devices || [];
+        if (!devs.length) {
+          box.innerHTML = "Không tìm thấy camera ONVIF. Kiểm tra camera đã bật ONVIF và cùng mạng LAN.";
+          return;
+        }
+        box.innerHTML = "";
+        for (const dev of devs) {
+          const el = document.createElement("div");
+          el.className = "onvif-item";
+          el.innerHTML = `<div><span class="nm">${esc(dev.name)}</span><span class="ip">${esc(dev.ip)}</span></div>
+            <button onclick="onvifProbe('${esc(dev.ip)}')">Lấy luồng RTSP</button>`;
+          box.appendChild(el);
+        }
+      } catch (e) {
+        box.innerHTML = "Lỗi tìm kiếm ONVIF: " + esc(String(e));
+      }
+    }
+
+    async function onvifProbe(host, port) {
+      if (!host) return alert("Nhập IP camera ONVIF trước.");
+      if (host.includes(":")) { const parts = host.split(":"); host = parts[0]; port = port || parts[1]; }
+      const box = document.getElementById("onvifBox");
+      box.style.display = "block";
+      const user = prompt(`Tài khoản ONVIF cho ${host}:`, document.getElementById("genUser").value || "admin");
+      if (user === null) return;
+      const pass = prompt(`Mật khẩu ONVIF cho ${host}:`, "");
+      if (pass === null) return;
+      box.innerHTML = `Đang lấy luồng RTSP từ ${esc(host)}...`;
+      try {
+        const d = await fetch("/api/onvif/probe", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({host, port: parseInt(port) || 80, username: user, password: pass})
+        }).then(async r => { if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); });
+        document.getElementById("inpRtsp").value = d.main_rtsp_url || "";
+        document.getElementById("inpSubRtsp").value = d.sub_rtsp_url || "";
+        if (!document.getElementById("inpCamName").value) document.getElementById("inpCamName").value = d.name || host;
+        if (!document.getElementById("inpCamId").value) document.getElementById("inpCamId").value = ("cam_" + host.replace(/\./g, "_"));
+        box.innerHTML = `Đã lấy luồng từ <b>${esc(d.name)}</b>. Kiểm tra rồi bấm "Lưu Camera".`;
+        if (globalThis.__clientLog) __clientLog("info", "ONVIF probe OK: " + (d.name || host));
+      } catch (e) {
+        box.innerHTML = "Lỗi ONVIF: " + esc(String(e));
+        if (globalThis.__clientLog) __clientLog("warn", "ONVIF probe lỗi: " + String(e));
+      }
+    }
+
     async function openStorageModal() {
       await loadSystem();
       document.getElementById("inpRetDays").value = sysInfo.retention_days;
       document.getElementById("inpMaxGb").value = sysInfo.max_storage_gb;
       document.getElementById("inpMaxPct").value = sysInfo.max_disk_percent;
       document.getElementById("inpPostMotion").value = sysInfo.post_motion_sec;
+      document.getElementById("inpRamBuffer").checked = sysInfo.ram_buffer !== false;
       document.getElementById("storageModal").style.display = "flex";
     }
     function closeStorageModal() { document.getElementById("storageModal").style.display = "none"; }
@@ -590,7 +715,8 @@
         retention_days: parseFloat(document.getElementById("inpRetDays").value) || 7,
         max_storage_gb: parseFloat(document.getElementById("inpMaxGb").value) || 0,
         max_disk_percent: parseFloat(document.getElementById("inpMaxPct").value) || 85,
-        post_motion_sec: parseInt(document.getElementById("inpPostMotion").value) || 60
+        post_motion_sec: parseInt(document.getElementById("inpPostMotion").value) || 60,
+        ram_buffer: document.getElementById("inpRamBuffer").checked
       };
       await fetch("/api/storage", {
         method: "POST",
@@ -750,6 +876,25 @@
       setTimeout(() => { loadTimeline(); loadSystem(); }, 1500);
     }
 
+    function __clientLog(level, message, camId) {
+      try {
+        fetch("/api/client_log", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({level, message, cam_id: camId || currentCam || ""})
+        });
+      } catch (e) {}
+    }
+
+    function startLiveHeartbeat() {
+      if (liveHeartbeatTimer) clearInterval(liveHeartbeatTimer);
+      const beat = () => { if (currentCam) fetch(`/api/live/${currentCam}`, {method: "POST"}).catch(() => {}); };
+      beat();
+      liveHeartbeatTimer = setInterval(beat, 5000);
+    }
+    function stopLiveHeartbeat() {
+      if (liveHeartbeatTimer) { clearInterval(liveHeartbeatTimer); liveHeartbeatTimer = null; }
+    }
+
     function playLive() {
       if (!currentCam) return;
       document.getElementById("btnLive").classList.add("active");
@@ -759,6 +904,7 @@
       const statusEl = document.getElementById("statusText");
       statusEl.textContent = "Đang xem trực tiếp (Live)...";
       const hlsUrl = `/hls/${currentCam}/live.m3u8`;
+      startLiveHeartbeat();
       video.onended = null;
       if (typeof Hls !== "undefined" && Hls.isSupported()) {
         if (hls) hls.destroy();
@@ -773,6 +919,7 @@
             hls.recoverMediaError();
           } else {
             statusEl.textContent = "Live lỗi: " + data.details + " (kiểm tra camera/đổi codec H.264)";
+            __clientLog("error", "Live HLS: " + data.details);
             hls.destroy(); hls = null;
           }
         });
@@ -918,6 +1065,7 @@
 
     let currentSegStartSec = null;
     function playSegment(idx, offset) {
+      stopLiveHeartbeat();
       const seg = segments[idx];
       const parts = seg.file.split("/");
       const cam = parts[2] || currentCam;
@@ -943,6 +1091,7 @@
         } else {
           document.getElementById("statusText").textContent =
             "Không phát được bản ghi này. Bấm 🔍 Chẩn đoán để xem lỗi.";
+          __clientLog("error", "Không phát được bản ghi: " + seg.file);
         }
       };
       video.src = seg.file;

@@ -3,6 +3,8 @@ import json
 import time
 import base64
 import shutil
+import socket
+import hashlib
 import sqlite3
 import secrets
 import mimetypes
@@ -10,6 +12,10 @@ import threading
 import subprocess
 import urllib.request
 import urllib.error
+import uuid
+import re
+import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -130,12 +136,14 @@ def stats_sampler():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    for cam_id in list(CONFIG.get("cameras", {})):
-        start_camera_worker(cam_id)
+    for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
+        if cam.get("record_mode", "continuous") != "off":
+            start_camera_worker(cam_id)
     threading.Thread(target=motion_buffer_manager, daemon=True).start()
     threading.Thread(target=cleanup_worker, daemon=True).start()
     threading.Thread(target=hass_motion_listener, daemon=True).start()
     threading.Thread(target=stats_sampler, daemon=True).start()
+    threading.Thread(target=live_supervisor, daemon=True).start()
     yield
 
 app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
@@ -160,9 +168,25 @@ async def basic_auth(request: Request, call_next):
 
 @app.middleware("http")
 async def hls_no_cache(request: Request, call_next):
+    path = request.url.path
+    cam_id = None
+    if path.startswith("/hls/"):
+        parts = path.split("/")
+        if len(parts) > 2:
+            cam_id = parts[2]
+            ensure_live(cam_id)
     resp = await call_next(request)
-    if request.url.path.startswith("/hls/"):
+    if path.startswith("/hls/"):
         resp.headers["Cache-Control"] = "no-store"
+        if resp.status_code == 404:
+            # Segment 404 thường gặp khi ffmpeg đang khởi động lại; log thưa để
+            # vẫn thấy lỗi thật mà không spam.
+            now = time.time()
+            key = f"_hls404:{cam_id}"
+            st = cam_status.setdefault(cam_id or "?", {})
+            if now - st.get(key, 0) > 60:
+                st[key] = now
+                log_event("warn", f"Không tìm thấy tệp HLS ({path.rsplit('/', 1)[-1]})", cam_id or "")
     return resp
 
 DEFAULT_CONFIG = {
@@ -170,6 +194,7 @@ DEFAULT_CONFIG = {
     "max_storage_gb": 0,       # 0 = Không giới hạn theo GB
     "max_disk_percent": 85,    # Tự xóa file cũ nhất nếu ổ cứng đầy quá 85%
     "post_motion_sec": 60,     # Thời gian ghi tiếp sau khi có chuyển động (giây)
+    "ram_buffer": True,        # True: đệm motion trong RAM; False: ghi đệm ra đĩa
     "cameras": {},
     "homeassistant": {
         "enabled": False,
@@ -206,8 +231,22 @@ def save_config(cfg):
 
 CONFIG = load_config()
 
+_db_local = threading.local()
+
+def db_conn() -> sqlite3.Connection:
+    """Kết nối SQLite tái dùng theo luồng, bật WAL để đọc/ghi song song ổn định
+    khi nhiều camera cùng ghi sự kiện (tránh 'database is locked')."""
+    conn = getattr(_db_local, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH, timeout=15, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+        _db_local.conn = conn
+    return conn
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_conn()
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS events (
@@ -221,14 +260,20 @@ def init_db():
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_cam_date ON events(cam_id, date_str)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_cam_ts ON events(cam_id, timestamp)")
     conn.commit()
-    conn.close()
 
 init_db()
 
 ffmpeg_processes: Dict[str, subprocess.Popen] = {}
 worker_tokens: Dict[str, threading.Event] = {}
 worker_lock = threading.Lock()
+# Camera đang có người xem live (timestamp hoạt động gần nhất)
+cam_viewers: Dict[str, float] = {}
+viewer_lock = threading.Lock()
+LIVE_IDLE_STOP_SEC = int(os.environ.get("LIVE_IDLE_STOP_SEC", "30"))
+# Theo dõi cảnh báo đầy ổ (tránh spam log)
+_disk_warn = {"t": 0.0}
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
 motion_active_until: Dict[str, float] = {}
 # Chẩn đoán trạng thái camera (cho UI/log)
@@ -313,7 +358,224 @@ def resolve_video_codec(cam_id: str, cam_info: dict):
     # HEVC, hoặc H.264 ở profile/màu mà trình duyệt không giải mã -> chuyển mã.
     return "copy" if _is_browser_safe_h264(codec, info.get("pix_fmt", "")) else "h264"
 
-def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None):
+# ---------------- ONVIF (tự dò camera & lấy URL RTSP) ----------------
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+def _find_text(root, name: str) -> str:
+    for el in root.iter():
+        if _local(el.tag) == name and el.text and el.text.strip():
+            return el.text.strip()
+    return ""
+
+def _find_all(root, name: str):
+    return [el for el in root.iter() if _local(el.tag) == name]
+
+def _onvif_security(username: str, password: str) -> str:
+    if not username:
+        return ""
+    nonce = os.urandom(16)
+    created = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    digest = base64.b64encode(
+        hashlib.sha1(nonce + created.encode() + password.encode()).digest()
+    ).decode()
+    return (
+        '<s:Header><wsse:Security '
+        'xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" '
+        'xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+        f'<wsse:UsernameToken><wsse:Username>{xml_escape(username)}</wsse:Username>'
+        f'<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{digest}</wsse:Password>'
+        f'<wsse:Nonce>{base64.b64encode(nonce).decode()}</wsse:Nonce>'
+        f'<wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security></s:Header>'
+    )
+
+def _onvif_post(url: str, action: str, body: str, username: str = "", password: str = "", timeout: float = 6.0):
+    envelope = (
+        '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+        'xmlns:tds="http://www.onvif.org/ver10/device/wsdl" '
+        'xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
+        'xmlns:tt="http://www.onvif.org/ver10/schema">'
+        f'{_onvif_security(username, password)}'
+        f'<s:Body>{body}</s:Body></s:Envelope>'
+    ).encode("utf-8")
+    req = urllib.request.Request(url, data=envelope, method="POST", headers={
+        "Content-Type": "application/soap+xml; charset=utf-8",
+        "SOAPAction": action,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        # Một số camera yêu cầu HTTP Digest cho ONVIF (ngoài WS-Security).
+        www = (e.headers.get("WWW-Authenticate") or "").lower()
+        if e.code == 401 and username and "digest" in www:
+            mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+            mgr.add_password(None, url, username, password)
+            opener = urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(mgr))
+            with opener.open(req, timeout=timeout) as r:
+                raw = r.read()
+        else:
+            raise
+    return ET.fromstring(raw)
+
+def onvif_discover(timeout: float = 3.0) -> List[dict]:
+    """WS-Discovery qua UDP multicast: tìm camera ONVIF trong mạng LAN."""
+    mid = f"uuid:{uuid.uuid4()}"
+    msg = (
+        '<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" '
+        'xmlns:w="http://schemas.xmlsoap.org/ws/2004/08/addressing" '
+        'xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" '
+        'xmlns:dn="http://www.onvif.org/ver10/network/wsdl">'
+        f'<e:Header><w:MessageID>{mid}</w:MessageID>'
+        '<w:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To>'
+        '<w:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action></e:Header>'
+        '<e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body>'
+        '</e:Envelope>'
+    ).encode()
+    found: Dict[str, dict] = {}
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.settimeout(0.5)
+        s.sendto(msg, ("239.255.255.250", 3702))
+        end = time.time() + max(0.5, min(timeout, 8))
+        while time.time() < end:
+            try:
+                data, addr = s.recvfrom(65535)
+            except socket.timeout:
+                continue
+            try:
+                root = ET.fromstring(data)
+            except Exception:
+                continue
+            addrs = _find_text(root, "XAddrs").split()
+            scopes = _find_text(root, "Scopes")
+            name = ""
+            for part in scopes.split():
+                if "name/" in part:
+                    name = part.split("name/", 1)[1]
+            host = addr[0]
+            key = addrs[0] if addrs else host
+            found[key] = {
+                "ip": host,
+                "xaddr": addrs[0] if addrs else "",
+                "name": name or host,
+                "scopes": scopes,
+            }
+    finally:
+        s.close()
+    return sorted(found.values(), key=lambda x: x["ip"])
+
+def _with_rtsp_auth(url: str, user: str, password: str) -> str:
+    if not user or "@" in url.split("://", 1)[-1]:
+        return url
+    scheme, rest = url.split("://", 1)
+    return f"{scheme}://{user}:{password}@{rest}"
+
+def onvif_probe(host: str, port: int = 80, username: str = "", password: str = "") -> dict:
+    """Lấy tên thiết bị + URL RTSP main/sub qua ONVIF (GetDeviceInformation/GetProfiles/GetStreamUri)."""
+    base = f"http://{host}:{int(port)}"
+    device = base + "/onvif/device_service"
+
+    name = ""
+    try:
+        root = _onvif_post(device, "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
+                           "<tds:GetDeviceInformation/>", username, password)
+        name = _find_text(root, "Manufacturer")
+        model = _find_text(root, "Model")
+        if model:
+            name = (name + " " + model).strip()
+    except Exception as e:
+        log_event("warn", f"ONVIF GetDeviceInformation lỗi ({host}): {e}")
+
+    media_url = base + "/onvif/media_service"
+    def get_profiles(url):
+        return _onvif_post(url, "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
+                           "<trt:GetProfiles/>", username, password)
+    try:
+        root = get_profiles(media_url)
+    except Exception:
+        media_url = ""
+        try:
+            caps = _onvif_post(device, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
+                               "<tds:GetCapabilities><tds:Category>Media</tds:Category></tds:GetCapabilities>",
+                               username, password)
+            for el in _find_all(caps, "Media"):
+                for child in el.iter():
+                    if _local(child.tag) == "XAddr" and child.text:
+                        media_url = child.text.strip()
+                        break
+                if media_url:
+                    break
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Không gọi được ONVIF Media: {e}")
+        if not media_url:
+            raise HTTPException(status_code=502, detail="Camera không cung cấp dịch vụ Media qua ONVIF")
+        root = get_profiles(media_url)
+
+    profiles = []
+    for prof in _find_all(root, "Profiles"):
+        token = prof.attrib.get("token", "")
+        pname = ""
+        for el in prof.iter():
+            if _local(el.tag) == "Name":
+                pname = (el.text or "").strip()
+                break
+        if not token:
+            continue
+        uri = ""
+        try:
+            body = (
+                "<trt:GetStreamUri><trt:StreamSetup><tt:Stream>RTP-Unicast</tt:Stream>"
+                "<tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup>"
+                f"<trt:ProfileToken>{xml_escape(token)}</trt:ProfileToken></trt:GetStreamUri>"
+            )
+            r = _onvif_post(media_url, "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
+                            body, username, password)
+            uri = _find_text(r, "Uri")
+        except Exception as e:
+            log_event("warn", f"ONVIF GetStreamUri lỗi profile {token}: {e}")
+        profiles.append({"token": token, "name": pname, "uri": _with_rtsp_auth(uri, username, password) if uri else ""})
+
+    usable = [p for p in profiles if p["uri"]]
+    def pick(keys):
+        for p in usable:
+            low = (p["name"] + " " + p["token"]).lower()
+            if any(k in low for k in keys):
+                return p
+        return None
+    main = pick(("main", "primary", "profile_1", "profile1")) or (usable[0] if usable else None)
+    sub = pick(("sub", "second", "minor", "profile_2", "profile2"))
+    if sub is None and len(usable) > 1:
+        sub = next((p for p in usable if p is not main), None)
+    return {
+        "host": host,
+        "name": name or host,
+        "profiles": profiles,
+        "main_rtsp_url": main["uri"] if main else "",
+        "sub_rtsp_url": sub["uri"] if sub else "",
+    }
+
+def _is_rtsp(url: str) -> bool:
+    return (url or "").lower().startswith(("rtsp://", "rtsps://"))
+
+def _input_args(url: str, cam_info: dict) -> List[str]:
+    """Tham số đầu vào ffmpeg tuỳ giao thức. RTSP cần transport/timeout;
+    HTTP(MJPEG)/HLS/RTMP thì để ffmpeg tự nhận định dạng."""
+    if _is_rtsp(url):
+        return [
+            "-rtsp_transport", cam_info.get("rtsp_transport", "tcp"),
+            "-rtsp_flags", "prefer_tcp",
+            "-timeout", "10000000",
+        ]
+    return []
+
+def buffer_root() -> str:
+    """Thư mục đệm cho chế độ Motion. Mặc định RAM (/dev/shm) cho nhanh;
+    đặt ram_buffer=false để ghi ra đĩa (RAM nhỏ / ổn định hơn)."""
+    return BUFFER_DIR if CONFIG.get("ram_buffer", True) else os.path.join(STORAGE_DIR, "buffer")
+
+def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None, include_live: bool = True):
     main_url = cam_info["rtsp_url"]
     sub_url = cam_info.get("sub_rtsp_url") or main_url
     transport = cam_info.get("rtsp_transport", "tcp")
@@ -327,14 +589,15 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     record_codec = "h264" if explicit == "h264" else "copy"
 
     # H.264 transcode cho LUỒNG LIVE khi camera dùng H.265/HEVC (trình duyệt không phát được HEVC)
+    # ultrafast + 2 thread: giảm mạnh CPU/RAM so với veryfast mà vẫn đủ nét cho live.
     vcodec_args = (
-        ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-         "-g", "50", "-sc_threshold", "0", "-pix_fmt", "yuv420p"]
+        ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+         "-threads", "2", "-g", "50", "-sc_threshold", "0", "-pix_fmt", "yuv420p"]
         if video_codec == "h264" else ["-c:v", "copy"]
     )
 
     cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
-    cam_buf_dir = os.path.join(BUFFER_DIR, cam_id)
+    cam_buf_dir = os.path.join(buffer_root(), cam_id)
     cam_hls_dir = os.path.join(HLS_DIR, cam_id)
     for d in [cam_rec_dir, cam_buf_dir, cam_hls_dir]:
         os.makedirs(d, exist_ok=True)
@@ -342,9 +605,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-fflags", "+genpts+igndts+discardcorrupt",
-        "-rtsp_transport", transport,
-        "-rtsp_flags", "prefer_tcp",
-        "-timeout", "10000000",
+        *_input_args(main_url, cam_info),
         "-i", main_url
     ]
 
@@ -353,9 +614,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     if use_dual_input:
         cmd.extend([
             "-fflags", "+genpts+igndts+discardcorrupt",
-            "-rtsp_transport", transport,
-            "-rtsp_flags", "prefer_tcp",
-            "-timeout", "10000000",
+            *_input_args(sub_url, cam_info),
             "-i", sub_url
         ])
 
@@ -387,21 +646,47 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
         ])
 
     # Nhánh 2: Phát trực tiếp HLS trên RAM (/dev/shm/hls)
-    live_input_idx = "1:v:0" if use_dual_input else "0:v:0"
-    cmd.extend([
-        "-map", live_input_idx,
-        *vcodec_args, "-an",
-        "-f", "hls",
-        "-hls_time", "2",
-        "-hls_list_size", "5",
-        "-hls_flags", "delete_segments",
-        os.path.join(cam_hls_dir, "live.m3u8")
-    ])
+    # include_live=False khi không ai xem (tiết kiệm CPU transcode).
+    if include_live:
+        live_input_idx = "1:v:0" if use_dual_input else "0:v:0"
+        cmd.extend([
+            "-map", live_input_idx,
+            *vcodec_args, "-an",
+            "-f", "hls",
+            "-hls_time", "2",
+            "-hls_list_size", "5",
+            "-hls_flags", "delete_segments",
+            os.path.join(cam_hls_dir, "live.m3u8")
+        ])
     return cmd
+
+def mark_viewer(cam_id: str):
+    """Đánh dấu có người đang xem live (heartbeat / tải segment HLS)."""
+    with viewer_lock:
+        cam_viewers[cam_id] = time.time()
+
+def viewers_active(cam_id: str) -> bool:
+    with viewer_lock:
+        return (time.time() - cam_viewers.get(cam_id, 0)) <= 15
+
+def _needs_transcode(cam_id: str) -> bool:
+    cam = CONFIG.get("cameras", {}).get(cam_id, {})
+    vc = cam.get("video_codec", "auto")
+    if vc == "copy":
+        return False
+    if vc == "h264":
+        return True
+    st = cam_status.get(cam_id, {})
+    codec = st.get("detected_codec", "")
+    if not codec:
+        return True
+    return not _is_browser_safe_h264(codec, st.get("detected_pix_fmt", ""))
 
 def start_camera_worker(cam_id: str):
     with worker_lock:
         old = worker_tokens.get(cam_id)
+        if old and not old.is_set():
+            return  # đang chạy rồi
         if old:
             old.set()
         token = threading.Event()
@@ -410,14 +695,24 @@ def start_camera_worker(cam_id: str):
 
 def _camera_worker_loop(cam_id: str, token: threading.Event):
     backoff = 2
+    st = cam_status.setdefault(cam_id, {})
+    st["log"] = st.get("log", deque(maxlen=20))
     while not token.is_set():
         cam_info = CONFIG.get("cameras", {}).get(cam_id)
         if not cam_info:
             break
-        cmd = build_ffmpeg_cmd(cam_id, cam_info)
+        record_needed = cam_info.get("record_mode", "continuous") != "off"
+        viewers = viewers_active(cam_id)
+        if not record_needed and not viewers:
+            log_event("info", "Dừng live (không còn người xem)", cam_id)
+            break
+        resolved = resolve_video_codec(cam_id, cam_info)
+        # Khi không ai xem: nếu luồng gốc đã browser-safe thì giữ HLS (rẻ),
+        # còn nếu phải transcode thì bỏ nhánh HLS để tiết kiệm CPU.
+        include_live = viewers or not _needs_transcode(cam_id)
+        st["_live_mode"] = include_live
+        cmd = build_ffmpeg_cmd(cam_id, cam_info, video_codec=resolved, include_live=include_live)
         started = time.time()
-        st = cam_status.setdefault(cam_id, {})
-        st["log"] = st.get("log", deque(maxlen=20))
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -493,6 +788,10 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             log_event("warn", f"Kết nối lỗi, thử lại sau {backoff}s", cam_id)
         if token.wait(backoff):
             break
+    with worker_lock:
+        if worker_tokens.get(cam_id) is token:
+            worker_tokens.pop(cam_id, None)
+    cam_status.setdefault(cam_id, {})["running"] = False
 
 def stop_camera_worker(cam_id: str):
     with worker_lock:
@@ -503,14 +802,65 @@ def stop_camera_worker(cam_id: str):
     if proc and proc.poll() is None:
         proc.terminate()
 
-# Luồng quản lý bộ đệm RAM cho chế độ "Chỉ lưu khi có chuyển động (motion)"
+def ensure_live(cam_id: str):
+    """Gọi khi có request xem live: đánh dấu viewer và bật/khôi phục luồng nếu cần."""
+    cam_info = CONFIG.get("cameras", {}).get(cam_id)
+    if not cam_info:
+        return
+    mark_viewer(cam_id)
+    st = cam_status.setdefault(cam_id, {})
+    now = time.time()
+    if cam_info.get("record_mode", "continuous") == "off":
+        if not st.get("running"):
+            start_camera_worker(cam_id)
+        return
+    # Camera có ghi hình: nếu nhánh live đang tắt (tiết kiệm CPU) thì khởi động lại
+    if st.get("_live_mode") is False and now - st.get("_mode_ts", 0) > 5:
+        st["_mode_ts"] = now
+        proc = ffmpeg_processes.get(cam_id)
+        if proc and proc.poll() is None:
+            proc.terminate()
+
+def live_supervisor():
+    """Bật/tắt nhánh live theo số người xem để tiết kiệm CPU/RAM."""
+    while True:
+        try:
+            now = time.time()
+            for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
+                st = cam_status.get(cam_id, {})
+                if cam.get("record_mode", "continuous") == "off":
+                    last = cam_viewers.get(cam_id, 0)
+                    if viewers_active(cam_id) and not st.get("running"):
+                        log_event("info", "Có người xem, khởi động live", cam_id)
+                        start_camera_worker(cam_id)
+                    elif st.get("running") and last and (now - last) > LIVE_IDLE_STOP_SEC:
+                        log_event("info", f"Không có người xem {LIVE_IDLE_STOP_SEC}s, dừng live", cam_id)
+                        stop_camera_worker(cam_id)
+                elif st.get("running") and st.get("_live_mode") is not None:
+                    desired = viewers_active(cam_id) or not _needs_transcode(cam_id)
+                    if desired != st.get("_live_mode") and now - st.get("_mode_ts", 0) > 5:
+                        st["_mode_ts"] = now
+                        log_event("info", "Đổi nhánh live theo người xem (tiết kiệm CPU)", cam_id)
+                        proc = ffmpeg_processes.get(cam_id)
+                        if proc and proc.poll() is None:
+                            proc.terminate()
+            disk = read_disk()
+            thr = float(CONFIG.get("max_disk_percent", 85) or 0)
+            if thr and disk["disk_percent"] > thr and now - _disk_warn["t"] > 600:
+                _disk_warn["t"] = now
+                log_event("warn", f"Ổ đĩa đã dùng {disk['disk_percent']}% (ngưỡng {thr}%): sẽ tự xoá video cũ nhất")
+        except Exception as e:
+            log_event("warn", f"live_supervisor: {e}")
+        time.sleep(5)
+
+# Luồng quản lý bộ đệm cho chế độ "Chỉ lưu khi có chuyển động (motion)"
 def motion_buffer_manager():
     while True:
         now = time.time()
         for cam_id, cam_info in list(CONFIG.get("cameras", {}).items()):
             if cam_info.get("record_mode") != "motion":
                 continue
-            cam_buf_dir = os.path.join(BUFFER_DIR, cam_id)
+            cam_buf_dir = os.path.join(buffer_root(), cam_id)
             cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
             if not os.path.exists(cam_buf_dir):
                 continue
@@ -631,12 +981,29 @@ class CameraItem(BaseModel):
     audio_mode: str = "aac"
     record_mode: str = "continuous"  # continuous | motion | off
     video_codec: str = "auto"        # auto | copy | h264 (h264 = tương thích trình duyệt)
+    room: str = ""                   # Nhóm/phòng để lọc camera
+    tags: str = ""                   # Nhãn tự do, cách nhau dấu phẩy
 
 class StorageSettings(BaseModel):
     retention_days: float
     max_storage_gb: float
     max_disk_percent: float
     post_motion_sec: int
+    ram_buffer: bool = True          # True: đệm motion trong RAM; False: ghi ra đĩa
+
+class OnvifProbeReq(BaseModel):
+    host: str
+    port: int = 80
+    username: str = ""
+    password: str = ""
+
+class BulkCamerasReq(BaseModel):
+    items: List[CameraItem]
+
+class ClientLogReq(BaseModel):
+    level: str = "warn"
+    message: str
+    cam_id: str = ""
 
 class MotionPayload(BaseModel):
     cam_id: str
@@ -651,6 +1018,7 @@ def get_system_info():
         "max_storage_gb": CONFIG.get("max_storage_gb", 0),
         "max_disk_percent": CONFIG.get("max_disk_percent", 85),
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
+        "ram_buffer": bool(CONFIG.get("ram_buffer", True)),
         "nvr_used_gb": round(nvr_used_bytes / (1024**3), 2),
         "disk_total_gb": round(total / (1024**3), 2),
         "disk_used_gb": round(used / (1024**3), 2),
@@ -664,6 +1032,7 @@ def update_storage_settings(settings: StorageSettings):
     CONFIG["max_storage_gb"] = settings.max_storage_gb
     CONFIG["max_disk_percent"] = settings.max_disk_percent
     CONFIG["post_motion_sec"] = settings.post_motion_sec
+    CONFIG["ram_buffer"] = settings.ram_buffer
     save_config(CONFIG)
     deleted = run_cleanup_now()
     return {"status": "ok", "deleted_files": deleted}
@@ -686,13 +1055,16 @@ def api_latest_snapshots():
     """Ảnh snapshot mới nhất của mỗi camera (làm ảnh đại diện cho lưới camera)."""
     out: Dict[str, str] = {}
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT cam_id, snapshot FROM events WHERE snapshot IS NOT NULL ORDER BY timestamp ASC")
+        c = db_conn().cursor()
+        c.execute("""
+            SELECT e.cam_id, e.snapshot FROM events e
+            JOIN (SELECT cam_id, MAX(timestamp) AS mt FROM events
+                  WHERE snapshot IS NOT NULL GROUP BY cam_id) m
+              ON e.cam_id = m.cam_id AND e.timestamp = m.mt
+        """)
         for cam_id, snap in c.fetchall():
             if snap:
                 out[cam_id] = f"/snapshots/{snap}"
-        conn.close()
     except Exception:
         pass
     return out
@@ -715,11 +1087,81 @@ def add_or_update_camera(item: CameraItem):
         "rtsp_transport": item.rtsp_transport,
         "audio_mode": item.audio_mode,
         "record_mode": item.record_mode,
-        "video_codec": item.video_codec
+        "video_codec": item.video_codec,
+        "room": item.room,
+        "tags": item.tags,
     }
     save_config(CONFIG)
     start_camera_worker(cam_id)
     return {"status": "ok", "cameras": CONFIG["cameras"]}
+
+@app.post("/api/cameras/bulk")
+def bulk_add_cameras(req: BulkCamerasReq):
+    """Thêm nhiều camera cùng lúc (cùng mẫu cấu hình)."""
+    added = 0
+    for item in req.items:
+        cam_id = item.cam_id.strip()
+        if not cam_id:
+            continue
+        stop_camera_worker(cam_id)
+        CONFIG.setdefault("cameras", {})[cam_id] = {
+            "name": item.name, "brand": item.brand,
+            "rtsp_url": item.rtsp_url.strip(),
+            "sub_rtsp_url": (item.sub_rtsp_url or "").strip(),
+            "rtsp_transport": item.rtsp_transport,
+            "audio_mode": item.audio_mode, "record_mode": item.record_mode,
+            "video_codec": item.video_codec, "room": item.room, "tags": item.tags,
+        }
+        start_camera_worker(cam_id)
+        added += 1
+    save_config(CONFIG)
+    log_event("info", f"Thêm hàng loạt {added} camera")
+    return {"status": "ok", "added": added, "cameras": CONFIG["cameras"]}
+
+@app.get("/api/onvif/discover")
+def api_onvif_discover(timeout: float = 3.0):
+    try:
+        return {"devices": onvif_discover(timeout)}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"WS-Discovery lỗi: {e}")
+
+@app.post("/api/onvif/probe")
+def api_onvif_probe(req: OnvifProbeReq):
+    try:
+        return onvif_probe(req.host, req.port, req.username, req.password)
+    except HTTPException:
+        raise
+    except urllib.error.HTTPError as e:
+        try:
+            body = (e.read() or b"").decode(errors="replace")
+        except Exception:
+            body = ""
+        low = body.lower()
+        if e.code in (401, 403) or any(k in low for k in (
+                "not authorized", "invalid username", "invalidsecurity",
+                "notauthorized", "unauthorized", "authentication")):
+            raise HTTPException(status_code=401, detail="Sai tài khoản/mật khẩu ONVIF (hoặc camera chưa bật ONVIF)")
+        texts = re.findall(r"<[^>]*Text[^>]*>([^<]*)<", body)
+        reason = next((t.strip() for t in texts if t.strip()), "")
+        raise HTTPException(status_code=502, detail=f"Camera ONVIF lỗi HTTP {e.code}" + (f": {reason}" if reason else ""))
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"Không kết nối được camera ONVIF: {e.reason}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"ONVIF probe lỗi: {e}")
+
+@app.post("/api/live/{cam_id}")
+def api_live_heartbeat(cam_id: str):
+    if cam_id not in CONFIG.get("cameras", {}):
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+    ensure_live(cam_id)
+    return {"status": "ok", "running": bool(cam_status.get(cam_id, {}).get("running"))}
+
+@app.post("/api/client_log")
+def api_client_log(req: ClientLogReq):
+    """Nhận lỗi từ trình duyệt (HLS/playback) để hiện trong Nhật ký."""
+    level = req.level if req.level in ("info", "warn", "error") else "warn"
+    log_event(level, "UI: " + req.message[:500], req.cam_id)
+    return {"status": "ok"}
 
 @app.delete("/api/cameras/{cam_id}")
 def delete_camera(cam_id: str):
@@ -749,25 +1191,24 @@ def handle_motion(cam_id: str, label: str):
 
     # Ưu tiên chụp Snapshot từ luồng phụ để lấy ảnh cực nhanh
     snap_rtsp = cam_info.get("sub_rtsp_url") or cam_info["rtsp_url"]
-    transport = cam_info.get("rtsp_transport", "tcp")
     try:
         subprocess.Popen([
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-rtsp_transport", transport, "-i", snap_rtsp,
+            *_input_args(snap_rtsp, cam_info),
+            "-i", snap_rtsp,
             "-frames:v", "1", "-q:v", "3", snap_path
         ])
     except Exception as e:
         print(f"[LiteNVR] Không chụp được snapshot cho {cam_id}: {e}", flush=True)
         log_event("warn", f"Không chụp được snapshot: {e}", cam_id)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_conn()
     c = conn.cursor()
     c.execute(
         "INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) VALUES (?, ?, ?, ?, ?, ?)",
         (cam_id, ts, date_str, time_str, label, snap_filename)
     )
     conn.commit()
-    conn.close()
     return {
         "status": "ok",
         "timestamp": ts,
@@ -1051,7 +1492,7 @@ def get_timeline(cam_id: str, date: str):
                 except Exception:
                     pass
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_conn()
     c = conn.cursor()
     c.execute(
         "SELECT id, timestamp, time_str, label, snapshot FROM events WHERE cam_id=? AND date_str=? ORDER BY timestamp DESC",
@@ -1071,7 +1512,6 @@ def get_timeline(cam_id: str, date: str):
             "label": row[3],
             "snapshot": f"/snapshots/{row[4]}"
         })
-    conn.close()
     return {
         "segments": segments,
         "events": events,

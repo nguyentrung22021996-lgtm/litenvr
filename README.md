@@ -39,6 +39,25 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 
 **Hình bị "vỡ"/rác khi xem qua go2rtc/restream:** thường do luồng H.264 ở profile/màu mà trình duyệt không giải mã (High 4:2:2, 4:4:4, 10-bit). LiteNVR tự dò `profile` + `pix_fmt`; nếu không phải H.264 8-bit 4:2:0 (`yuv420p`/`yuvj420p`) sẽ tự chuyển mã sang H.264 chuẩn. Có thể ép thủ công bằng **Codec video = Luôn chuyển sang H.264**. Ngoài ra LiteNVR ưu tiên TCP (`prefer_tcp`) để tránh mất gói.
 
+## Thêm camera & nhiều giao thức
+- **ONVIF tự động**: **+ Quản lý Camera** → **🔎 Tìm camera ONVIF** → chọn thiết bị → nhập tài khoản ONVIF → LiteNVR tự lấy **URL RTSP main + sub**. Hoạt động với hầu hết camera (Dahua/Imou, Hikvision/EZVIZ, Tapo, Hanet… bật ONVIF). Nếu tìm không thấy (Docker bridge chặn multicast), nhập thẳng **IP camera** vào ô bên dưới rồi bấm **Lấy luồng RTSP**.
+- **Thêm hàng loạt**: **➕ Thêm hàng loạt**, mỗi dòng một camera: `mã | tên | rtsp_url | sub_url (tùy chọn)`.
+- **Giao thức đầu vào**: RTSP (mặc định), HTTP MJPEG/snapshot, RTMP, HLS(m3u8) — chỉ cần dán URL, tham số `rtsp_transport` chỉ áp dụng cho RTSP.
+- **Nhóm/Phòng và Nhãn**: điền khi thêm/sửa camera để phân loại; hiển thị trong danh sách và ô chọn nhanh.
+
+## Tiết kiệm CPU / RAM
+- **Live theo nhu cầu**: khi không có ai xem, LiteNVR tự bỏ nhánh HLS (nhất là với camera phải chuyển mã HEVC/H.265 → H.264). Khi mở lại live, luồng tự khởi động trong vài giây. Có thể chỉnh thời gian chờ: biến môi trường `LIVE_IDLE_STOP_SEC` (mặc định 30 giây).
+- **Ghi hình lưu nguyên codec (`-c:v copy`)**: CPU gần như bằng 0; chỉ chuyển mã khi bạn thực sự xem.
+- **Preset transcode nhẹ**: `ultrafast` + 2 luồng, `zerolatency`.
+- **Đệm Motion trong RAM**: tắt tuỳ chọn "Đệm chuyển động trong RAM" trong **⚙️ Lưu trữ** để ghi đệm ra đĩa nếu box ít RAM.
+- Với box yếu hoặc camera giới hạn phiên: dùng **luồng phụ** cho live và/hoặc **restream go2rtc**.
+
+## Nhật ký & Lỗi
+- Nút **📋 Nhật ký** hiển thị: trạng thái từng camera (chạy / lỗi / bị từ chối 5XX / chưa dò được codec) và **danh sách sự kiện** (INFO/WARN/ERR) kèm gợi ý tiếng Việt cho các lỗi RTSP thường gặp.
+- Badge đỏ trên nút đếm số lỗi; có thể lọc "chỉ hiện lỗi/cảnh báo" và **📄 Sao chép** toàn bộ để gửi hỗ trợ.
+- Lỗi từ trình duyệt (HLS/playback) cũng được đẩy về nhật ký này; cảnh báo ổ đĩa đầy xuất hiện tại đây.
+- Nhật ký lưu trong RAM, tự xoá khi khởi động lại container.
+
 ## Dashboard giám sát
 - Thẻ **CPU / RAM / Bộ nhớ** cập nhật mỗi 5 giây kèm biểu đồ mini (sparkline) theo thời gian thực.
 - **CPU** hiển thị % toàn hệ thống và %CPU riêng của từng tiến trình ffmpeg (dưới mỗi camera).

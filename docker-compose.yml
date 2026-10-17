@@ -13,6 +13,7 @@ services:
       - NVR_USER=admin
       - NVR_PASS=admin
       - NVR_AUTH=on
+      - LIVE_IDLE_STOP_SEC=30
     volumes:
       - type: bind
         source: /DATA/AppData/litenvr
@@ -36,6 +37,10 @@ services:
           description:
             en_us: Set "off" to disable login
             vi_vn: Đặt "off" để tắt đăng nhập
+        - container: LIVE_IDLE_STOP_SEC
+          description:
+            en_us: Seconds without viewers before the live branch pauses (saves CPU)
+            vi_vn: Số giây không có người xem thì tạm dừng luồng live (tiết kiệm CPU)
       ports:
         - container: "8080"
           description:
