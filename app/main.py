@@ -15,15 +15,17 @@ import urllib.error
 import urllib.parse
 import uuid
 import re
+import tempfile
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 # Đảm bảo trình duyệt nhận đúng MIME cho HLS (nếu thiếu, live view không phát được)
@@ -139,7 +141,7 @@ def stats_sampler():
 async def lifespan(app: FastAPI):
     start_go2rtc()
     for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
-        if cam.get("record_mode", "continuous") != "off":
+        if schedule_record_mode(cam) != "off":
             start_camera_worker(cam_id)
     threading.Thread(target=motion_buffer_manager, daemon=True).start()
     threading.Thread(target=cleanup_worker, daemon=True).start()
@@ -205,8 +207,30 @@ DEFAULT_CONFIG = {
         "base_url": "",       # VD: http://homeassistant.local:8123
         "token": "",          # Long-Lived Access Token của Home Assistant
         "entities": {}        # cam_id -> [entity_id cảm biến chuyển động, ...]
+    },
+    "notify": {
+        "telegram_enabled": False,
+        "telegram_token": "",
+        "telegram_chat_id": "",
+        "webhook_url": "",
+        "with_photo": True
     }
 }
+
+def _normalize_config(cfg: dict) -> dict:
+    for k, v in DEFAULT_CONFIG.items():
+        cfg.setdefault(k, v)
+    ha = cfg.setdefault("homeassistant", {})
+    for k, v in DEFAULT_CONFIG["homeassistant"].items():
+        ha.setdefault(k, v)
+    nt = cfg.setdefault("notify", {})
+    for k, v in DEFAULT_CONFIG["notify"].items():
+        nt.setdefault(k, v)
+    # Di trú: camera cũ lưu "copy" nay chuyển sang "auto" để tự dò H.265
+    for cam in cfg.get("cameras", {}).values():
+        if cam.get("video_codec") in (None, "", "copy"):
+            cam["video_codec"] = "auto"
+    return cfg
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
@@ -215,17 +239,7 @@ def load_config():
         return json.loads(json.dumps(DEFAULT_CONFIG))
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-            for k, v in DEFAULT_CONFIG.items():
-                cfg.setdefault(k, v)
-            ha = cfg.setdefault("homeassistant", {})
-            for k, v in DEFAULT_CONFIG["homeassistant"].items():
-                ha.setdefault(k, v)
-            # Di trú: camera cũ lưu "copy" nay chuyển sang "auto" để tự dò H.265
-            for cam in cfg.get("cameras", {}).values():
-                if cam.get("video_codec") in (None, "", "copy"):
-                    cam["video_codec"] = "auto"
-            return cfg
+            return _normalize_config(json.load(f))
     except Exception:
         return json.loads(json.dumps(DEFAULT_CONFIG))
 
@@ -265,9 +279,43 @@ def init_db():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_cam_date ON events(cam_id, date_str)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_cam_ts ON events(cam_id, timestamp)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS locks (
+            path TEXT PRIMARY KEY,
+            cam_id TEXT,
+            created INTEGER,
+            note TEXT
+        )
+    """)
     conn.commit()
 
 init_db()
+
+def locked_paths() -> set:
+    """Tập hợp các bản ghi được khoá (cam_id/fname) — không bị tự động xoá."""
+    try:
+        c = db_conn().cursor()
+        c.execute("SELECT path FROM locks")
+        return {row[0] for row in c.fetchall()}
+    except Exception:
+        return set()
+
+def lock_recording(cam_id: str, fname: str, note: str = "") -> bool:
+    fname = os.path.basename(fname)
+    fp = os.path.join(RECORDINGS_DIR, os.path.basename(cam_id), fname)
+    if not os.path.isfile(fp):
+        return False
+    conn = db_conn()
+    conn.execute("INSERT OR REPLACE INTO locks (path, cam_id, created, note) VALUES (?, ?, ?, ?)",
+                 (f"{cam_id}/{fname}", cam_id, int(time.time()), note))
+    conn.commit()
+    return True
+
+def unlock_recording(cam_id: str, fname: str) -> bool:
+    conn = db_conn()
+    cur = conn.execute("DELETE FROM locks WHERE path=?", (f"{cam_id}/{os.path.basename(fname)}",))
+    conn.commit()
+    return cur.rowcount > 0
 
 ffmpeg_processes: Dict[str, subprocess.Popen] = {}
 worker_tokens: Dict[str, threading.Event] = {}
@@ -402,6 +450,7 @@ def _onvif_post(url: str, action: str, body: str, username: str = "", password: 
         '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
         'xmlns:tds="http://www.onvif.org/ver10/device/wsdl" '
         'xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
+        'xmlns:ptz="http://www.onvif.org/ver20/ptz/wsdl" '
         'xmlns:tt="http://www.onvif.org/ver10/schema">'
         f'{_onvif_security(username, password)}'
         f'<s:Body>{body}</s:Body></s:Envelope>'
@@ -563,6 +612,133 @@ def onvif_probe(host: str, port: int = 80, username: str = "", password: str = "
         "main_rtsp_url": main["uri"] if main else "",
         "sub_rtsp_url": sub["uri"] if sub else "",
     }
+
+# ---------------- ONVIF PTZ ----------------
+def _cam_onvif_creds(cam_info: dict) -> tuple:
+    """(host, username, password) suy ra từ URL RTSP của camera."""
+    p = urllib.parse.urlparse((cam_info.get("rtsp_url") or "").strip())
+    return (p.hostname or "", urllib.parse.unquote(p.username or ""),
+            urllib.parse.unquote(p.password or ""))
+
+def _onvif_ptz_url(host: str, port: int, username: str, password: str) -> str:
+    """Tìm XAddr dịch vụ PTZ qua GetCapabilities (mặc định /onvif/ptz_service)."""
+    device = f"http://{host}:{int(port)}/onvif/device_service"
+    fallback = f"http://{host}:{int(port)}/onvif/ptz_service"
+    try:
+        caps = _onvif_post(device, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
+                           "<tds:GetCapabilities><tds:Category>PTZ</tds:Category></tds:GetCapabilities>",
+                           username, password)
+        for el in _find_all(caps, "PTZ"):
+            for child in el.iter():
+                if _local(child.tag) == "XAddr" and child.text and child.text.strip():
+                    return child.text.strip()
+    except Exception as e:
+        log_event("warn", f"ONVIF GetCapabilities(PTZ) lỗi: {e}")
+    return fallback
+
+def _onvif_get_profile_token(media_url: str, username: str, password: str) -> str:
+    root = _onvif_post(media_url, "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
+                       "<trt:GetProfiles/>", username, password)
+    for prof in _find_all(root, "Profiles"):
+        token = prof.attrib.get("token", "")
+        if token:
+            return token
+    return ""
+
+def onvif_ptz_move(cam_id: str, action: str, speed: float = 0.6, duration: float = 0.5,
+                   preset: str = "") -> dict:
+    """Điều khiển PTZ qua ONVIF: ContinuousMove + Stop, hoặc GotoPreset."""
+    cam_info = CONFIG.get("cameras", {}).get(cam_id) or {}
+    if not cam_info:
+        raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+    host, user, pw = _cam_onvif_creds(cam_info)
+    if not host:
+        raise HTTPException(status_code=400, detail="URL RTSP không có host để suy ra ONVIF")
+    port = int(cam_info.get("onvif_port") or 80)
+    ptz_url = _onvif_ptz_url(host, port, user, pw)
+    base = f"http://{host}:{int(port)}"
+    try:
+        token = _onvif_get_profile_token(base + "/onvif/media_service", user, pw)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Không kết nối được ONVIF của camera ({host}:{port}): {e}")
+    if not token:
+        raise HTTPException(status_code=502, detail="Camera không trả về ProfileToken ONVIF")
+
+    def move(x: float, y: float, z: float):
+        body = (
+            "<ptz:ContinuousMove><ptz:ProfileToken>" + xml_escape(token) + "</ptz:ProfileToken>"
+            "<ptz:Velocity><tt:PanTilt x=\"" + f"{x:.2f}" + "\" y=\"" + f"{y:.2f}" + "\"/>"
+            "<tt:Zoom x=\"" + f"{z:.2f}" + "\"/></ptz:Velocity></ptz:ContinuousMove>"
+        )
+        _onvif_post(ptz_url, "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove", body, user, pw)
+
+    def stop():
+        body = "<ptz:Stop><ptz:ProfileToken>" + xml_escape(token) + "</ptz:ProfileToken>"
+        body += "<ptz:PanTilt>true</ptz:PanTilt><ptz:Zoom>true</ptz:Zoom></ptz:Stop>"
+        _onvif_post(ptz_url, "http://www.onvif.org/ver20/ptz/wsdl/Stop", body, user, pw)
+
+    s = max(0.1, min(abs(float(speed or 0.6)), 1.0))
+    moves = {
+        "up": (0, s, 0), "down": (0, -s, 0), "left": (-s, 0, 0), "right": (s, 0, 0),
+        "upleft": (-s, s, 0), "upright": (s, s, 0), "downleft": (-s, -s, 0), "downright": (s, -s, 0),
+        "zoomin": (0, 0, s), "zoomout": (0, 0, -s),
+    }
+    try:
+        if action in ("home", "preset") and action == "home":
+            _onvif_post(ptz_url, "http://www.onvif.org/ver20/ptz/wsdl/GotoHomePosition",
+                        "<ptz:GotoHomePosition><ptz:ProfileToken>" + xml_escape(token) + "</ptz:ProfileToken></ptz:GotoHomePosition>",
+                        user, pw)
+            return {"status": "ok", "action": action}
+        if action == "preset":
+            if not preset:
+                raise HTTPException(status_code=400, detail="Thiếu token preset")
+            _onvif_post(ptz_url, "http://www.onvif.org/ver20/ptz/wsdl/GotoPreset",
+                        "<ptz:GotoPreset><ptz:ProfileToken>" + xml_escape(token) + "</ptz:ProfileToken>"
+                        "<ptz:PresetToken>" + xml_escape(preset) + "</ptz:PresetToken></ptz:GotoPreset>",
+                        user, pw)
+            return {"status": "ok", "action": action, "preset": preset}
+        if action == "stop":
+            stop()
+            return {"status": "ok", "action": "stop"}
+        if action not in moves:
+            raise HTTPException(status_code=400, detail=f"Hành động PTZ không hợp lệ: {action}")
+        x, y, z = moves[action]
+        move(x, y, z)
+        time.sleep(max(0.1, min(float(duration or 0.5), 10.0)))
+        stop()
+        return {"status": "ok", "action": action, "duration": duration}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"PTZ lỗi: {e}")
+
+def onvif_ptz_presets(cam_id: str) -> list:
+    cam_info = CONFIG.get("cameras", {}).get(cam_id) or {}
+    if not cam_info:
+        raise HTTPException(status_code=404, detail="Không tìm thấy camera")
+    host, user, pw = _cam_onvif_creds(cam_info)
+    if not host:
+        raise HTTPException(status_code=400, detail="URL RTSP không có host để suy ra ONVIF")
+    port = int(cam_info.get("onvif_port") or 80)
+    ptz_url = _onvif_ptz_url(host, port, user, pw)
+    try:
+        token = _onvif_get_profile_token(f"http://{host}:{int(port)}/onvif/media_service", user, pw)
+    except Exception:
+        return []
+    if not token:
+        return []
+    try:
+        root = _onvif_post(ptz_url, "http://www.onvif.org/ver20/ptz/wsdl/GetPresets",
+                           "<ptz:GetPresets><ptz:ProfileToken>" + xml_escape(token) + "</ptz:ProfileToken></ptz:GetPresets>",
+                           user, pw)
+    except Exception:
+        return []
+    out = []
+    for el in _find_all(root, "Preset"):
+        out.append({"token": el.attrib.get("token", ""), "name": (_find_text(el, "Name") or "").strip()})
+    return out
 
 def _is_rtsp(url: str) -> bool:
     return (url or "").lower().startswith(("rtsp://", "rtsps://"))
@@ -848,6 +1024,39 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
         ])
     return cmd
 
+# ---------------- Lịch ghi hình theo giờ/ngày ----------------
+def _parse_hm(s: str) -> int:
+    parts = str(s or "00:00").split(":")
+    h = int(parts[0]) if len(parts) > 0 else 0
+    m = int(parts[1]) if len(parts) > 1 else 0
+    return max(0, min(h, 23)) * 60 + max(0, min(m, 59))
+
+def schedule_record_mode(cam_info: dict, now: Optional[datetime] = None) -> str:
+    """Chế độ ghi hiệu lực: continuous | motion | off.
+    Nếu camera bật lịch: ngoài mọi khung giờ -> off. Khung qua đêm (from > to)
+    kéo dài qua nửa đêm. days: 0=Thứ 2 ... 6=Chủ nhật (để trống = mọi ngày)."""
+    base = cam_info.get("record_mode", "continuous")
+    windows = cam_info.get("schedule") or []
+    if not cam_info.get("schedule_enabled") or not windows:
+        return base
+    now = now or datetime.now()
+    cur = now.hour * 60 + now.minute
+    weekday = now.weekday()
+    for w in windows:
+        if not isinstance(w, dict):
+            continue
+        try:
+            days = [int(d) for d in (w.get("days") or [])]
+            if days and weekday not in days:
+                continue
+            f, t = _parse_hm(w.get("from", "00:00")), _parse_hm(w.get("to", "23:59"))
+            inside = (f <= cur <= t) if f <= t else (cur >= f or cur <= t)
+            if inside:
+                return (w.get("mode") or base)
+        except Exception:
+            continue
+    return "off"
+
 def mark_viewer(cam_id: str):
     """Đánh dấu có người đang xem live (heartbeat / tải segment HLS)."""
     with viewer_lock:
@@ -889,7 +1098,9 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         cam_info = CONFIG.get("cameras", {}).get(cam_id)
         if not cam_info:
             break
-        record_needed = cam_info.get("record_mode", "continuous") != "off"
+        sched = schedule_record_mode(cam_info)
+        st["_sched"] = sched
+        record_needed = sched != "off"
         viewers = viewers_active(cam_id)
         if not record_needed and not viewers:
             log_event("info", "Dừng live (không còn người xem)", cam_id)
@@ -899,7 +1110,9 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         # còn nếu phải transcode thì bỏ nhánh HLS để tiết kiệm CPU.
         include_live = viewers or not _needs_transcode(cam_id)
         st["_live_mode"] = include_live
-        cmd = build_ffmpeg_cmd(cam_id, cam_info, video_codec=resolved, include_live=include_live)
+        eff_info = dict(cam_info)
+        eff_info["record_mode"] = sched if sched != "off" else "off"
+        cmd = build_ffmpeg_cmd(cam_id, eff_info, video_codec=resolved, include_live=include_live)
         started = time.time()
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
@@ -1000,7 +1213,7 @@ def ensure_live(cam_id: str):
     mark_viewer(cam_id)
     st = cam_status.setdefault(cam_id, {})
     now = time.time()
-    if cam_info.get("record_mode", "continuous") == "off":
+    if schedule_record_mode(cam_info) == "off":
         if not st.get("running"):
             start_camera_worker(cam_id)
         return
@@ -1018,7 +1231,17 @@ def live_supervisor():
             now = time.time()
             for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
                 st = cam_status.get(cam_id, {})
-                if cam.get("record_mode", "continuous") == "off":
+                sched = schedule_record_mode(cam)
+                # Lịch đổi trạng thái (vào/ra khung giờ) -> khởi động lại worker theo chế độ mới
+                if st.get("_sched") != sched:
+                    if st.get("running"):
+                        log_event("info", f"Lịch ghi hình đổi sang '{sched}', áp dụng lại luồng", cam_id)
+                        stop_camera_worker(cam_id)
+                    if sched != "off":
+                        start_camera_worker(cam_id)
+                    st["_sched"] = sched
+                    continue
+                if sched == "off":
                     last = cam_viewers.get(cam_id, 0)
                     if viewers_active(cam_id) and not st.get("running"):
                         log_event("info", "Có người xem, khởi động live", cam_id)
@@ -1048,7 +1271,7 @@ def motion_buffer_manager():
     while True:
         now = time.time()
         for cam_id, cam_info in list(CONFIG.get("cameras", {}).items()):
-            if cam_info.get("record_mode") != "motion":
+            if schedule_record_mode(cam_info) != "motion":
                 continue
             cam_buf_dir = os.path.join(buffer_root(), cam_id)
             cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
@@ -1105,6 +1328,14 @@ def run_cleanup_now():
     max_storage_gb = float(CONFIG.get("max_storage_gb", 0))
     max_disk_percent = float(CONFIG.get("max_disk_percent", 85))
     deleted_count = 0
+    locked = locked_paths()
+
+    def _is_locked(fp: str) -> bool:
+        try:
+            rel = os.path.relpath(fp, RECORDINGS_DIR)
+        except Exception:
+            return False
+        return rel in locked
 
     # 1. Xóa theo số ngày lưu trữ (Retention Days)
     if retention_days > 0:
@@ -1114,7 +1345,7 @@ def run_cleanup_now():
                 for file in files:
                     filepath = os.path.join(root, file)
                     try:
-                        if os.path.getmtime(filepath) < cutoff:
+                        if os.path.getmtime(filepath) < cutoff and not _is_locked(filepath):
                             os.remove(filepath)
                             deleted_count += 1
                     except Exception:
@@ -1127,6 +1358,8 @@ def run_cleanup_now():
             for file in files:
                 fp = os.path.join(root, file)
                 try:
+                    if _is_locked(fp):
+                        continue
                     all_media.append((os.path.getmtime(fp), os.path.getsize(fp), fp))
                 except Exception:
                     pass
@@ -1159,12 +1392,15 @@ def check_corrupt_recordings():
     removed = 0
     bad = []
     now = time.time()
+    locked = locked_paths()
     for cam_id in list(CONFIG.get("cameras", {})):
         cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
         if not os.path.isdir(cam_dir):
             continue
         for fname in os.listdir(cam_dir):
             if not fname.endswith(".mp4"):
+                continue
+            if f"{cam_id}/{fname}" in locked:
                 continue
             fp = os.path.join(cam_dir, fname)
             try:
@@ -1220,6 +1456,9 @@ class CameraItem(BaseModel):
     video_codec: str = "auto"        # auto | copy | h264 (h264 = tương thích trình duyệt)
     room: str = ""                   # Nhóm/phòng để lọc camera
     tags: str = ""                   # Nhãn tự do, cách nhau dấu phẩy
+    onvif_port: int = 80             # Cổng ONVIF/PTZ (nếu khác 80)
+    schedule_enabled: bool = False   # Bật lịch ghi hình theo giờ
+    schedule: List[Dict[str, Any]] = []  # [{days:[0-6], from:"18:00", to:"06:00", mode:"motion"}]
 
 class StorageSettings(BaseModel):
     retention_days: float
@@ -1227,6 +1466,24 @@ class StorageSettings(BaseModel):
     max_disk_percent: float
     post_motion_sec: int
     ram_buffer: bool = True          # True: đệm motion trong RAM; False: ghi ra đĩa
+
+class NotifySettings(BaseModel):
+    telegram_enabled: bool = False
+    telegram_token: str = ""         # Để trống khi lưu = giữ token cũ
+    telegram_chat_id: str = ""
+    webhook_url: str = ""
+    with_photo: bool = True
+
+class PtzCmd(BaseModel):
+    action: str                      # up|down|left|right|upleft|upright|downleft|downright|zoomin|zoomout|home|stop|preset
+    speed: float = 0.6               # 0..1
+    duration: float = 0.5            # giây (ContinuousMove rồi Stop)
+    preset: str = ""                 # token preset khi action=preset
+
+class LockReq(BaseModel):
+    cam_id: str
+    file: str
+    note: str = ""
 
 class OnvifProbeReq(BaseModel):
     host: str
@@ -1364,6 +1621,9 @@ def add_or_update_camera(item: CameraItem):
         "video_codec": item.video_codec,
         "room": item.room,
         "tags": item.tags,
+        "onvif_port": int(item.onvif_port or 80),
+        "schedule_enabled": bool(item.schedule_enabled),
+        "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
     }
     save_config(CONFIG)
     refresh_go2rtc()
@@ -1386,6 +1646,9 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "rtsp_transport": item.rtsp_transport,
             "audio_mode": item.audio_mode, "record_mode": item.record_mode,
             "video_codec": item.video_codec, "room": item.room, "tags": item.tags,
+            "onvif_port": int(item.onvif_port or 80),
+            "schedule_enabled": bool(item.schedule_enabled),
+            "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
         }
         start_camera_worker(cam_id)
         added += 1
@@ -1450,6 +1713,77 @@ def delete_camera(cam_id: str):
         refresh_go2rtc()
     return {"status": "ok"}
 
+# ---------------- Thông báo chuyển động (Telegram / Webhook) ----------------
+_notify_last: Dict[str, float] = {}
+_notify_lock = threading.Lock()
+
+def _telegram_api(token: str, method: str) -> str:
+    return f"https://api.telegram.org/bot{token}/{method}"
+
+def _telegram_send(token: str, chat_id: str, text: str, photo_path: str = ""):
+    """Gửi tin nhắn Telegram; có ảnh thì dùng sendPhoto (multipart)."""
+    if photo_path and os.path.isfile(photo_path):
+        boundary = "----LiteNVR" + uuid.uuid4().hex
+        fields = {"chat_id": chat_id, "caption": text}
+        parts = []
+        for k, v in fields.items():
+            parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode())
+        with open(photo_path, "rb") as f:
+            parts.append(
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"snap.jpg\"\r\n"
+                f"Content-Type: image/jpeg\r\n\r\n".encode() + f.read() + b"\r\n"
+            )
+        parts.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(parts)
+        req = urllib.request.Request(_telegram_api(token, "sendPhoto"), data=body, method="POST",
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    else:
+        body = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+        req = urllib.request.Request(_telegram_api(token, "sendMessage"), data=body, method="POST",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.read(300).decode("utf-8", "replace")
+
+def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
+    """Gửi thông báo Telegram/webhook khi có chuyển động (chạy trong thread riêng).
+    Bỏ qua nếu sự kiện trước đó của cùng camera < 3 giây (tránh dội tin)."""
+    cfg = CONFIG.get("notify") or {}
+    tg_on = cfg.get("telegram_enabled") and cfg.get("telegram_token") and cfg.get("telegram_chat_id")
+    wh = (cfg.get("webhook_url") or "").strip()
+    if not tg_on and not wh:
+        return
+    now = time.time()
+    with _notify_lock:
+        if now - _notify_last.get(cam_id, 0) < 3:
+            return
+        _notify_last[cam_id] = now
+
+    cam_name = (CONFIG.get("cameras", {}).get(cam_id) or {}).get("name", cam_id)
+    text = f"🚨 {cam_name}: {label} lúc {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+
+    if wh:
+        try:
+            data = json.dumps({"cam_id": cam_id, "name": cam_name, "label": label,
+                               "time": datetime.now().isoformat(timespec="seconds")}).encode()
+            req = urllib.request.Request(wh, data=data, method="POST",
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as e:
+            log_event("warn", f"Webhook thông báo lỗi: {e}", cam_id)
+
+    if tg_on:
+        photo = ""
+        if cfg.get("with_photo", True):
+            for _ in range(20):     # chờ ffmpeg chụp xong (tối đa ~4s)
+                if os.path.isfile(snapshot_path) and os.path.getsize(snapshot_path) > 0:
+                    photo = snapshot_path
+                    break
+                time.sleep(0.2)
+        try:
+            _telegram_send(cfg["telegram_token"], str(cfg["telegram_chat_id"]), text, photo)
+        except Exception as e:
+            log_event("warn", f"Telegram thông báo lỗi: {e}", cam_id)
+
 def handle_motion(cam_id: str, label: str):
     """Ghi nhận 1 sự kiện chuyển động: kích hoạt ghi hình + chụp snapshot + lưu event."""
     cam_info = CONFIG.get("cameras", {}).get(cam_id)
@@ -1488,6 +1822,7 @@ def handle_motion(cam_id: str, label: str):
         (cam_id, ts, date_str, time_str, label, snap_filename)
     )
     conn.commit()
+    threading.Thread(target=notify_motion, args=(cam_id, label, snap_path), daemon=True).start()
     return {
         "status": "ok",
         "timestamp": ts,
@@ -1756,6 +2091,7 @@ def test_hass_connection(settings: HassSettings):
 def get_timeline(cam_id: str, date: str):
     cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
     segments = []
+    locked = locked_paths()
     if os.path.exists(cam_rec_dir):
         for fname in sorted(os.listdir(cam_rec_dir)):
             if fname.startswith(date) and fname.endswith(".mp4"):
@@ -1765,8 +2101,10 @@ def get_timeline(cam_id: str, date: str):
                     start_sec = h * 3600 + m * 60 + s
                     segments.append({
                         "file": f"/recordings/{cam_id}/{fname}",
+                        "fname": fname,
                         "time": time_part.replace("-", ":"),
-                        "start_sec": start_sec
+                        "start_sec": start_sec,
+                        "locked": f"{cam_id}/{fname}" in locked,
                     })
                 except Exception:
                     pass
@@ -1796,6 +2134,190 @@ def get_timeline(cam_id: str, date: str):
         "events": events,
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
     }
+
+@app.get("/api/locks")
+def list_locks():
+    c = db_conn().cursor()
+    c.execute("SELECT path, cam_id, created, note FROM locks ORDER BY created DESC")
+    return {"locks": [{"path": r[0], "cam_id": r[1], "created": r[2], "note": r[3]} for r in c.fetchall()]}
+
+@app.post("/api/locks")
+def add_lock(req: LockReq):
+    if not lock_recording(req.cam_id, req.file, req.note):
+        raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi để khoá")
+    log_event("info", f"Khoá bản ghi {req.file}", req.cam_id)
+    return {"status": "ok"}
+
+@app.delete("/api/locks/{cam_id}/{fname}")
+def remove_lock(cam_id: str, fname: str):
+    if not unlock_recording(cam_id, fname):
+        raise HTTPException(status_code=404, detail="Bản ghi này chưa được khoá")
+    log_event("info", f"Mở khoá bản ghi {fname}", cam_id)
+    return {"status": "ok"}
+
+# ---------------- Thông báo chuyển động (Telegram / Webhook) ----------------
+@app.get("/api/notify")
+def get_notify_settings():
+    nt = CONFIG.get("notify") or {}
+    return {
+        "telegram_enabled": bool(nt.get("telegram_enabled")),
+        "telegram_chat_id": nt.get("telegram_chat_id", ""),
+        "has_telegram_token": bool((nt.get("telegram_token") or "").strip()),
+        "webhook_url": nt.get("webhook_url", ""),
+        "with_photo": bool(nt.get("with_photo", True)),
+    }
+
+@app.post("/api/notify")
+def update_notify_settings(settings: NotifySettings):
+    nt = CONFIG.setdefault("notify", dict(DEFAULT_CONFIG["notify"]))
+    nt["telegram_enabled"] = settings.telegram_enabled
+    if settings.telegram_token.strip():
+        nt["telegram_token"] = settings.telegram_token.strip()
+    nt["telegram_chat_id"] = settings.telegram_chat_id.strip()
+    nt["webhook_url"] = settings.webhook_url.strip()
+    nt["with_photo"] = settings.with_photo
+    save_config(CONFIG)
+    log_event("info", "Đã lưu cấu hình thông báo")
+    return {"status": "ok"}
+
+@app.post("/api/notify/test")
+def test_notify():
+    nt = CONFIG.get("notify") or {}
+    results = {}
+    if nt.get("telegram_enabled") and nt.get("telegram_token") and nt.get("telegram_chat_id"):
+        try:
+            _telegram_send(nt["telegram_token"], str(nt["telegram_chat_id"]),
+                           "✅ LiteNVR: thông báo thử nghiệm — cấu hình Telegram hoạt động!")
+            results["telegram"] = "ok"
+        except Exception as e:
+            results["telegram"] = f"lỗi: {e}"
+    if (nt.get("webhook_url") or "").strip():
+        try:
+            req = urllib.request.Request(nt["webhook_url"].strip(), data=json.dumps(
+                {"test": True, "app": "LiteNVR"}).encode(), method="POST",
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+            results["webhook"] = "ok"
+        except Exception as e:
+            results["webhook"] = f"lỗi: {e}"
+    if not results:
+        raise HTTPException(status_code=400, detail="Chưa bật Telegram và chưa có Webhook URL")
+    return {"status": "ok", "results": results}
+
+# ---------------- PTZ (ONVIF) ----------------
+@app.post("/api/ptz/{cam_id}")
+def ptz_command(cam_id: str, cmd: PtzCmd):
+    return onvif_ptz_move(cam_id, cmd.action, cmd.speed, cmd.duration, cmd.preset)
+
+@app.get("/api/ptz/{cam_id}/presets")
+def ptz_list_presets(cam_id: str):
+    return {"presets": onvif_ptz_presets(cam_id)}
+
+# ---------------- Xuất clip từ bản ghi ----------------
+def _segments_between(cam_id: str, date: str, start_sec: float, end_sec: float) -> List[tuple]:
+    """Các segment giao với khoảng [start_sec, end_sec] (giây trong ngày)."""
+    cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
+    out = []
+    if not os.path.isdir(cam_dir):
+        return out
+    for fname in sorted(os.listdir(cam_dir)):
+        if not (fname.startswith(date) and fname.endswith(".mp4")):
+            continue
+        try:
+            time_part = fname.replace(".mp4", "").split("_")[1]
+            h, m, s = map(int, time_part.split("-"))
+        except Exception:
+            continue
+        st = h * 3600 + m * 60 + s
+        fp = os.path.join(cam_dir, fname)
+        mt = datetime.fromtimestamp(os.path.getmtime(fp))
+        en = mt.hour * 3600 + mt.minute * 60 + mt.second
+        if en <= st:
+            en = st + 60
+        if st < end_sec and en > start_sec:
+            out.append((fp, st, en))
+    return out
+
+def _fmt_hms(sec: float) -> str:
+    sec = max(0, int(sec))
+    return f"{sec // 3600:02d}-{sec % 3600 // 60:02d}-{sec % 60:02d}"
+
+@app.get("/api/export/{cam_id}")
+def export_clip(cam_id: str, date: str, start: float = 0, end: float = 86400, hc: int = 0):
+    """Ghép các đoạn ghi trong khoảng [start, end] (giây trong ngày) thành 1 file MP4 tải về.
+    hc=1: chuyển mã H.264 để phát trên mọi thiết bị (tốn CPU hơn)."""
+    safe_cam = os.path.basename(cam_id)
+    if safe_cam not in CONFIG.get("cameras", {}):
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+    segs = _segments_between(safe_cam, date, start, end)
+    if not segs:
+        raise HTTPException(status_code=404, detail="Không có bản ghi trong khoảng đã chọn")
+    dur = max(1.0, end - start)
+    fname_out = f"{safe_cam}_{date}_{_fmt_hms(start)}_to_{_fmt_hms(end)}.mp4"
+
+    # 1 segment + không cần chuyển mã: trả file gốc luôn (nhanh, không tốn CPU)
+    if len(segs) == 1 and not hc:
+        return FileResponse(segs[0][0], media_type="video/mp4", filename=fname_out)
+
+    tmpdir = tempfile.mkdtemp(prefix="litenvr_export_")
+    out_path = os.path.join(tmpdir, fname_out)
+    list_path = os.path.join(tmpdir, "list.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        for fp, _, _ in segs:
+            f.write("file '" + fp.replace("'", "'\\''") + "'\n")
+
+    offs = max(0.0, start - segs[0][1])
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+           "-f", "concat", "-safe", "0", "-i", list_path,
+           "-ss", f"{offs:.3f}", "-t", f"{dur:.3f}"]
+    if hc:
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac"]
+    else:
+        cmd += ["-c", "copy"]
+    cmd += ["-movflags", "+faststart", out_path]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=1800)
+    except Exception as e:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Lỗi xuất clip: {e}")
+    if proc.returncode != 0 or not os.path.isfile(out_path):
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+        raise HTTPException(status_code=500, detail=f"ffmpeg lỗi khi xuất clip: {err}" if err else "ffmpeg lỗi khi xuất clip")
+
+    log_event("info", f"Xuất clip {date} {_fmt_hms(start)}-{_fmt_hms(end)} ({len(segs)} đoạn)", safe_cam)
+    return FileResponse(out_path, media_type="video/mp4", filename=fname_out,
+                        background=BackgroundTask(shutil.rmtree, tmpdir, True))
+
+# ---------------- Backup / Restore cấu hình ----------------
+@app.get("/api/config/export")
+def export_config():
+    """Tải toàn bộ cấu hình (camera, lịch, HA, thông báo, lưu trữ) dạng JSON."""
+    body = json.dumps(CONFIG, indent=2, ensure_ascii=False)
+    fname = f"litenvr_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return Response(content=body, media_type="application/json",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+@app.post("/api/config/import")
+def import_config(payload: Dict[str, Any] = Body(...)):
+    """Khôi phục cấu hình từ file backup JSON (thay thế toàn bộ cấu hình hiện tại)."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("cameras"), dict):
+        raise HTTPException(status_code=400, detail="File cấu hình không hợp lệ (thiếu 'cameras')")
+    for cid in list(CONFIG.get("cameras", {})):
+        stop_camera_worker(cid)
+    merged = _normalize_config(json.loads(json.dumps(payload)))
+    CONFIG.clear()
+    CONFIG.update(merged)
+    save_config(CONFIG)
+    refresh_go2rtc()
+    started = 0
+    for cid, cam in CONFIG.get("cameras", {}).items():
+        if schedule_record_mode(cam) != "off":
+            start_camera_worker(cid)
+            started += 1
+    log_event("info", f"Khôi phục cấu hình: {len(CONFIG.get('cameras', {}))} camera, khởi động {started} luồng")
+    return {"status": "ok", "cameras": len(CONFIG.get("cameras", {})), "started": started}
 
 @app.get("/api/logs")
 def get_logs(limit: int = 200):

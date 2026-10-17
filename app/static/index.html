@@ -59,7 +59,7 @@
     .timeline-legend { display: flex; gap: 14px; font-size: 11px; color: #999; margin-top: 6px; flex-wrap: wrap; }
     .timeline-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
     .events-list { max-width: 1000px; margin: 20px auto; padding: 0 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
-    .event-card { background: #1e1e1e; border-radius: 8px; padding: 8px; cursor: pointer; border: 1px solid #333; }
+    .event-card { background: #1e1e1e; border-radius: 8px; padding: 8px; cursor: pointer; border: 1px solid #333; position: relative; }
     .event-card img { width: 100%; height: 115px; object-fit: cover; border-radius: 4px; background: #000; }
     .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.78); align-items: center; justify-content: center; z-index: 10; padding: 12px; }
     .modal-box { background: #1e1e1e; padding: 20px; border-radius: 10px; width: 100%; max-width: 540px; max-height: 90vh; overflow-y: auto; border: 1px solid #444; }
@@ -93,6 +93,19 @@
     .onvif-item .nm { font-weight: 600; }
     .onvif-item .ip { color: #aaa; margin-left: 8px; }
     textarea { width: 100%; box-sizing: border-box; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 8px; font-family: inherit; font-size: 13px; }
+    .grid-view { display: none; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 0 14px 10px; }
+    .grid-view.g9 { grid-template-columns: repeat(3, 1fr); }
+    .grid-tile { position: relative; background: #000; border: 1px solid #333; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; cursor: pointer; }
+    .grid-tile:hover { border-color: #64b5f6; }
+    .grid-tile video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+    .grid-tile .gname { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.6); color: #eee; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+    .rec-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; color: #aaa; }
+    .rec-tools input[type="time"] { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 5px; padding: 4px 6px; font-family: inherit; }
+    .ptz-pad { display: grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 38px); gap: 4px; margin-top: 8px; }
+    .ptz-pad button { padding: 0; font-size: 15px; }
+    .sched-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+    .sched-row input.s-days { flex: 1; min-width: 130px; }
+    .evt-dl { position: absolute; right: 6px; top: 6px; padding: 2px 8px; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -101,12 +114,14 @@
     <select id="camSelect" aria-label="Chọn camera"></select>
     <input type="date" id="dateInput" aria-label="Chọn ngày">
     <button id="btnLive" class="active" onclick="playLive()">Trực tiếp (Live)</button>
+    <button id="btnGrid" onclick="toggleGrid()">⊞ Lưới</button>
     <button class="warn" onclick="testMotion()">⚡ Test Motion</button>
     <button onclick="showDiagnostics()">🔍 Chẩn đoán</button>
     <button id="btnLogs" onclick="openLogsModal()">📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
     <button class="primary" onclick="openCamModal()">+ Quản lý Camera</button>
     <button onclick="openStorageModal()">⚙️ Lưu trữ</button>
     <button onclick="openHassModal()">🛰️ Home Assistant</button>
+    <button onclick="openNotifyModal()">🔔 Thông báo</button>
     <div class="spacer"></div>
     <span id="statusText" style="font-size:13px;color:#ccc;">Đang khởi tạo...</span>
   </header>
@@ -131,6 +146,8 @@
   </section>
 
   <section class="cam-strip" id="camStrip"></section>
+
+  <section class="grid-view" id="gridView"></section>
 
   <div class="player-box">
     <video id="videoPlayer" controls autoplay muted playsinline></video>
@@ -158,6 +175,45 @@
     <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-top:6px;">
       <span id="scrubTime">Bản ghi: 00:00:00</span>
       <span id="liveBadge" style="color:#4caf50;">● Live</span>
+    </div>
+    <div class="rec-tools">
+      <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)">🎮 PTZ</button>
+      <button onclick="lockCurrent()" title="Khoá đoạn bản ghi tại con trỏ để không bị xoá tự động">🔒 Khoá đoạn</button>
+      <button onclick="unlockCurrent()" title="Mở khoá đoạn bản ghi tại con trỏ">🔓 Mở khoá</button>
+      <span style="margin-left:8px;">Xuất clip:</span>
+      <input type="time" id="expFrom" step="1" aria-label="Từ giờ">
+      <span>→</span>
+      <input type="time" id="expTo" step="1" aria-label="Đến giờ">
+      <button class="primary" onclick="exportClip(false)">⬇️ Tải đoạn</button>
+      <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="expHc" style="width:auto;"> chuyển H.264</label>
+    </div>
+    <div id="ptzBox" style="display:none; margin-top:8px;">
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start;">
+        <div class="ptz-pad">
+          <button onclick="ptz('upleft')" title="Chéo lên trái">↖</button>
+          <button onclick="ptz('up')" title="Lên">▲</button>
+          <button onclick="ptz('upright')" title="Chéo lên phải">↗</button>
+          <button onclick="ptz('left')" title="Trái">◀</button>
+          <button onclick="ptz('stop')" title="Dừng">⏹</button>
+          <button onclick="ptz('right')" title="Phải">▶</button>
+          <button onclick="ptz('downleft')" title="Chéo xuống trái">↙</button>
+          <button onclick="ptz('down')" title="Xuống">▼</button>
+          <button onclick="ptz('downright')" title="Chéo xuống phải">↘</button>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px; font-size:12px; color:#aaa;">
+          <div style="display:flex; gap:6px;">
+            <button onclick="ptz('zoomin')" title="Zoom vào">➕ Zoom</button>
+            <button onclick="ptz('zoomout')" title="Zoom ra">➖ Zoom</button>
+          </div>
+          <label>Tốc độ: <input type="range" id="ptzSpeed" min="0.2" max="1" step="0.1" value="0.6" style="width:100px;vertical-align:middle;" oninput="document.getElementById('ptzSpeedVal').textContent=this.value"> <span id="ptzSpeedVal">0.6</span></label>
+          <label>Thời gian (giây): <input type="number" id="ptzDur" value="0.5" min="0.1" max="5" step="0.1" style="width:60px;"></label>
+          <div style="display:flex; gap:6px;">
+            <select id="ptzPreset" style="background:#2a2a2a;color:#eee;border:1px solid #444;border-radius:5px;padding:4px;"></select>
+            <button onclick="ptzPresetGo()">📍 Đến preset</button>
+          </div>
+          <span id="ptzMsg" style="color:#aaa;"></span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -281,6 +337,15 @@
         </select>
       </div>
 
+      <div class="form-row">
+        <label style="flex-direction:row; align-items:center; gap:8px;">
+          <input type="checkbox" id="inpSchedEnabled" style="width:auto;">
+          📅 Bật lịch ghi hình theo giờ (ngoài mọi khung giờ = KHÔNG ghi)
+        </label>
+      </div>
+      <div id="schedRows"></div>
+      <button style="margin-bottom:10px;" onclick="addSchedRow()">+ Thêm khung giờ</button>
+
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
         <button onclick="closeCamModal()">Đóng</button>
         <button class="primary" onclick="saveCamera()">Lưu Camera</button>
@@ -318,6 +383,15 @@
           <button class="primary" onclick="saveStorage()">Lưu cấu hình</button>
         </div>
       </div>
+      <hr style="border-color:#333; margin:16px 0 10px;">
+      <h4 style="margin:0 0 8px;">💾 Sao lưu / Khôi phục toàn bộ cấu hình</h4>
+      <div style="font-size:12px;color:#888;margin-bottom:8px;">Bao gồm camera, lịch ghi hình, Home Assistant, thông báo Telegram/Webhook.</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button onclick="window.location='/api/config/export'">⬇️ Xuất cấu hình (.json)</button>
+        <button onclick="document.getElementById('restoreFile').click()">⬆️ Nhập cấu hình</button>
+        <input type="file" id="restoreFile" accept="application/json,.json" style="display:none;" onchange="importConfigFile(this)">
+      </div>
+      <div id="backupMsg" style="font-size:12px;color:#aaa;margin-top:8px;"></div>
     </div>
   </div>
 
@@ -384,8 +458,46 @@
     </div>
   </div>
 
+  <!-- Modal Thông báo chuyển động -->
+  <div class="modal" id="notifyModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">🔔 Thông báo khi có chuyển động</h3>
+      <div class="form-row">
+        <label style="flex-direction:row; align-items:center; gap:8px;">
+          <input type="checkbox" id="ntEnabled" style="width:auto;">
+          Bật thông báo Telegram
+        </label>
+      </div>
+      <div class="form-row">
+        <label>Bot Token (tạo bot qua @BotFather):</label>
+        <input type="password" id="ntToken" placeholder="123456:ABC-DEF...">
+      </div>
+      <div id="ntTokenHint" style="font-size:12px;color:#4caf50;margin:-6px 0 10px;"></div>
+      <div class="form-row">
+        <label>Chat ID (nhóm/cá nhân nhận tin):</label>
+        <input id="ntChatId" placeholder="VD: 123456789">
+      </div>
+      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
+        <input type="checkbox" id="ntPhoto"> Kèm ảnh snapshot khi báo động
+      </label>
+      <div class="form-row">
+        <label>Webhook URL (tùy chọn - nhận POST JSON, dùng cho Node-RED/HASS/n8n):</label>
+        <input id="ntWebhook" placeholder="http://...">
+      </div>
+      <div id="ntStatus" style="font-size:12px;color:#aaa;margin:6px 0 12px;"></div>
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
+        <button class="warn" onclick="testNotify()">📨 Gửi thử</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeNotifyModal()">Đóng</button>
+          <button class="primary" onclick="saveNotify()">Lưu</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null;
+    let lastCursorSec = 0;
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
     const dateInput = document.getElementById("dateInput");
@@ -461,7 +573,7 @@
         tile.tabIndex = 0;
         tile.setAttribute("role", "button");
         tile.setAttribute("aria-label", "Chọn camera " + info.name);
-        const modeTxt = info.record_mode === "motion" ? "Motion" : (info.record_mode === "off" ? "Live" : "24/7");
+        const modeTxt = info.schedule_enabled ? "Lịch" : (info.record_mode === "motion" ? "Motion" : (info.record_mode === "off" ? "Live" : "24/7"));
         const snap = info._snapshot
           ? `<img src="${info._snapshot}" alt="">`
           : `<div class="tile-noimg">Không có ảnh</div>`;
@@ -483,7 +595,7 @@
       for (const [id, info] of Object.entries(cameras)) {
         const opt = document.createElement("option");
         const modeTxt = info.record_mode === "motion" ? " [Motion]" : (info.record_mode === "off" ? " [Live]" : " [24/7]");
-        opt.value = id; opt.textContent = info.name + (info.room ? " · " + info.room : "") + modeTxt;
+        opt.value = id; opt.textContent = info.name + (info.room ? " · " + info.room : "") + (info.schedule_enabled ? " [Lịch]" : modeTxt);
         sel.appendChild(opt);
       }
       if (Object.keys(cameras).length === 0) {
@@ -510,6 +622,7 @@
       setInterval(updateLogBadge, 15000);
       await loadTimeline();
       playLive();
+      if (gridCount > 0) renderGrid();
     }
 
     async function refreshSnapshots() {
@@ -581,6 +694,41 @@
       document.getElementById("inpVideoCodec").value = c.video_codec || "auto";
       document.getElementById("inpRoom").value = c.room || "";
       document.getElementById("inpTags").value = c.tags || "";
+      document.getElementById("inpSchedEnabled").checked = !!c.schedule_enabled;
+      const rows = document.getElementById("schedRows");
+      rows.innerHTML = "";
+      (c.schedule || []).forEach(w => addSchedRow(w));
+    }
+
+    function addSchedRow(w) {
+      w = w || {};
+      const days = (w.days || []).map(d => d + 1).join(",");
+      const div = document.createElement("div");
+      div.className = "sched-row";
+      div.innerHTML = `<input class="s-days" placeholder="Thứ (1=T2 … 7=CN; trống=mọi ngày)" value="${days}">
+        <input type="time" class="s-from" value="${w.from || "18:00"}">
+        <span>→</span>
+        <input type="time" class="s-to" value="${w.to || "06:00"}">
+        <select class="s-mode">
+          <option value="continuous">Ghi 24/7</option>
+          <option value="motion">Chỉ Motion</option>
+        </select>
+        <button title="Xoá khung giờ" onclick="this.parentNode.remove()">✖</button>`;
+      div.querySelector(".s-mode").value = w.mode || "motion";
+      document.getElementById("schedRows").appendChild(div);
+    }
+
+    function readSchedRows() {
+      return [...document.querySelectorAll("#schedRows .sched-row")].map(r => {
+        const days = r.querySelector(".s-days").value.split(",")
+          .map(s => parseInt(s.trim(), 10)).filter(n => n >= 1 && n <= 7).map(n => n - 1);
+        return {
+          days,
+          from: r.querySelector(".s-from").value || "00:00",
+          to: r.querySelector(".s-to").value || "23:59",
+          mode: r.querySelector(".s-mode").value
+        };
+      });
     }
 
     async function saveCamera() {
@@ -595,7 +743,9 @@
         audio_mode: document.getElementById("inpAudio").value,
         video_codec: document.getElementById("inpVideoCodec").value,
         room: document.getElementById("inpRoom").value.trim(),
-        tags: document.getElementById("inpTags").value.trim()
+        tags: document.getElementById("inpTags").value.trim(),
+        schedule_enabled: document.getElementById("inpSchedEnabled").checked,
+        schedule: readSchedRows()
       };
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
@@ -992,7 +1142,8 @@
         card.className = "event-card";
         card.onclick = () => playAtSecond(e.sec_of_day);
         card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
-                          <div style="margin-top:6px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>`;
+                          <div style="margin-top:6px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>
+                          <button class="evt-dl" title="Tải clip quanh sự kiện này" onclick="event.stopPropagation(); exportEvent(${e.sec_of_day})">⬇️</button>`;
         list.appendChild(card);
       });
       setCursor(0, false);
@@ -1007,6 +1158,7 @@
     }
 
     function setCursor(sec, showTip) {
+      lastCursorSec = sec;
       const pct = Math.max(0, Math.min(100, sec / 86400 * 100));
       const line = document.getElementById("cursorLine");
       const handle = document.getElementById("cursorHandle");
@@ -1209,6 +1361,250 @@
       const text = lines.join("\n");
       if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => alert("Đã sao chép nhật ký."), () => prompt("Sao chép nhật ký:", text));
       else prompt("Sao chép nhật ký:", text);
+    }
+
+    // ================= Multi-view grid (1/4/9) =================
+    let gridCount = 0, gridPlayers = [], gridHtTimer = null;
+    function toggleGrid() {
+      gridCount = gridCount === 0 ? 4 : (gridCount === 4 ? 9 : 0);
+      renderGrid();
+    }
+    function renderGrid() {
+      const gv = document.getElementById("gridView");
+      const on = gridCount > 0;
+      gridPlayers.forEach(p => { try { p.hls && p.hls.destroy(); } catch (e) {} });
+      gridPlayers = [];
+      gv.innerHTML = "";
+      gv.className = "grid-view" + (gridCount === 9 ? " g9" : "");
+      gv.style.display = on ? "grid" : "none";
+      document.querySelector(".player-box").style.display = on ? "none" : "";
+      document.querySelector(".timeline-container").style.display = on ? "none" : "";
+      document.getElementById("eventsList").style.display = on ? "none" : "";
+      const btn = document.getElementById("btnGrid");
+      btn.classList.toggle("active", on);
+      btn.textContent = !on ? "⊞ Lưới" : (gridCount === 4 ? "⊞ Lưới 4 (bấm: 9 ô)" : "⊞ Lưới 9 (bấm: tắt)");
+      if (gridHtTimer) { clearInterval(gridHtTimer); gridHtTimer = null; }
+      try { video.pause(); } catch (e) {}
+      if (!on) { if (currentCam) playLive(); return; }
+      stopLiveHeartbeat();
+      const ids = Object.keys(cameras).slice(0, gridCount);
+      for (const id of ids) {
+        const tile = document.createElement("div");
+        tile.className = "grid-tile";
+        tile.title = "Bấm để xem 1 camera (thoát lưới)";
+        tile.innerHTML = `<video muted playsinline autoplay></video><div class="gname">${esc(cameras[id].name || id)}</div>`;
+        tile.onclick = () => {
+          gridCount = 0;
+          currentCam = id;
+          document.getElementById("camSelect").value = id;
+          renderCamStrip();
+          loadTimeline();
+          renderGrid();
+        };
+        gv.appendChild(tile);
+        const v = tile.querySelector("video");
+        const url = `/hls/${id}/live.m3u8`;
+        let h = null;
+        if (typeof Hls !== "undefined" && Hls.isSupported()) {
+          h = new Hls({ liveDurationInfinity: true });
+          h.loadSource(url);
+          h.attachMedia(v);
+          h.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+        } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
+          v.src = url;
+          v.play().catch(() => {});
+        }
+        gridPlayers.push({ hls: h, cam: id });
+      }
+      const beat = () => ids.forEach(id => fetch(`/api/live/${id}`, { method: "POST" }).catch(() => {}));
+      beat();
+      gridHtTimer = setInterval(beat, 5000);
+    }
+
+    // ================= PTZ (ONVIF) =================
+    function togglePtz() {
+      const box = document.getElementById("ptzBox");
+      const show = box.style.display === "none";
+      box.style.display = show ? "block" : "none";
+      if (show) loadPtzPresets();
+    }
+    async function loadPtzPresets() {
+      const sel = document.getElementById("ptzPreset");
+      try {
+        const d = await fetch(`/api/ptz/${currentCam}/presets`).then(r => r.json());
+        sel.innerHTML = (d.presets || []).length
+          ? d.presets.map(p => `<option value="${esc(p.token)}">${esc(p.name || p.token)}</option>`).join("")
+          : `<option value="">(không có preset)</option>`;
+      } catch (e) {
+        sel.innerHTML = `<option value="">(lỗi tải preset)</option>`;
+      }
+    }
+    async function ptz(action) {
+      if (!currentCam) return;
+      const msg = document.getElementById("ptzMsg");
+      const speed = parseFloat(document.getElementById("ptzSpeed").value) || 0.6;
+      const duration = parseFloat(document.getElementById("ptzDur").value) || 0.5;
+      msg.textContent = "⏳ Đang gửi lệnh " + action + "...";
+      try {
+        const r = await fetch(`/api/ptz/${currentCam}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, speed, duration })
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || r.status);
+        msg.textContent = "✔ " + action;
+      } catch (e) {
+        msg.textContent = "❌ " + e;
+      }
+    }
+    function ptzPresetGo() {
+      const token = document.getElementById("ptzPreset").value;
+      if (!token) return alert("Camera chưa có preset nào.");
+      ptzSend({ action: "preset", preset: token });
+    }
+    async function ptzSend(payload) {
+      const msg = document.getElementById("ptzMsg");
+      msg.textContent = "⏳ Đang gửi lệnh...";
+      try {
+        const r = await fetch(`/api/ptz/${currentCam}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || r.status);
+        msg.textContent = "✔ OK";
+      } catch (e) { msg.textContent = "❌ " + e; }
+    }
+
+    // ================= Khoá bản ghi / Xuất clip =================
+    function segAtCursor() {
+      let chosen = null;
+      for (const s of segments) { if (s.start_sec <= lastCursorSec) chosen = s; else break; }
+      return chosen || segments[0] || null;
+    }
+    async function lockCurrent() {
+      const s = segAtCursor();
+      if (!s) return alert("Không có bản ghi tại vị trí con trỏ.");
+      const r = await fetch("/api/locks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cam_id: currentCam, file: s.fname })
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); return alert("Không khoá được: " + (d.detail || r.status)); }
+      await loadTimeline();
+    }
+    async function unlockCurrent() {
+      const s = segAtCursor();
+      if (!s) return alert("Không có bản ghi tại vị trí con trỏ.");
+      const r = await fetch(`/api/locks/${encodeURIComponent(currentCam)}/${encodeURIComponent(s.fname)}`, { method: "DELETE" });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); return alert("Không mở khoá được: " + (d.detail || r.status)); }
+      await loadTimeline();
+    }
+    function timeStrToSec(v, fallback) {
+      if (!v) return fallback;
+      const p = v.split(":").map(Number);
+      return (p[0] || 0) * 3600 + (p[1] || 0) * 60 + (p[2] || 0);
+    }
+    function exportEvent(sec) {
+      const post = (sysInfo && sysInfo.post_motion_sec) || 60;
+      exportRange(Math.max(0, sec - 10), Math.min(86400, sec + post + 10), document.getElementById("expHc").checked);
+    }
+    function exportClip() {
+      const from = timeStrToSec(document.getElementById("expFrom").value, Math.max(0, lastCursorSec - 60));
+      const to = timeStrToSec(document.getElementById("expTo").value, Math.min(86400, lastCursorSec + 60));
+      exportRange(from, to, document.getElementById("expHc").checked);
+    }
+    async function exportRange(fromSec, toSec, hc) {
+      if (!currentCam) return alert("Chưa chọn camera.");
+      if (toSec <= fromSec) return alert("Khoảng thời gian không hợp lệ (đến phải sau từ).");
+      const statusEl = document.getElementById("statusText");
+      statusEl.textContent = "Đang ghép clip... (có thể mất vài giây)";
+      try {
+        const url = `/api/export/${encodeURIComponent(currentCam)}?date=${dateInput.value}&start=${Math.floor(fromSec)}&end=${Math.ceil(toSec)}&hc=${hc ? 1 : 0}`;
+        const r = await fetch(url);
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          statusEl.textContent = "Xuất clip lỗi";
+          return alert("Không xuất được clip: " + (d.detail || r.status));
+        }
+        const blob = await r.blob();
+        const cd = r.headers.get("Content-Disposition") || "";
+        const m = cd.match(/filename="?([^";]+)/);
+        const fname = m ? m[1] : `${currentCam}_${dateInput.value}.mp4`;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+        statusEl.textContent = "Đã tải clip: " + fname;
+      } catch (e) {
+        statusEl.textContent = "Xuất clip lỗi";
+        alert("Lỗi tải clip: " + e);
+      }
+    }
+
+    // ================= Thông báo (Telegram/Webhook) =================
+    async function openNotifyModal() {
+      const cfg = await fetch("/api/notify").then(r => r.json());
+      document.getElementById("ntEnabled").checked = !!cfg.telegram_enabled;
+      document.getElementById("ntChatId").value = cfg.telegram_chat_id || "";
+      document.getElementById("ntToken").value = "";
+      document.getElementById("ntTokenHint").textContent = cfg.has_telegram_token ? "✔ Đã lưu token (để trống khi lưu = giữ nguyên)" : "";
+      document.getElementById("ntPhoto").checked = cfg.with_photo !== false;
+      document.getElementById("ntWebhook").value = cfg.webhook_url || "";
+      document.getElementById("ntStatus").textContent = "";
+      document.getElementById("notifyModal").style.display = "flex";
+    }
+    function closeNotifyModal() { document.getElementById("notifyModal").style.display = "none"; }
+    async function saveNotify() {
+      const payload = {
+        telegram_enabled: document.getElementById("ntEnabled").checked,
+        telegram_token: document.getElementById("ntToken").value.trim(),
+        telegram_chat_id: document.getElementById("ntChatId").value.trim(),
+        webhook_url: document.getElementById("ntWebhook").value.trim(),
+        with_photo: document.getElementById("ntPhoto").checked
+      };
+      const r = await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const st = document.getElementById("ntStatus");
+      st.style.color = r.ok ? "#4caf50" : "#ef5350";
+      st.textContent = r.ok ? "✔ Đã lưu cấu hình thông báo." : "❌ Lưu lỗi.";
+    }
+    async function testNotify() {
+      const st = document.getElementById("ntStatus");
+      st.style.color = "#aaa";
+      st.textContent = "⏳ Đang gửi thử...";
+      try {
+        const r = await fetch("/api/notify/test", { method: "POST" });
+        const d = await r.json();
+        st.style.color = r.ok ? "#4caf50" : "#ef5350";
+        st.textContent = r.ok ? "✔ " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
+      } catch (e) {
+        st.style.color = "#ef5350";
+        st.textContent = "❌ " + e;
+      }
+    }
+
+    // ================= Backup / Restore cấu hình =================
+    async function importConfigFile(input) {
+      const f = input.files[0];
+      if (!f) return;
+      if (!confirm("Nhập cấu hình từ file sẽ THAY THẾ toàn bộ cấu hình hiện tại (camera, lịch, HA, thông báo). Tiếp tục?")) { input.value = ""; return; }
+      const msg = document.getElementById("backupMsg");
+      msg.textContent = "⏳ Đang khôi phục...";
+      try {
+        const text = await f.text();
+        const r = await fetch("/api/config/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: text });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || r.status);
+        msg.style.color = "#4caf50";
+        msg.textContent = `✔ Đã khôi phục ${d.cameras} camera (khởi động ${d.started} luồng).`;
+        await init();
+      } catch (e) {
+        msg.style.color = "#ef5350";
+        msg.textContent = "❌ " + e;
+      }
+      input.value = "";
     }
 
     init();
