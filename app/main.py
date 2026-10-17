@@ -101,6 +101,10 @@ def load_config():
             ha = cfg.setdefault("homeassistant", {})
             for k, v in DEFAULT_CONFIG["homeassistant"].items():
                 ha.setdefault(k, v)
+            # Di trú: camera cũ lưu "copy" nay chuyển sang "auto" để tự dò H.265
+            for cam in cfg.get("cameras", {}).values():
+                if cam.get("video_codec") in (None, "", "copy"):
+                    cam["video_codec"] = "auto"
             return cfg
     except Exception:
         return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -184,10 +188,14 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     transport = cam_info.get("rtsp_transport", "tcp")
     audio_mode = cam_info.get("audio_mode", "aac")  # aac | none | copy
     record_mode = cam_info.get("record_mode", "continuous")  # continuous | motion | off
+    explicit = cam_info.get("video_codec", "auto")
     if video_codec is None:
-        video_codec = resolve_video_codec(cam_id, cam_info)  # copy | h264
+        video_codec = resolve_video_codec(cam_id, cam_info)  # copy | h264 cho LIVE
+    # Bản ghi lưu NGUYÊN codec gốc để nhẹ CPU (kể cả HEVC). Khi xem lại sẽ tự
+    # chuyển mã. Chỉ ép H.264 khi người dùng chọn thủ công "h264".
+    record_codec = "h264" if explicit == "h264" else "copy"
 
-    # H.264 transcode cho camera dùng H.265/HEVC (trình duyệt không phát được HEVC)
+    # H.264 transcode cho LUỒNG LIVE khi camera dùng H.265/HEVC (trình duyệt không phát được HEVC)
     vcodec_args = (
         ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
          "-g", "50", "-sc_threshold", "0", "-pix_fmt", "yuv420p"]
@@ -221,7 +229,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     # Nhánh 1: Ghi hình (Continuous lưu thẳng HDD, Motion lưu tạm vào RAM buffer 15s/đoạn)
     if record_mode in ("continuous", "motion"):
         cmd.extend(["-map", "0:v:0"])
-        if video_codec == "h264":
+        if record_codec == "h264":
             cmd.extend(vcodec_args)
             if audio_mode == "none":
                 cmd.extend(["-an"])
