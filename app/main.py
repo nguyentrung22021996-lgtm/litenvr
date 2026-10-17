@@ -177,10 +177,16 @@ def resolve_video_codec(cam_id: str, cam_info: dict):
     if requested in ("copy", "h264"):
         return requested
     codec = detect_video_codec(cam_id, cam_info)
-    cam_status.setdefault(cam_id, {})["detected_codec"] = codec
+    st = cam_status.setdefault(cam_id, {})
+    st["detected_codec"] = codec
     if not codec:
-        return "copy"          # không dò được -> giữ nguyên (rẻ CPU)
-    return "copy" if codec in ("h264", "avc1", "h264_vaapi", "avc") else "h264"
+        # Không dò được (camera bận/đang bị chiếm session, mạng chậm...).
+        # Chọn H.264 để LUÔN phát được; nếu camera vốn H.264 thì ffprobe
+        # sẽ thành công ở lần chạy sau và tự quay về copy.
+        st["detect_failed"] = True
+        return "h264"
+    st["detect_failed"] = False
+    return "copy" if codec in ("h264", "avc1", "avc", "h264_vaapi") else "h264"
 
 def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None):
     main_url = cam_info["rtsp_url"]
@@ -881,6 +887,7 @@ def get_cam_status(cam_id: str):
         "running": bool(st.get("running")),
         "hls_ready": hls_ready,
         "detected_codec": st.get("detected_codec", ""),
+        "detect_failed": bool(st.get("detect_failed", False)),
         "last_error": st.get("last_error", ""),
         "log": list(st.get("log", [])),
     }
