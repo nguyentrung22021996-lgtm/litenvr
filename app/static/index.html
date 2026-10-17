@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiteNVR - ZimaOS Camera NVR</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #121212; color: #eee; }
+    header { display: flex; gap: 10px; padding: 12px 16px; background: #1e1e1e; align-items: center; flex-wrap: wrap; border-bottom: 1px solid #333; }
+    select, input, button { padding: 8px 12px; background: #2c2c2c; color: #fff; border: 1px solid #444; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    button.active { background: #e53935; border-color: #e53935; }
+    button.primary { background: #1976d2; border-color: #1976d2; }
+    .disk-badge { margin-left: auto; font-size: 13px; color: #aaa; background: #252525; padding: 6px 10px; border-radius: 6px; }
+    .player-box { width: 100%; max-width: 1000px; margin: 12px auto; background: #000; aspect-ratio: 16/9; position: relative; border-radius: 8px; overflow: hidden; }
+    video { width: 100%; height: 100%; }
+    .timeline-container { max-width: 1000px; margin: 15px auto; padding: 0 12px; }
+    .timeline-bar { height: 46px; background: #252525; position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 1px solid #444; touch-action: none; }
+    .seg-mark { position: absolute; top: 0; bottom: 0; width: 0.25%; background: #2e7d32; }
+    .evt-mark { position: absolute; top: 0; bottom: 0; width: 3px; background: #ff1744; z-index: 2; }
+    .cursor-line { position: absolute; top: 0; bottom: 0; width: 2px; background: #ffeb3b; z-index: 3; pointer-events: none; }
+    .events-list { max-width: 1000px; margin: 20px auto; padding: 0 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+    .event-card { background: #1e1e1e; border-radius: 8px; padding: 8px; cursor: pointer; border: 1px solid #333; }
+    .event-card img { width: 100%; height: 115px; object-fit: cover; border-radius: 4px; background: #000; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; z-index: 10; }
+    .modal-box { background: #1e1e1e; padding: 20px; border-radius: 10px; width: 90%; max-width: 480px; border: 1px solid #444; }
+    .form-row { margin-bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+    .cam-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; background: #2a2a2a; border-radius: 6px; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <select id="camSelect"></select>
+    <input type="date" id="dateInput">
+    <button id="btnLive" class="active" onclick="playLive()">Trực tiếp (Live)</button>
+    <button class="primary" onclick="openSettings()">+ Quản lý Camera</button>
+    <span id="statusText" style="font-size:13px;color:#ccc;">Đang khởi tạo...</span>
+    <div class="disk-badge" id="diskBadge">HDD: --</div>
+  </header>
+
+  <div class="player-box">
+    <video id="videoPlayer" controls autoplay muted playsinline></video>
+  </div>
+
+  <div class="timeline-container">
+    <div style="display:flex; justify-content:space-between; font-size:12px; color:#aaa; margin-bottom:4px;">
+      <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
+    </div>
+    <div class="timeline-bar" id="timelineBar" onclick="seekTimeline(event)">
+      <div class="cursor-line" id="cursorLine" style="left:0%"></div>
+    </div>
+  </div>
+
+  <div class="events-list" id="eventsList"></div>
+
+  <div class="modal" id="settingsModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">Quản lý Camera RTSP</h3>
+      <div id="camListBox" style="margin-bottom:14px;"></div>
+      <div class="form-row">
+        <label>Mã Camera (viết liền, dùng cho HASS):</label>
+        <input id="inpCamId" placeholder="VD: cam_cong">
+      </div>
+      <div class="form-row">
+        <label>Tên hiển thị:</label>
+        <input id="inpCamName" placeholder="VD: Camera Cổng Chính">
+      </div>
+      <div class="form-row">
+        <label>Đường dẫn RTSP:</label>
+        <input id="inpRtsp" placeholder="rtsp://admin:pass@192.168.1.100:554/ch1/main">
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button onclick="closeSettings()">Đóng</button>
+        <button class="primary" onclick="saveCamera()">Lưu Camera</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let cameras = {}, currentCam = "", segments = [], hls = null;
+    const video = document.getElementById("videoPlayer");
+    const dateInput = document.getElementById("dateInput");
+    dateInput.value = new Date().toISOString().split("T")[0];
+
+    async function loadSystem() {
+      const res = await fetch("/api/system");
+      const sys = await res.json();
+      document.getElementById("diskBadge").textContent =
+        `HDD: ${sys.disk_used_gb}/${sys.disk_total_gb} GB (${sys.disk_percent}%)`;
+    }
+
+    async function init() {
+      await loadSystem();
+      const res = await fetch("/api/cameras");
+      cameras = await res.json();
+      const sel = document.getElementById("camSelect");
+      sel.innerHTML = "";
+      for (const [id, info] of Object.entries(cameras)) {
+        const opt = document.createElement("option");
+        opt.value = id; opt.textContent = info.name;
+        sel.appendChild(opt);
+      }
+      if (Object.keys(cameras).length === 0) {
+        document.getElementById("statusText").textContent = "Chưa có camera. Bấm '+ Quản lý Camera' để thêm.";
+        openSettings();
+        return;
+      }
+      currentCam = sel.value;
+      sel.onchange = () => { currentCam = sel.value; loadTimeline(); playLive(); };
+      dateInput.onchange = () => loadTimeline();
+      await loadTimeline();
+      playLive();
+    }
+
+    function openSettings() {
+      const box = document.getElementById("camListBox");
+      box.innerHTML = "";
+      for (const [id, info] of Object.entries(cameras)) {
+        const div = document.createElement("div");
+        div.className = "cam-item";
+        div.innerHTML = `<span><b>${info.name}</b> (${id})</span>
+                         <button onclick="removeCam('${id}')">Xóa</button>`;
+        box.appendChild(div);
+      }
+      document.getElementById("settingsModal").style.display = "flex";
+    }
+    function closeSettings() { document.getElementById("settingsModal").style.display = "none"; }
+
+    async function saveCamera() {
+      const cam_id = document.getElementById("inpCamId").value.trim();
+      const name = document.getElementById("inpCamName").value.trim();
+      const rtsp_url = document.getElementById("inpRtsp").value.trim();
+      if (!cam_id || !name || !rtsp_url) return alert("Vui lòng điền đủ thông tin!");
+      await fetch("/api/cameras", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({cam_id, name, rtsp_url})
+      });
+      closeSettings();
+      await init();
+    }
+
+    async function removeCam(id) {
+      await fetch(`/api/cameras/${id}`, {method: "DELETE"});
+      await init();
+      openSettings();
+    }
+
+    function playLive() {
+      if (!currentCam) return;
+      document.getElementById("btnLive").classList.add("active");
+      document.getElementById("statusText").textContent = "Đang xem trực tiếp (Live)";
+      const hlsUrl = `/hls/${currentCam}/live.m3u8`;
+      if (Hls.isSupported()) {
+        if (hls) hls.destroy();
+        hls = new Hls();
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+      } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = hlsUrl;
+      }
+    }
+
+    async function loadTimeline() {
+      if (!currentCam) return;
+      const res = await fetch(`/api/timeline/${currentCam}?date=${dateInput.value}`);
+      const data = await res.json();
+      segments = data.segments;
+      const bar = document.getElementById("timelineBar");
+      bar.innerHTML = '<div class="cursor-line" id="cursorLine"></div>';
+
+      segments.forEach(s => {
+        const el = document.createElement("div");
+        el.className = "seg-mark";
+        el.style.left = (s.start_sec / 86400 * 100) + "%";
+        bar.appendChild(el);
+      });
+
+      const list = document.getElementById("eventsList");
+      list.innerHTML = "";
+      data.events.forEach(e => {
+        const mark = document.createElement("div");
+        mark.className = "evt-mark";
+        mark.style.left = (e.sec_of_day / 86400 * 100) + "%";
+        mark.title = `${e.time} - ${e.label}`;
+        bar.appendChild(mark);
+
+        const card = document.createElement("div");
+        card.className = "event-card";
+        card.onclick = () => playAtSecond(e.sec_of_day);
+        card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
+                          <div style="margin-top:6px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>`;
+        list.appendChild(card);
+      });
+    }
+
+    function seekTimeline(ev) {
+      const rect = ev.currentTarget.getBoundingClientRect();
+      const clickSec = Math.floor(((ev.clientX - rect.left) / rect.width) * 86400);
+      playAtSecond(clickSec);
+    }
+
+    function playAtSecond(targetSec) {
+      if (hls) { hls.destroy(); hls = null; }
+      document.getElementById("btnLive").classList.remove("active");
+      document.getElementById("cursorLine").style.left = (targetSec / 86400 * 100) + "%";
+
+      let chosenIdx = -1;
+      for (let i = 0; i < segments.length; i++) {
+        if (segments[i].start_sec <= targetSec) chosenIdx = i;
+        else break;
+      }
+      if (chosenIdx === -1) {
+        document.getElementById("statusText").textContent = "Không có bản ghi ở khung giờ này";
+        return;
+      }
+
+      const seg = segments[chosenIdx];
+      const offset = Math.max(0, targetSec - seg.start_sec);
+      document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
+      video.src = seg.file;
+      video.currentTime = offset;
+      video.play();
+
+      video.onended = () => {
+        if (chosenIdx + 1 < segments.length) {
+          chosenIdx++;
+          video.src = segments[chosenIdx].file;
+          video.play();
+        }
+      };
+    }
+
+    init();
+  </script>
+</body>
+</html>
