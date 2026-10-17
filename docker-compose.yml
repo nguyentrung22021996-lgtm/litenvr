@@ -22,6 +22,7 @@ services:
         target: /storage
     tmpfs:
       - /dev/shm/hls:size=256m
+      - /dev/shm/buffer:size=512m
     x-casaos:
       envs:
         - container: TZ

@@ -1,0 +1,99 @@
+name: litenvr
+services:
+  litenvr:
+    image: ghcr.io/trankhanhduy2929-beep/litenvr:latest
+    container_name: litenvr
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - target: 8080
+        published: "9895"
+        protocol: tcp
+        mode: ingress
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+      - NVR_USER=admin
+      - NVR_PASS=admin
+      - NVR_AUTH=on
+      - LIVE_IDLE_STOP_SEC=30
+      - LIVE_MAX_HEIGHT=720
+      # Đã có go2rtc trong Frigate và trỏ luồng qua đó -> tắt go2rtc nội bộ cho nhẹ (1 tầng relay).
+      # Nếu KHÔNG dùng go2rtc bên ngoài thì đổi thành "auto" (hoặc "on").
+      - GO2RTC=off
+    volumes:
+      - type: bind
+        source: /DATA/NVR
+        target: /storage
+    tmpfs:
+      - /dev/shm/hls:size=256m
+      - /dev/shm/buffer:size=512m
+    deploy:
+      resources:
+        limits:
+          memory: 4GB
+          cpus: "1.00"
+        reservations:
+          memory: 256MB
+    labels:
+      icon: https://cdn-icons-png.flaticon.com/512/4019/4019704.png
+    x-casaos:
+      envs:
+        - container: TZ
+          description:
+            en_us: Timezone
+        - container: NVR_USER
+          description:
+            en_us: Web login username
+            vi_vn: Tên đăng nhập web
+        - container: NVR_PASS
+          description:
+            en_us: Web login password (change this!)
+            vi_vn: Mật khẩu đăng nhập web (nên đổi)
+        - container: NVR_AUTH
+          description:
+            en_us: Set "off" to disable login
+            vi_vn: Đặt "off" để tắt đăng nhập
+        - container: LIVE_IDLE_STOP_SEC
+          description:
+            en_us: Seconds without viewers before the live branch pauses (saves CPU)
+            vi_vn: Số giây không có người xem thì tạm dừng luồng live (tiết kiệm CPU)
+        - container: LIVE_MAX_HEIGHT
+          description:
+            en_us: Max height of the transcoded live preview; lower = less CPU (0 keeps original). Recording always keeps original quality
+            vi_vn: Chiều cao tối đa của live khi phải chuyển mã; nhỏ hơn = nhẹ CPU hơn (0 = giữ nguyên). Bản ghi luôn giữ nguyên gốc
+        - container: GO2RTC
+          description:
+            en_us: "off when you already restream via Frigate/external go2rtc; auto (default), on otherwise"
+            vi_vn: "off khi đã dùng go2rtc của Frigate/bên ngoài; còn lại auto (mặc định) hoặc on"
+      ports:
+        - container: "8080"
+          description:
+            en_us: Web UI Port (host 9895)
+      volumes:
+        - container: /storage
+          description:
+            en_us: HDD folder for recordings and configuration
+            vi_vn: Thư mục ổ cứng HDD lưu video ghi hình và cấu hình
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  author: LiteNVR
+  category: Media
+  description:
+    en_us: Lightweight NVR with RTSP Direct Stream Copy, multi-view grid, clip export, recording locks, per-camera schedules, ONVIF PTZ, Telegram/webhook alerts, config backup and Home Assistant Motion Webhook
+    vi_vn: NVR siêu nhẹ, ghi RTSP trực tiếp không chuyển mã, lưới nhiều camera, xuất clip, khoá bản ghi, lịch ghi hình, PTZ ONVIF, báo Telegram/Webhook, sao lưu cấu hình và nhận Motion từ Home Assistant
+  icon: https://cdn-icons-png.flaticon.com/512/4019/4019704.png
+  index: /
+  is_uncontrolled: false
+  main: litenvr
+  hostname: ""
+  port_map: "9895"
+  scheme: http
+  store_app_id: litenvr
+  tagline:
+    en_us: Lightweight NVR for Home Assistant
+    vi_vn: Siêu nhẹ NVR kết nối Home Assistant
+  title:
+    en_us: LiteNVR
+    custom: LiteNVR
