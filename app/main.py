@@ -10,12 +10,13 @@ import threading
 import subprocess
 import urllib.request
 import urllib.error
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 # Đảm bảo trình duyệt nhận đúng MIME cho HLS (nếu thiếu, live view không phát được)
@@ -135,14 +136,56 @@ worker_tokens: Dict[str, threading.Event] = {}
 worker_lock = threading.Lock()
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
 motion_active_until: Dict[str, float] = {}
+# Chẩn đoán trạng thái camera (cho UI/log)
+cam_status: Dict[str, dict] = {}
+# Cache codec đã dò được: cam_id -> (url_key, codec_name)
+codec_cache: Dict[str, tuple] = {}
 
-def build_ffmpeg_cmd(cam_id: str, cam_info: dict):
+def detect_video_codec(cam_id: str, cam_info: dict):
+    """Dò codec video thật của luồng RTSP bằng ffprobe (chỉ cache khi thành công)."""
+    url = cam_info.get("rtsp_url")
+    key = (url, cam_info.get("sub_rtsp_url"))
+    cached = codec_cache.get(cam_id)
+    if cached and cached[0] == key:
+        return cached[1]
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-rtsp_transport", cam_info.get("rtsp_transport", "tcp"),
+        "-timeout", "8000000",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name",
+        "-of", "default=nw=1:nk=1",
+        url,
+    ]
+    codec = ""
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout
+        codec = (out or "").strip().splitlines()[0].strip().lower() if out.strip() else ""
+    except Exception:
+        codec = ""
+    if codec:
+        codec_cache[cam_id] = (key, codec)
+    return codec
+
+def resolve_video_codec(cam_id: str, cam_info: dict):
+    """Trả về 'copy' hoặc 'h264'. Chế độ 'auto' dò codec thật của camera."""
+    requested = cam_info.get("video_codec", "auto")
+    if requested in ("copy", "h264"):
+        return requested
+    codec = detect_video_codec(cam_id, cam_info)
+    cam_status.setdefault(cam_id, {})["detected_codec"] = codec
+    if not codec:
+        return "copy"          # không dò được -> giữ nguyên (rẻ CPU)
+    return "copy" if codec in ("h264", "avc1", "h264_vaapi", "avc") else "h264"
+
+def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None):
     main_url = cam_info["rtsp_url"]
     sub_url = cam_info.get("sub_rtsp_url") or main_url
     transport = cam_info.get("rtsp_transport", "tcp")
     audio_mode = cam_info.get("audio_mode", "aac")  # aac | none | copy
     record_mode = cam_info.get("record_mode", "continuous")  # continuous | motion | off
-    video_codec = cam_info.get("video_codec", "copy")  # copy | h264 (h264 = tương thích trình duyệt)
+    if video_codec is None:
+        video_codec = resolve_video_codec(cam_id, cam_info)  # copy | h264
 
     # H.264 transcode cho camera dùng H.265/HEVC (trình duyệt không phát được HEVC)
     vcodec_args = (
@@ -232,16 +275,37 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             break
         cmd = build_ffmpeg_cmd(cam_id, cam_info)
         started = time.time()
+        st = cam_status.setdefault(cam_id, {})
+        st["log"] = st.get("log", deque(maxlen=20))
         try:
-            proc = subprocess.Popen(cmd)
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, text=True, bufsize=1)
         except Exception as e:
+            st["running"] = False
+            st["last_error"] = str(e)
             print(f"[LiteNVR] ffmpeg lỗi khởi động cho {cam_id}: {e}", flush=True)
             if token.wait(backoff):
                 break
             backoff = min(backoff * 2, 60)
             continue
+
         ffmpeg_processes[cam_id] = proc
+        st["running"] = True
+        st["last_start"] = int(started)
+
+        def _drain(p, cid, status):
+            try:
+                for line in p.stderr:
+                    line = line.strip()
+                    if line:
+                        status["log"].append(line)
+                        status["last_error"] = line
+            except Exception:
+                pass
+
+        threading.Thread(target=_drain, args=(proc, cam_id, st), daemon=True).start()
         proc.wait()
+        st["running"] = False
         if ffmpeg_processes.get(cam_id) is proc:
             ffmpeg_processes.pop(cam_id, None)
         if token.is_set():
@@ -388,7 +452,7 @@ class CameraItem(BaseModel):
     rtsp_transport: str = "tcp"
     audio_mode: str = "aac"
     record_mode: str = "continuous"  # continuous | motion | off
-    video_codec: str = "copy"        # copy | h264 (h264 = tương thích trình duyệt)
+    video_codec: str = "auto"        # auto | copy | h264 (h264 = tương thích trình duyệt)
 
 class StorageSettings(BaseModel):
     retention_days: float
@@ -799,6 +863,63 @@ def get_timeline(cam_id: str, date: str):
         })
     conn.close()
     return {"segments": segments, "events": events}
+
+@app.get("/api/status/{cam_id}")
+def get_cam_status(cam_id: str):
+    hls_path = os.path.join(HLS_DIR, cam_id, "live.m3u8")
+    hls_ready = os.path.exists(hls_path) and (time.time() - os.path.getmtime(hls_path) < 15)
+    st = cam_status.get(cam_id, {})
+    return {
+        "running": bool(st.get("running")),
+        "hls_ready": hls_ready,
+        "detected_codec": st.get("detected_codec", ""),
+        "last_error": st.get("last_error", ""),
+        "log": list(st.get("log", [])),
+    }
+
+@app.get("/api/play/{cam_id}/{fname}")
+def play_recording(cam_id: str, fname: str, t: int = 0):
+    """Phát bản ghi. t=1: transcode sang H.264/AAC để trình duyệt phát được
+    (dùng cho camera H.265/HEVC mà không cần ghi lại)."""
+    safe_cam = os.path.basename(cam_id)
+    safe_name = os.path.basename(fname)
+    path = os.path.join(RECORDINGS_DIR, safe_cam, safe_name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi")
+
+    if not t:
+        return FileResponse(path, media_type="video/mp4")
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", path,
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4", "pipe:1",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    out = proc.stdout
+    if out is None:
+        proc.terminate()
+        raise HTTPException(status_code=500, detail="Không mở được luồng ffmpeg")
+
+    def _stream():
+        try:
+            while True:
+                chunk = out.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                out.close()
+            except Exception:
+                pass
+            if proc.poll() is None:
+                proc.terminate()
+
+    return StreamingResponse(_stream(), media_type="video/mp4")
 
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOTS_DIR), name="snapshots")

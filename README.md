@@ -20,9 +20,15 @@ LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng toke
 
 ## Xem Live / Bản ghi bị đen hoặc không phát
 Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chrome/Edge/Firefox) không giải mã được.
-- Vào **+ Quản lý Camera** → sửa camera → **Codec video** → chọn **Chuyển sang H.264** → Lưu.
-- Sau đó cả Live (HLS) và bản ghi `.mp4` đều phát được trên trình duyệt.
-- Camera H.264 thì để **Copy** để giữ CPU thấp nhất.
+- Mặc định LiteNVR dùng **Tự động phát hiện**: tự dò codec camera bằng `ffprobe`; nếu là H.265/HEVC sẽ tự chuyển sang H.264 cho cả Live (HLS) và khi phát bản ghi.
+- Muốn chỉnh tay: **+ Quản lý Camera** → sửa camera → **Codec video**:
+  - **Tự động phát hiện** (khuyến nghị).
+  - **Copy**: nhẹ CPU nhất, chỉ dùng khi camera chắc chắn là H.264.
+  - **Luôn chuyển sang H.264**: tương thích mọi trình duyệt, tốn CPU hơn.
+- Phát bản ghi cũ quay bằng H.265: LiteNVR tự chuyển mã khi trình duyệt báo lỗi (không cần quay lại).
+- Nút **🔍 Chẩn đoán** hiển thị trạng thái ffmpeg, codec dò được và log lỗi gần nhất.
+
+**Thanh thời gian:** kéo hoặc bấm trên thanh để tua; rê chuột để xem mốc giờ; vạch vàng hiển thị vị trí đang phát.
 
 
 ## Tích hợp Home Assistant (Motion Webhook - không cần token)

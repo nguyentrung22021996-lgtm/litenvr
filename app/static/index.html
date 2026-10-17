@@ -16,10 +16,14 @@
     .player-box { width: 100%; max-width: 1000px; margin: 12px auto; background: #000; aspect-ratio: 16/9; position: relative; border-radius: 8px; overflow: hidden; }
     video { width: 100%; height: 100%; }
     .timeline-container { max-width: 1000px; margin: 15px auto; padding: 0 12px; }
-    .timeline-bar { height: 46px; background: #252525; position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 1px solid #444; touch-action: none; }
+    .timeline-bar { height: 46px; background: #252525; position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 1px solid #444; touch-action: none; user-select: none; }
+    .seg-layer, .evt-layer { position: absolute; inset: 0; pointer-events: none; }
     .seg-mark { position: absolute; top: 0; bottom: 0; width: 0.25%; background: #2e7d32; }
     .evt-mark { position: absolute; top: 0; bottom: 0; width: 3px; background: #ff1744; z-index: 2; }
     .cursor-line { position: absolute; top: 0; bottom: 0; width: 2px; background: #ffeb3b; z-index: 3; pointer-events: none; }
+    .cursor-handle { position: absolute; top: -3px; width: 16px; height: 52px; margin-left: -8px; background: #ffeb3b; border-radius: 4px; z-index: 5; cursor: ew-resize; box-shadow: 0 0 6px rgba(255,235,59,.7); touch-action: none; }
+    .time-tip { position: absolute; top: -26px; transform: translateX(-50%); background: #000; color: #ffeb3b; font-size: 11px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; pointer-events: none; z-index: 6; display: none; }
+    .timeline-bar:hover .time-tip, .timeline-bar.scrubbing .time-tip { display: block; }
     .events-list { max-width: 1000px; margin: 20px auto; padding: 0 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
     .event-card { background: #1e1e1e; border-radius: 8px; padding: 8px; cursor: pointer; border: 1px solid #333; }
     .event-card img { width: 100%; height: 115px; object-fit: cover; border-radius: 4px; background: #000; }
@@ -39,6 +43,7 @@
     <input type="date" id="dateInput">
     <button id="btnLive" class="active" onclick="playLive()">Trực tiếp (Live)</button>
     <button class="warn" onclick="testMotion()">⚡ Test Motion</button>
+    <button onclick="showDiagnostics()">🔍 Chẩn đoán</button>
     <button class="primary" onclick="openCamModal()">+ Quản lý Camera</button>
     <button onclick="openStorageModal()">⚙️ Cài đặt Lưu trữ</button>
     <button onclick="openHassModal()">🛰️ Home Assistant</button>
@@ -51,11 +56,19 @@
   </div>
 
   <div class="timeline-container">
-    <div style="display:flex; justify-content:space-between; font-size:12px; color:#aaa; margin-bottom:4px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#aaa; margin-bottom:4px;">
       <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
     </div>
-    <div class="timeline-bar" id="timelineBar" onclick="seekTimeline(event)">
+    <div class="timeline-bar" id="timelineBar" title="Kéo hoặc bấm để tua">
+      <div class="seg-layer" id="segLayer"></div>
+      <div class="evt-layer" id="evtLayer"></div>
       <div class="cursor-line" id="cursorLine" style="left:0%"></div>
+      <div class="cursor-handle" id="cursorHandle" style="left:0%"></div>
+      <div class="time-tip" id="timeTip" style="left:0%">00:00:00</div>
+    </div>
+    <div style="display:flex; justify-content:space-between; font-size:12px; color:#ccc; margin-top:6px;">
+      <span id="scrubTime">Bản ghi: 00:00:00</span>
+      <span id="liveBadge" style="color:#4caf50;">● Live</span>
     </div>
   </div>
 
@@ -145,8 +158,9 @@
       <div class="form-row">
         <label>Codec video (Chọn H.264 nếu xem Live/Bản ghi trên trình duyệt bị đen/không phát):</label>
         <select id="inpVideoCodec">
-          <option value="copy">Copy (Nhẹ CPU nhất - dùng khi camera là H.264)</option>
-          <option value="h264">Chuyển sang H.264 (Tương thích mọi trình duyệt)</option>
+          <option value="auto">Tự động phát hiện (Khuyến nghị)</option>
+          <option value="copy">Copy (Nhẹ CPU nhất - chỉ dùng khi camera là H.264)</option>
+          <option value="h264">Luôn chuyển sang H.264 (Tương thích mọi trình duyệt)</option>
         </select>
       </div>
 
@@ -265,6 +279,13 @@
       currentCam = sel.value;
       sel.onchange = () => { currentCam = sel.value; loadTimeline(); playLive(); };
       dateInput.onchange = () => loadTimeline();
+      initScrubber();
+      video.addEventListener("timeupdate", () => {
+        if (currentSegStartSec == null || isNaN(video.currentTime)) return;
+        const sec = currentSegStartSec + video.currentTime;
+        setCursor(sec, false);
+        document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(sec);
+      });
       await loadTimeline();
       playLive();
     }
@@ -540,6 +561,9 @@
     function playLive() {
       if (!currentCam) return;
       document.getElementById("btnLive").classList.add("active");
+      currentSegStartSec = null;
+      const scrub = document.getElementById("scrubTime");
+      if (scrub) scrub.textContent = "● Đang xem trực tiếp";
       const statusEl = document.getElementById("statusText");
       statusEl.textContent = "Đang xem trực tiếp (Live)...";
       const hlsUrl = `/hls/${currentCam}/live.m3u8`;
@@ -580,14 +604,17 @@
       const res = await fetch(`/api/timeline/${currentCam}?date=${dateInput.value}`);
       const data = await res.json();
       segments = data.segments;
-      const bar = document.getElementById("timelineBar");
-      bar.innerHTML = '<div class="cursor-line" id="cursorLine"></div>';
+      const segLayer = document.getElementById("segLayer");
+      const evtLayer = document.getElementById("evtLayer");
+      segLayer.innerHTML = "";
+      evtLayer.innerHTML = "";
 
       segments.forEach(s => {
         const el = document.createElement("div");
         el.className = "seg-mark";
         el.style.left = (s.start_sec / 86400 * 100) + "%";
-        bar.appendChild(el);
+        el.title = "Có bản ghi: " + s.time;
+        segLayer.appendChild(el);
       });
 
       const list = document.getElementById("eventsList");
@@ -597,7 +624,7 @@
         mark.className = "evt-mark";
         mark.style.left = (e.sec_of_day / 86400 * 100) + "%";
         mark.title = `${e.time} - ${e.label}`;
-        bar.appendChild(mark);
+        evtLayer.appendChild(mark);
 
         const card = document.createElement("div");
         card.className = "event-card";
@@ -606,18 +633,62 @@
                           <div style="margin-top:6px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>`;
         list.appendChild(card);
       });
+      setCursor(0, false);
     }
 
-    function seekTimeline(ev) {
-      const rect = ev.currentTarget.getBoundingClientRect();
-      const clickSec = Math.floor(((ev.clientX - rect.left) / rect.width) * 86400);
-      playAtSecond(clickSec);
+    function fmtHMS(sec) {
+      sec = Math.max(0, Math.floor(sec || 0));
+      const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+      const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+      const s = String(sec % 60).padStart(2, "0");
+      return `${h}:${m}:${s}`;
+    }
+
+    function setCursor(sec, showTip) {
+      const pct = Math.max(0, Math.min(100, sec / 86400 * 100));
+      const line = document.getElementById("cursorLine");
+      const handle = document.getElementById("cursorHandle");
+      const tip = document.getElementById("timeTip");
+      if (line) line.style.left = pct + "%";
+      if (handle) handle.style.left = pct + "%";
+      if (tip) { tip.style.left = pct + "%"; tip.textContent = fmtHMS(sec); }
+    }
+
+    let scrubbing = false;
+    function initScrubber() {
+      const bar = document.getElementById("timelineBar");
+      const secAt = (ev) => {
+        const rect = bar.getBoundingClientRect();
+        const x = Math.min(Math.max(ev.clientX - rect.left, 0), rect.width);
+        return Math.floor((x / rect.width) * 86400);
+      };
+      bar.addEventListener("pointerdown", (ev) => {
+        scrubbing = true;
+        bar.classList.add("scrubbing");
+        try { bar.setPointerCapture(ev.pointerId); } catch (e) {}
+        setCursor(secAt(ev), true);
+      });
+      bar.addEventListener("pointermove", (ev) => {
+        const sec = secAt(ev);
+        const tip = document.getElementById("timeTip");
+        if (tip) { tip.style.left = (sec / 86400 * 100) + "%"; tip.textContent = fmtHMS(sec); }
+        if (scrubbing) setCursor(sec, true);
+      });
+      const finish = (ev) => {
+        if (!scrubbing) return;
+        scrubbing = false;
+        bar.classList.remove("scrubbing");
+        playAtSecond(secAt(ev));
+      };
+      bar.addEventListener("pointerup", finish);
+      bar.addEventListener("pointercancel", () => { scrubbing = false; bar.classList.remove("scrubbing"); });
     }
 
     function playAtSecond(targetSec) {
       if (hls) { hls.destroy(); hls = null; }
       document.getElementById("btnLive").classList.remove("active");
-      document.getElementById("cursorLine").style.left = (targetSec / 86400 * 100) + "%";
+      setCursor(targetSec, false);
+      document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(targetSec);
 
       let chosenIdx = -1;
       for (let i = 0; i < segments.length; i++) {
@@ -628,25 +699,60 @@
         document.getElementById("statusText").textContent = "Không có bản ghi ở khung giờ này";
         return;
       }
+      playSegment(chosenIdx, Math.max(0, targetSec - segments[chosenIdx].start_sec));
+    }
 
-      const seg = segments[chosenIdx];
-      const offset = Math.max(0, targetSec - seg.start_sec);
+    let currentSegStartSec = null;
+    function playSegment(idx, offset) {
+      const seg = segments[idx];
+      const parts = seg.file.split("/");
+      const cam = parts[2] || currentCam;
+      const fname = parts[parts.length - 1];
+      const transUrl = `/api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1`;
+
+      currentSegStartSec = seg.start_sec;
       document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
-      video.onerror = () => {
-        document.getElementById("statusText").textContent =
-          "Không phát được bản ghi này (có thể camera dùng H.265). Sửa camera và chọn Codec = H.264.";
-      };
-      video.src = seg.file;
-      video.currentTime = offset;
-      video.play();
+      let triedTranscode = false;
 
-      video.onended = () => {
-        if (chosenIdx + 1 < segments.length) {
-          chosenIdx++;
-          video.src = segments[chosenIdx].file;
-          video.play();
+      const startAt = () => {
+        try { video.currentTime = offset; } catch (e) {}
+        video.play().catch(() => {});
+      };
+      video.onloadedmetadata = () => { video.onloadedmetadata = null; startAt(); };
+      video.onerror = () => {
+        if (!triedTranscode) {
+          triedTranscode = true;
+          document.getElementById("statusText").textContent =
+            "Đang chuyển mã sang H.264 để phát (camera H.265)...";
+          video.onloadedmetadata = () => { video.onloadedmetadata = null; startAt(); };
+          video.src = transUrl;
+        } else {
+          document.getElementById("statusText").textContent =
+            "Không phát được bản ghi này. Bấm 🔍 Chẩn đoán để xem lỗi.";
         }
       };
+      video.src = seg.file;
+
+      video.onended = () => {
+        if (idx + 1 < segments.length) playSegment(idx + 1, 0);
+      };
+    }
+
+    async function showDiagnostics() {
+      if (!currentCam) { alert("Chưa chọn camera."); return; }
+      try {
+        const r = await fetch(`/api/status/${currentCam}`);
+        const d = await r.json();
+        const lines = [
+          `Camera: ${currentCam}`,
+          `ffmpeg đang chạy: ${d.running ? "Có" : "KHÔNG"}`,
+          `HLS sẵn sàng: ${d.hls_ready ? "Có" : "Chưa"}`,
+          `Codec dò được: ${d.detected_codec || "(chưa dò / cam chưa kết nối)"}`,
+          d.last_error ? `Lỗi cuối: ${d.last_error}` : "",
+          (d.log && d.log.length) ? "Log gần nhất:\n" + d.log.slice(-8).join("\n") : ""
+        ].filter(Boolean);
+        alert(lines.join("\n"));
+      } catch (e) { alert("Không lấy được chẩn đoán: " + e); }
     }
 
     init();
