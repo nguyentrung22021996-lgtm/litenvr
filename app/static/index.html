@@ -1071,14 +1071,14 @@
       const parts = seg.file.split("/");
       const cam = parts[2] || currentCam;
       const fname = parts[parts.length - 1];
-      const transUrl = `/api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1`;
+      const transUrl = `/api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1&ss=${Math.max(0, offset || 0).toFixed(2)}`;
 
       currentSegStartSec = seg.start_sec;
       document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
       let triedTranscode = false;
 
       const startAt = () => {
-        try { video.currentTime = offset; } catch (e) {}
+        try { video.currentTime = triedTranscode ? 0 : offset; } catch (e) {}
         video.play().catch(() => {});
       };
       video.onloadedmetadata = () => { video.onloadedmetadata = null; startAt(); };

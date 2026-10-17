@@ -1832,10 +1832,25 @@ def get_cam_status(cam_id: str):
         "log": list(st.get("log", [])),
     }
 
+def _play_transcode_cmd(path: str, ss: float = 0):
+    """Lệnh chuyển mã bản ghi HEVC/H.265 sang H.264 cho trình duyệt.
+    -ss đặt TRƯỚC -i để tua nhanh (input seek) thay vì phát từ đầu."""
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if ss and ss > 0:
+        cmd += ["-ss", f"{ss:.3f}"]
+    cmd += [
+        "-i", path,
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4", "pipe:1",
+    ]
+    return cmd
+
 @app.get("/api/play/{cam_id}/{fname}")
-def play_recording(cam_id: str, fname: str, t: int = 0):
+def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0):
     """Phát bản ghi. t=1: transcode sang H.264/AAC để trình duyệt phát được
-    (dùng cho camera H.265/HEVC mà không cần ghi lại)."""
+    (dùng cho camera H.265/HEVC mà không cần ghi lại). ss = tua tới giây thứ N."""
     safe_cam = os.path.basename(cam_id)
     safe_name = os.path.basename(fname)
     path = os.path.join(RECORDINGS_DIR, safe_cam, safe_name)
@@ -1845,14 +1860,7 @@ def play_recording(cam_id: str, fname: str, t: int = 0):
     if not t:
         return FileResponse(path, media_type="video/mp4")
 
-    cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-i", path,
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        "-f", "mp4", "pipe:1",
-    ]
+    cmd = _play_transcode_cmd(path, ss)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     out = proc.stdout
     if out is None:
