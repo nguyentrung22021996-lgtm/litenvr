@@ -2,6 +2,7 @@ import os
 import json
 import time
 import base64
+import hmac
 import shutil
 import socket
 import hashlib
@@ -24,7 +25,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
@@ -155,24 +156,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
 
 @app.middleware("http")
-async def basic_auth(request: Request, call_next):
-    if not AUTH_ENABLED or request.url.path == "/health":
-        return await call_next(request)
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Basic "):
-        try:
-            user, _, pw = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
-            if secrets.compare_digest(user, NVR_USER) and secrets.compare_digest(pw, NVR_PASS):
-                return await call_next(request)
-        except Exception:
-            pass
-    return Response(
-        status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="LiteNVR"'},
-        content="Unauthorized",
-    )
-
-@app.middleware("http")
 async def hls_no_cache(request: Request, call_next):
     path = request.url.path
     cam_id = None
@@ -193,6 +176,64 @@ async def hls_no_cache(request: Request, call_next):
             if now - st.get(key, 0) > 60:
                 st[key] = now
                 log_event("warn", f"Không tìm thấy tệp HLS ({path.rsplit('/', 1)[-1]})", cam_id or "")
+    return resp
+
+PUBLIC_PATHS = ("/health", "/login", "/api/login", "/favicon.ico", "/manifest.webmanifest")
+
+@app.middleware("http")
+async def auth_guard(request: Request, call_next):
+    """Xác thực (phiên cookie hoặc Basic) + phân quyền tài khoản con + chống CSRF."""
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+    if not AUTH_ENABLED:
+        request.state.user = root_user()
+        request.state.auth_source = "off"
+        return await call_next(request)
+    user, source = resolve_auth(request)
+    if user is None:
+        accept = request.headers.get("accept", "")
+        if path == "/" and "text/html" in accept:
+            return RedirectResponse("/login", status_code=302)
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Chưa đăng nhập"}, status_code=401)
+        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="LiteNVR"'}, content="Unauthorized")
+    request.state.user = user
+    request.state.auth_source = source
+    if source == "session" and request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        if request.headers.get("X-NVR-CSRF") != "1":
+            origin = request.headers.get("origin", "") or request.headers.get("referer", "")
+            host = request.headers.get("host", "")
+            if not (origin and host and host in origin):
+                return JSONResponse({"detail": "Thiếu mã chống CSRF (X-NVR-CSRF)"}, status_code=403)
+    if user.get("role") != "admin":
+        need = path_permission(request)
+        if need == "__admin__":
+            return JSONResponse({"detail": "Chỉ quản trị viên được phép"}, status_code=403)
+        if need and not user["perms"].get(need):
+            return JSONResponse({"detail": "Tài khoản không được cấp quyền này"}, status_code=403)
+        cam = cam_path_segment(path)
+        if cam and user.get("cameras") and cam not in user["cameras"]:
+            return JSONResponse({"detail": "Không có quyền với camera này"}, status_code=403)
+    return await call_next(request)
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "same-origin"
+    allow_iframe = os.environ.get("NVR_IFRAME", "off").lower() in ("on", "1", "true", "yes")
+    if not allow_iframe:
+        resp.headers["X-Frame-Options"] = "DENY"
+    if not request.url.path.startswith(("/hls/", "/recordings/", "/snapshots/")):
+        frame = "frame-ancestors *;" if allow_iframe else "frame-ancestors 'none';"
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+            "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            "worker-src 'self' blob:; connect-src 'self'; " + frame + " "
+            "base-uri 'self'; form-action 'self'",
+        )
     return resp
 
 DEFAULT_CONFIG = {
@@ -261,6 +302,7 @@ def db_conn() -> sqlite3.Connection:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=10000")
         _db_local.conn = conn
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
@@ -316,6 +358,372 @@ def unlock_recording(cam_id: str, fname: str) -> bool:
     cur = conn.execute("DELETE FROM locks WHERE path=?", (f"{cam_id}/{os.path.basename(fname)}",))
     conn.commit()
     return cur.rowcount > 0
+
+# ================= Bảo mật: tài khoản con, phiên đăng nhập, phân quyền =================
+# Mô hình: tài khoản gốc (NVR_USER/NVR_PASS trong docker-compose) luôn là admin toàn
+# quyền và không lưu trong DB. Tài khoản con lưu trong bảng users với vai trò
+# admin/user + bộ quyền chi tiết (live, playback, export, ptz, lock, events) và danh
+# sách camera được phép (rỗng = tất cả).
+
+SESSION_COOKIE = "litenvr_session"
+SESSION_TTL = 7 * 86400          # 7 ngày, tự gia hạn khi dùng
+PBKDF2_ITERS = 200_000
+PERM_KEYS = ("live", "playback", "export", "ptz", "lock", "events")
+DEFAULT_PERMS = {"live": True, "playback": True, "export": False, "ptz": False, "lock": False, "events": True}
+ALL_PERMS = {k: True for k in PERM_KEYS}
+
+# Chống dò mật khẩu: 8 lần sai trong 15 phút -> khoá IP 5 phút
+LOGIN_FAIL_WINDOW = 900
+LOGIN_FAIL_MAX = 8
+LOGIN_LOCK_SEC = 300
+_login_fails: Dict[str, list] = {}
+_login_fails_lock = threading.Lock()
+
+# Sự kiện bảo mật gần nhất giữ trong RAM để hiển thị nhanh (bảng auth_events là bản ghi chính)
+security_events: deque = deque(maxlen=200)
+
+
+def init_security():
+    conn = db_conn()
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            pass_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            perms TEXT NOT NULL DEFAULT '{}',
+            cameras TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            totp_secret TEXT NOT NULL DEFAULT '',
+            totp_enabled INTEGER NOT NULL DEFAULT 0,
+            created INTEGER,
+            last_login INTEGER DEFAULT 0
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            created INTEGER,
+            expires INTEGER,
+            ip TEXT DEFAULT ''
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(username)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS auth_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER,
+            username TEXT,
+            ip TEXT,
+            action TEXT,
+            detail TEXT
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_auth_events_ts ON auth_events(ts)")
+    conn.commit()
+
+
+def hash_password(password: str, salt: str = "") -> tuple:
+    """PBKDF2-HMAC-SHA256; trả (salt, hash hex)."""
+    salt = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ITERS)
+    return salt, dk.hex()
+
+
+def verify_password(password: str, salt: str, expected_hash: str) -> bool:
+    try:
+        _, got = hash_password(password, salt)
+        return secrets.compare_digest(got, expected_hash)
+    except Exception:
+        return False
+
+
+def mask_secrets(text: str) -> str:
+    """Che mật khẩu nhúng trong URL (rtsp://user:pass@host -> rtsp://***:***@host)."""
+    return re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^@/\s]+)@", r"\1***:***@", text or "")
+
+
+def get_user(username: str) -> Optional[sqlite3.Row]:
+    try:
+        c = db_conn().cursor()
+        c.execute("SELECT * FROM users WHERE username=?", (username,))
+        row = c.fetchone()
+        if row is not None:
+            return row
+    except Exception:
+        pass
+    return None
+
+
+def _row_to_user(row: sqlite3.Row) -> dict:
+    try:
+        perms = json.loads(row["perms"] or "{}")
+    except Exception:
+        perms = {}
+    try:
+        cameras = json.loads(row["cameras"] or "[]")
+    except Exception:
+        cameras = []
+    full_perms = dict(DEFAULT_PERMS)
+    if row["role"] == "admin":
+        full_perms = dict(ALL_PERMS)
+    else:
+        for k in PERM_KEYS:
+            if k in perms:
+                full_perms[k] = bool(perms[k])
+    return {
+        "username": row["username"],
+        "role": row["role"],
+        "perms": full_perms,
+        "cameras": [str(x) for x in cameras if str(x)],
+        "is_root": False,
+        "enabled": bool(row["enabled"]),
+        "totp_enabled": bool(row["totp_enabled"]),
+        "created": row["created"] or 0,
+        "last_login": row["last_login"] or 0,
+    }
+
+
+def root_user() -> dict:
+    return {
+        "username": NVR_USER,
+        "role": "admin",
+        "perms": dict(ALL_PERMS),
+        "cameras": [],
+        "is_root": True,
+        "enabled": True,
+        "totp_enabled": False,
+        "created": 0,
+        "last_login": 0,
+    }
+
+
+def audit(action: str, username: str = "", ip: str = "", detail: str = ""):
+    entry = {"t": int(time.time()), "username": username or "-", "ip": ip or "-", "action": action, "detail": detail}
+    security_events.append(entry)
+    try:
+        conn = db_conn()
+        conn.execute("INSERT INTO auth_events (ts, username, ip, action, detail) VALUES (?, ?, ?, ?, ?)",
+                     (entry["t"], entry["username"], entry["ip"], action, detail))
+        conn.commit()
+    except Exception:
+        pass
+    if action in ("login_fail", "login_locked", "user_create", "user_delete", "totp_disable", "user_update"):
+        log_event("warn", f"Bảo mật: {action} ({username or '-'} từ {ip or '-'})")
+
+
+def purge_sessions():
+    try:
+        conn = db_conn()
+        conn.execute("DELETE FROM sessions WHERE expires < ?", (int(time.time()),))
+        conn.commit()
+    except Exception:
+        pass
+
+
+def create_session(username: str, ip: str = "") -> str:
+    token = secrets.token_urlsafe(32)
+    now = int(time.time())
+    conn = db_conn()
+    conn.execute("INSERT INTO sessions (token_hash, username, created, expires, ip) VALUES (?, ?, ?, ?, ?)",
+                 (hashlib.sha256(token.encode()).hexdigest(), username, now, now + SESSION_TTL, ip))
+    conn.execute("DELETE FROM sessions WHERE expires < ?", (now,))
+    conn.commit()
+    return token
+
+
+def destroy_session(token: str):
+    if not token:
+        return
+    try:
+        conn = db_conn()
+        conn.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(token.encode()).hexdigest(),))
+        conn.commit()
+    except Exception:
+        pass
+
+
+def session_user(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    try:
+        c = db_conn().cursor()
+        th = hashlib.sha256(token.encode()).hexdigest()
+        c.execute("SELECT username, expires FROM sessions WHERE token_hash=?", (th,))
+        row = c.fetchone()
+        if not row:
+            return None
+        now = int(time.time())
+        if row[1] < now:
+            destroy_session(token)
+            return None
+        if secrets.compare_digest(row[0], NVR_USER):
+            user = root_user()  # tài khoản gốc không lưu DB nhưng vẫn có thể tạo phiên
+        else:
+            urow = get_user(row[0])
+            if urow is None or not urow["enabled"]:
+                destroy_session(token)
+                return None
+            user = _row_to_user(urow)
+        if row[1] - now < SESSION_TTL - 3600:  # tự gia hạn, tối đa 1 lần/giờ
+            try:
+                conn = db_conn()
+                conn.execute("UPDATE sessions SET expires=? WHERE token_hash=?", (now + SESSION_TTL, th))
+                conn.commit()
+            except Exception:
+                pass
+        return user
+    except Exception:
+        return None
+
+
+def login_locked(ip: str) -> int:
+    """Trả số giây còn bị khoá (0 = không khoá)."""
+    now = time.time()
+    with _login_fails_lock:
+        fails = [t for t in _login_fails.get(ip, []) if now - t < LOGIN_FAIL_WINDOW]
+        _login_fails[ip] = fails
+        if len(fails) >= LOGIN_FAIL_MAX:
+            remaining = int(fails[-1] + LOGIN_LOCK_SEC - now)
+            if remaining > 0:
+                return remaining
+            _login_fails[ip] = []
+    return 0
+
+
+def note_login_fail(ip: str):
+    with _login_fails_lock:
+        _login_fails.setdefault(ip, []).append(time.time())
+
+
+def clear_login_fails(ip: str):
+    with _login_fails_lock:
+        _login_fails.pop(ip, None)
+
+
+# ---- TOTP (Google Authenticator / Authy...) thuần Python, không cần thư viện ngoài ----
+def new_totp_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+
+
+def totp_code(secret: str, at: float = 0) -> str:
+    key = base64.b32decode(secret.upper() + "=" * (-len(secret) % 8))
+    counter = int((at or time.time()) // 30)
+    digest = hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = (int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF) % 1_000_000
+    return f"{code:06d}"
+
+
+def totp_verify(secret: str, code: str) -> bool:
+    code = (code or "").strip().replace(" ", "")
+    if not code.isdigit() or len(code) != 6 or not secret:
+        return False
+    now = time.time()
+    return any(secrets.compare_digest(totp_code(secret, now + drift), code) for drift in (-30, 0, 30))
+
+
+def totp_uri(username: str, secret: str) -> str:
+    label = urllib.parse.quote(f"LiteNVR:{username}")
+    return f"otpauth://totp/{label}?secret={secret}&issuer=LiteNVR&digits=6&period=30"
+
+
+def client_ip(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
+def resolve_auth(request: Request) -> tuple:
+    """Trả (user_dict | None, nguồn xác thực)."""
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if token:
+        user = session_user(token)
+        if user:
+            return user, "session"
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            user, _, pw = base64.b64decode(auth[6:]).decode("utf-8", "replace").partition(":")
+            if secrets.compare_digest(user, NVR_USER) and secrets.compare_digest(pw, NVR_PASS):
+                return root_user(), "basic"
+            row = get_user(user)
+            if row is not None and row["enabled"] and verify_password(pw, row["salt"], row["pass_hash"]):
+                return _row_to_user(row), "basic"
+        except Exception:
+            pass
+    return None, ""
+
+
+def cam_path_segment(path: str) -> Optional[str]:
+    for prefix in ("/hls/", "/recordings/", "/snapshots/", "/api/live/", "/api/status/",
+                   "/api/timeline/", "/api/play/", "/api/export/", "/api/ptz/", "/api/locks/"):
+        if path.startswith(prefix):
+            rest = path[len(prefix):]
+            seg = rest.split("/", 1)[0]
+            return seg or None
+    return None
+
+
+def path_permission(request: Request) -> Optional[str]:
+    """Quyền cần có cho request ('__admin__' = chỉ admin, None = chỉ cần đăng nhập)."""
+    path, method = request.url.path, request.method
+    if path in ("/api/me", "/api/logout", "/api/client_log") or path.startswith("/api/me/"):
+        return None
+    if method == "GET" and path == "/api/cameras":
+        return "live"
+    if path == "/api/motion":
+        return "live"
+    if path.startswith("/api/users") or path.startswith("/api/config") or path.startswith("/api/storage") \
+            or path.startswith("/api/hass") or path.startswith("/api/notify") or path.startswith("/api/logs") \
+            or path.startswith("/api/system") or path.startswith("/api/onvif") or path.startswith("/api/audit") \
+            or path.startswith("/api/security"):
+        return "__admin__"
+    if path.startswith("/api/cameras"):
+        return "__admin__"  # POST/DELETE/bulk đổi cấu hình camera
+    if path.startswith(("/api/live/", "/hls/")):
+        return "live"
+    if path.startswith(("/api/stats", "/api/status/")):
+        return "live"
+    if path.startswith(("/api/play/", "/api/timeline/", "/recordings/", "/snapshots/", "/api/latest_snapshots")):
+        return "playback"
+    if path.startswith("/api/export/"):
+        return "export"
+    if path.startswith("/api/ptz/"):
+        return "ptz"
+    if path.startswith("/api/locks"):
+        return "lock"
+    if path.startswith("/api/"):
+        return "__admin__"  # API lạ: mặc định chỉ admin
+    return None  # trang tĩnh / tài nguyên khác: chỉ cần đăng nhập
+
+
+def assert_cam_access(request: Request, cam_id: str):
+    u = getattr(request.state, "user", None) or {}
+    if u.get("role") == "admin" or not u.get("cameras"):
+        return
+    if cam_id not in u["cameras"]:
+        raise HTTPException(status_code=403, detail="Không có quyền với camera này")
+
+
+ADMIN_PERM_SET = {k: True for k in PERM_KEYS}
+
+
+def _clean_perms(raw: Any) -> dict:
+    out = dict(DEFAULT_PERMS)
+    if isinstance(raw, dict):
+        for k in PERM_KEYS:
+            if k in raw:
+                out[k] = bool(raw[k])
+    return out
+
+
+def _valid_username(name: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", name or ""))
+
+
+init_security()
+
 
 ffmpeg_processes: Dict[str, subprocess.Popen] = {}
 worker_tokens: Dict[str, threading.Event] = {}
@@ -1440,6 +1848,7 @@ def cleanup_worker():
         try:
             run_cleanup_now()
             check_corrupt_recordings()
+            purge_sessions()
         except Exception:
             pass
         time.sleep(300)  # Kiểm tra dọn ổ cứng mỗi 5 phút
@@ -1582,7 +1991,7 @@ def api_stats_history():
     return {"samples": list(stats_history)}
 
 @app.get("/api/latest_snapshots")
-def api_latest_snapshots():
+def api_latest_snapshots(request: Request):
     """Ảnh snapshot mới nhất của mỗi camera (làm ảnh đại diện cho lưới camera)."""
     out: Dict[str, str] = {}
     try:
@@ -1598,11 +2007,26 @@ def api_latest_snapshots():
                 out[cam_id] = f"/snapshots/{snap}"
     except Exception:
         pass
+    u = getattr(request.state, "user", None) or {}
+    if u.get("role") != "admin" and u.get("cameras"):
+        out = {k: v for k, v in out.items() if k in u["cameras"]}
     return out
 
 @app.get("/api/cameras")
-def get_cameras():
-    return CONFIG.get("cameras", {})
+def get_cameras(request: Request):
+    cameras = CONFIG.get("cameras", {})
+    u = getattr(request.state, "user", None) or {}
+    if u.get("role") == "admin" or not AUTH_ENABLED:
+        return cameras
+    out = {}
+    for cam_id, cam in cameras.items():
+        if u.get("cameras") and cam_id not in u["cameras"]:
+            continue
+        c = dict(cam)
+        c["rtsp_url"] = mask_secrets(c.get("rtsp_url", ""))
+        c["sub_rtsp_url"] = mask_secrets(c.get("sub_rtsp_url", ""))
+        out[cam_id] = c
+    return out
 
 @app.post("/api/cameras")
 def add_or_update_camera(item: CameraItem):
@@ -2142,14 +2566,16 @@ def list_locks():
     return {"locks": [{"path": r[0], "cam_id": r[1], "created": r[2], "note": r[3]} for r in c.fetchall()]}
 
 @app.post("/api/locks")
-def add_lock(req: LockReq):
+def add_lock(req: LockReq, request: Request):
+    assert_cam_access(request, req.cam_id)
     if not lock_recording(req.cam_id, req.file, req.note):
         raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi để khoá")
     log_event("info", f"Khoá bản ghi {req.file}", req.cam_id)
     return {"status": "ok"}
 
 @app.delete("/api/locks/{cam_id}/{fname}")
-def remove_lock(cam_id: str, fname: str):
+def remove_lock(cam_id: str, fname: str, request: Request):
+    assert_cam_access(request, cam_id)
     if not unlock_recording(cam_id, fname):
         raise HTTPException(status_code=404, detail="Bản ghi này chưa được khoá")
     log_event("info", f"Mở khoá bản ghi {fname}", cam_id)
@@ -2338,10 +2764,14 @@ def get_logs(limit: int = 200):
     return {"events": events, "cameras": cams}
 
 @app.get("/api/status/{cam_id}")
-def get_cam_status(cam_id: str):
+def get_cam_status(cam_id: str, request: Request):
     hls_path = os.path.join(HLS_DIR, cam_id, "live.m3u8")
     hls_ready = os.path.exists(hls_path) and (time.time() - os.path.getmtime(hls_path) < 15)
     st = cam_status.get(cam_id, {})
+    u = getattr(request.state, "user", None) or {}
+    logs = list(st.get("log", []))
+    if AUTH_ENABLED and u.get("role") != "admin":
+        logs = [mask_secrets(x) for x in logs]
     return {
         "running": bool(st.get("running")),
         "hls_ready": hls_ready,
@@ -2350,8 +2780,8 @@ def get_cam_status(cam_id: str):
         "detected_pix_fmt": st.get("detected_pix_fmt", ""),
         "detect_failed": bool(st.get("detect_failed", False)),
         "rate_limited": bool(st.get("rate_limited", False)),
-        "last_error": st.get("last_error", ""),
-        "log": list(st.get("log", [])),
+        "last_error": mask_secrets(st.get("last_error", "")) if AUTH_ENABLED and u.get("role") != "admin" else st.get("last_error", ""),
+        "log": logs,
     }
 
 def _play_transcode_cmd(path: str, ss: float = 0):
@@ -2405,6 +2835,330 @@ def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0):
                 proc.terminate()
 
     return StreamingResponse(_stream(), media_type="video/mp4")
+
+# ================= API bảo mật: đăng nhập, tài khoản con, 2FA, nhật ký =================
+class LoginReq(BaseModel):
+    username: str
+    password: str
+    otp: Optional[str] = ""
+
+class PasswordReq(BaseModel):
+    old_password: Optional[str] = ""
+    new_password: str
+
+class TotpCodeReq(BaseModel):
+    code: str
+
+class UserCreateReq(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    perms: Optional[Dict[str, Any]] = None
+    cameras: Optional[List[str]] = None
+    enabled: bool = True
+
+class UserUpdateReq(BaseModel):
+    password: Optional[str] = None
+    role: Optional[str] = None
+    perms: Optional[Dict[str, Any]] = None
+    cameras: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+
+
+def _user_changed(name: str, detail: str = ""):
+    conn = db_conn()
+    conn.execute("INSERT INTO auth_events (ts, username, ip, action, detail) VALUES (?, ?, ?, ?, ?)",
+                 (int(time.time()), name, "-", "user_update", detail))
+    conn.commit()
+
+
+@app.post("/api/login")
+def api_login(req: LoginReq, request: Request):
+    ip = client_ip(request)
+    locked = login_locked(ip)
+    if locked > 0:
+        audit("login_locked", req.username.strip(), ip, f"khoá {locked}s")
+        return JSONResponse({"detail": f"Quá nhiều lần sai. Thử lại sau {locked // 60 + 1} phút."},
+                            status_code=429, headers={"Retry-After": str(locked)})
+    username = req.username.strip()
+    user = None
+    if secrets.compare_digest(username, NVR_USER) and secrets.compare_digest(req.password, NVR_PASS):
+        user = root_user()
+    else:
+        row = get_user(username)
+        if row is not None and row["enabled"] and verify_password(req.password, row["salt"], row["pass_hash"]):
+            if row["totp_enabled"]:
+                if not (req.otp or "").strip():
+                    return JSONResponse({"detail": "Nhập mã 2FA", "otp_required": True}, status_code=401)
+                if not totp_verify(row["totp_secret"], req.otp or ""):
+                    note_login_fail(ip)
+                    audit("login_fail", username, ip, "mã 2FA sai")
+                    return JSONResponse({"detail": "Mã 2FA không đúng", "otp_required": True}, status_code=401)
+            user = _row_to_user(row)
+        else:
+            # Chống dò username: vẫn tốn thời gian hash như khi sai mật khẩu
+            verify_password(req.password, "00" * 16, "0" * 64)
+    if user is None:
+        note_login_fail(ip)
+        audit("login_fail", username, ip)
+        return JSONResponse({"detail": "Sai tài khoản hoặc mật khẩu"}, status_code=401)
+    clear_login_fails(ip)
+    token = create_session(user["username"], ip)
+    if not user["is_root"]:
+        try:
+            conn = db_conn()
+            conn.execute("UPDATE users SET last_login=? WHERE username=?", (int(time.time()), user["username"]))
+            conn.commit()
+        except Exception:
+            pass
+    audit("login_ok", user["username"], ip)
+    resp = JSONResponse({"status": "ok", "user": user})
+    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax", path="/")
+    return resp
+
+
+@app.post("/api/logout")
+def api_logout(request: Request):
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if token:
+        destroy_session(token)
+    u = getattr(request.state, "user", None) or {}
+    if token and not u.get("is_root"):
+        audit("logout", u.get("username", ""), client_ip(request))
+    resp = JSONResponse({"status": "ok"})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    if not AUTH_ENABLED:
+        return {"username": NVR_USER, "role": "admin", "perms": dict(ALL_PERMS), "cameras": [],
+                "is_root": True, "enabled": True, "totp_enabled": False, "auth_enabled": False}
+    u = dict(request.state.user)
+    u["auth_enabled"] = True
+    return u
+
+
+@app.post("/api/me/password")
+def api_change_password(req: PasswordReq, request: Request):
+    u = request.state.user
+    if u.get("is_root"):
+        raise HTTPException(status_code=400, detail="Tài khoản gốc đổi mật khẩu bằng biến môi trường NVR_PASS trong docker-compose")
+    if len(req.new_password or "") < 6:
+        raise HTTPException(status_code=400, detail="Mật khẩu mới cần ít nhất 6 ký tự")
+    row = get_user(u["username"])
+    if row is None or not verify_password(req.old_password or "", row["salt"], row["pass_hash"]):
+        audit("pw_change_fail", u["username"], client_ip(request))
+        raise HTTPException(status_code=403, detail="Mật khẩu hiện tại không đúng")
+    salt, ph = hash_password(req.new_password)
+    conn = db_conn()
+    conn.execute("UPDATE users SET salt=?, pass_hash=? WHERE username=?", (salt, ph, u["username"]))
+    conn.execute("DELETE FROM sessions WHERE username=?", (u["username"],))
+    conn.commit()
+    audit("pw_change", u["username"], client_ip(request))
+    resp = JSONResponse({"status": "ok"})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/me/totp/init")
+def api_totp_init(request: Request):
+    u = request.state.user
+    if u.get("is_root"):
+        raise HTTPException(status_code=400, detail="2FA áp dụng cho tài khoản con; tài khoản gốc bảo vệ bằng NVR_PASS")
+    secret = new_totp_secret()
+    conn = db_conn()
+    conn.execute("UPDATE users SET totp_secret=?, totp_enabled=0 WHERE username=?", (secret, u["username"]))
+    conn.commit()
+    return {"secret": secret, "uri": totp_uri(u["username"], secret)}
+
+
+@app.post("/api/me/totp/enable")
+def api_totp_enable(req: TotpCodeReq, request: Request):
+    u = request.state.user
+    row = get_user(u["username"])
+    if row is None or not row["totp_secret"]:
+        raise HTTPException(status_code=400, detail="Chưa tạo mã 2FA, bấm tạo trước")
+    if not totp_verify(row["totp_secret"], req.code):
+        raise HTTPException(status_code=403, detail="Mã 2FA không đúng, thử lại")
+    conn = db_conn()
+    conn.execute("UPDATE users SET totp_enabled=1 WHERE username=?", (u["username"],))
+    conn.commit()
+    audit("totp_enable", u["username"], client_ip(request))
+    return {"status": "ok"}
+
+
+@app.post("/api/me/totp/disable")
+def api_totp_disable(req: TotpCodeReq, request: Request):
+    u = request.state.user
+    row = get_user(u["username"])
+    if row is None or not row["totp_enabled"]:
+        raise HTTPException(status_code=400, detail="2FA chưa bật")
+    if not totp_verify(row["totp_secret"], req.code):
+        raise HTTPException(status_code=403, detail="Mã 2FA không đúng")
+    conn = db_conn()
+    conn.execute("UPDATE users SET totp_enabled=0, totp_secret='' WHERE username=?", (u["username"],))
+    conn.commit()
+    audit("totp_disable", u["username"], client_ip(request))
+    return {"status": "ok"}
+
+
+@app.get("/api/users")
+def api_users():
+    users = []
+    root = root_user()
+    root["last_login"] = 0
+    users.append(root)
+    try:
+        c = db_conn().cursor()
+        c.execute("SELECT * FROM users ORDER BY username")
+        for row in c.fetchall():
+            users.append(_row_to_user(row))
+    except Exception:
+        pass
+    return {"users": users, "cameras": list(CONFIG.get("cameras", {}).keys())}
+
+
+@app.post("/api/users")
+def api_user_create(req: UserCreateReq, request: Request):
+    name = req.username.strip()
+    if not _valid_username(name):
+        raise HTTPException(status_code=400, detail="Tên đăng nhập 3-32 ký tự, chỉ chữ/số/._-")
+    if name == NVR_USER:
+        raise HTTPException(status_code=400, detail="Trùng tài khoản gốc")
+    if get_user(name) is not None:
+        raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
+    if len(req.password or "") < 6:
+        raise HTTPException(status_code=400, detail="Mật khẩu cần ít nhất 6 ký tự")
+    role = req.role if req.role in ("admin", "user") else "user"
+    salt, ph = hash_password(req.password)
+    conn = db_conn()
+    conn.execute(
+        "INSERT INTO users (username, pass_hash, salt, role, perms, cameras, enabled, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, ph, salt, role, json.dumps(_clean_perms(req.perms)), json.dumps(req.cameras or []),
+         1 if req.enabled else 0, int(time.time())),
+    )
+    conn.commit()
+    audit("user_create", name, client_ip(request), f"vai trò={role}")
+    row = get_user(name)
+    if row is None:
+        raise HTTPException(status_code=500, detail="Không tạo được tài khoản")
+    return {"status": "ok", "user": _row_to_user(row)}
+
+
+@app.post("/api/users/{name}")
+def api_user_update(name: str, req: UserUpdateReq, request: Request):
+    if name == NVR_USER:
+        raise HTTPException(status_code=400, detail="Không sửa được tài khoản gốc (dùng biến môi trường)")
+    row = get_user(name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    fields, values = [], []
+    if req.role is not None:
+        if req.role not in ("admin", "user"):
+            raise HTTPException(status_code=400, detail="Vai trò không hợp lệ")
+        fields.append("role=?"); values.append(req.role)
+    if req.perms is not None:
+        fields.append("perms=?"); values.append(json.dumps(_clean_perms(req.perms)))
+    if req.cameras is not None:
+        fields.append("cameras=?"); values.append(json.dumps([str(x) for x in req.cameras]))
+    if req.enabled is not None:
+        fields.append("enabled=?"); values.append(1 if req.enabled else 0)
+    if req.password is not None:
+        if len(req.password) < 6:
+            raise HTTPException(status_code=400, detail="Mật khẩu cần ít nhất 6 ký tự")
+        salt, ph = hash_password(req.password)
+        fields += ["salt=?", "pass_hash=?"]; values += [salt, ph]
+    if not fields:
+        raise HTTPException(status_code=400, detail="Không có gì để cập nhật")
+    values.append(name)
+    conn = db_conn()
+    conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE username=?", values)
+    if req.password is not None or req.enabled is False:
+        conn.execute("DELETE FROM sessions WHERE username=?", (name,))
+    conn.commit()
+    audit("user_update", name, client_ip(request))
+    row = get_user(name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    return {"status": "ok", "user": _row_to_user(row)}
+
+
+@app.delete("/api/users/{name}")
+def api_user_delete(name: str, request: Request):
+    if name == NVR_USER:
+        raise HTTPException(status_code=400, detail="Không xoá được tài khoản gốc")
+    conn = db_conn()
+    cur = conn.execute("DELETE FROM users WHERE username=?", (name,))
+    conn.execute("DELETE FROM sessions WHERE username=?", (name,))
+    conn.commit()
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    audit("user_delete", name, client_ip(request))
+    return {"status": "ok"}
+
+
+@app.post("/api/users/{name}/totp_off")
+def api_user_totp_off(name: str, request: Request):
+    if get_user(name) is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    conn = db_conn()
+    conn.execute("UPDATE users SET totp_enabled=0, totp_secret='' WHERE username=?", (name,))
+    conn.commit()
+    audit("totp_disable", name, client_ip(request), "admin tắt 2FA")
+    return {"status": "ok"}
+
+
+@app.get("/api/audit")
+def api_audit(limit: int = 100):
+    limit = max(1, min(int(limit), 500))
+    out = []
+    try:
+        c = db_conn().cursor()
+        c.execute("SELECT ts, username, ip, action, detail FROM auth_events ORDER BY id DESC LIMIT ?", (limit,))
+        out = [{"t": r[0], "username": r[1], "ip": r[2], "action": r[3], "detail": r[4]} for r in c.fetchall()]
+    except Exception:
+        pass
+    return {"events": out, "recent": list(security_events)[-limit:]}
+
+
+@app.get("/api/security/status")
+def api_security_status():
+    warnings = []
+    n_users = n_admins = n_totp = n_sessions = 0
+    if not AUTH_ENABLED:
+        warnings.append("Xác thực đang TẮT (NVR_AUTH=off) — bất kỳ ai vào mạng đều xem/khoá/xoá được bản ghi.")
+    else:
+        if NVR_PASS == "admin":
+            warnings.append("Mật khẩu tài khoản gốc vẫn là mặc định 'admin' — đổi NVR_PASS trong docker-compose.")
+        try:
+            c = db_conn().cursor()
+            c.execute("SELECT COUNT(*) FROM users")
+            n_users = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND enabled=1")
+            n_admins = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM users WHERE totp_enabled=1")
+            n_totp = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM sessions WHERE expires > ?", (int(time.time()),))
+            n_sessions = c.fetchone()[0]
+        except Exception:
+            n_users = n_admins = n_totp = n_sessions = 0
+        if n_admins == 0 and n_users > 0:
+            warnings.append("Không còn tài khoản con nào là quản trị viên.")
+    return {
+        "auth_enabled": AUTH_ENABLED,
+        "root_user": NVR_USER,
+        "users": n_users if AUTH_ENABLED else 0,
+        "active_sessions": n_sessions if AUTH_ENABLED else 0,
+        "totp_users": n_totp if AUTH_ENABLED else 0,
+        "warnings": warnings,
+    }
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse("static/login.html")
 
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOTS_DIR), name="snapshots")

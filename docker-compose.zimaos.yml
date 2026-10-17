@@ -15,6 +15,7 @@ services:
       - NVR_USER=admin
       - NVR_PASS=admin
       - NVR_AUTH=on
+      # - NVR_IFRAME=on   # mở nếu muốn nhúng UI vào iframe (VD dashboard HA)
       - LIVE_IDLE_STOP_SEC=30
       - LIVE_MAX_HEIGHT=720
       # Đã có go2rtc trong Frigate và trỏ luồng qua đó -> tắt go2rtc nội bộ cho nhẹ (1 tầng relay).

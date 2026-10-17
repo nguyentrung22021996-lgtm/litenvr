@@ -61,7 +61,7 @@
     .events-list { max-width: 1000px; margin: 20px auto; padding: 0 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
     .event-card { background: #1e1e1e; border-radius: 8px; padding: 8px; cursor: pointer; border: 1px solid #333; position: relative; }
     .event-card img { width: 100%; height: 115px; object-fit: cover; border-radius: 4px; background: #000; }
-    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.78); align-items: center; justify-content: center; z-index: 10; padding: 12px; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.78); align-items: center; justify-content: center; z-index: 60; padding: 12px; }
     .modal-box { background: #1e1e1e; padding: 20px; border-radius: 10px; width: 100%; max-width: 540px; max-height: 90vh; overflow-y: auto; border: 1px solid #444; }
     .form-row { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -106,24 +106,79 @@
     .sched-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
     .sched-row input.s-days { flex: 1; min-width: 130px; }
     .evt-dl { position: absolute; right: 6px; top: 6px; padding: 2px 8px; font-size: 12px; }
+
+    /* ---- Bảo mật & tài khoản ---- */
+    .user-chip { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ccc; background: #252525; border: 1px solid #444; padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
+    .user-chip b { color: #fff; }
+    .btn-menu { display: none; font-size: 17px; padding: 6px 12px; }
+    .sec-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .user-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; background: #2a2a2a; border-radius: 6px; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
+    .user-row > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+    .perm-grid, .cam-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 12px; font-size: 13px; }
+    .audit-line { font-size: 12px; padding: 4px 6px; border-bottom: 1px solid #262626; display: flex; gap: 8px; flex-wrap: wrap; }
+    .audit-line .ts { color: #777; flex: none; }
+    .sec-warn { color: #ffb74d; font-size: 13px; margin: 4px 0; }
+    .sec-ok { color: #81c784; font-size: 13px; margin: 4px 0; }
+    .export-wrap { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+    /* ---- Máy tính bảng: gom menu vào nút ☰ ---- */
+    @media (max-width: 900px) {
+      .btn-menu { display: inline-flex; }
+      .tb-main { display: none; }
+      .tb-main.open { display: flex; flex-direction: column; align-items: stretch; position: absolute; left: 0; right: 0; top: 100%; background: #181818; border-bottom: 1px solid #2c2c2c; padding: 10px 14px; gap: 8px; z-index: 40; max-height: calc(100dvh - 60px); overflow-y: auto; box-shadow: 0 12px 24px rgba(0,0,0,.5); }
+      .tb-main button, .tb-main select, .tb-main input { width: 100%; text-align: left; }
+      .tb-main .spacer { display: none; }
+      .tb-main #statusText { text-align: center; }
+      .user-chip { justify-content: center; }
+    }
+
+    /* ---- Điện thoại ---- */
+    @media (max-width: 640px) {
+      .stats-bar { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
+      .stat-value { font-size: 17px; }
+      .stat-head { font-size: 11px; }
+      .cam-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
+      .cam-tile img, .cam-tile .tile-noimg { height: 84px; }
+      .events-list { grid-template-columns: 1fr; }
+      .timeline-container { margin: 10px auto; }
+      .timeline-bar { height: 34px; }
+      .cursor-handle { height: 46px; top: -6px; }
+      .player-box { border-radius: 0; margin: 8px 0; }
+      .modal { padding: 0; }
+      .modal-box { max-width: 100% !important; height: 100dvh; max-height: 100dvh; border-radius: 0; padding: 14px; border: 0; }
+      input, select, textarea, button { font-size: 16px; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .ptz-pad { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 48px); }
+      .rec-tools { gap: 8px; }
+      .rec-tools input[type="time"] { flex: 1; min-width: 90px; }
+      .user-row { flex-direction: column; align-items: flex-start; }
+      .user-row > div:last-child { width: 100%; }
+      h3 { font-size: 17px; }
+    }
   </style>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">Lite<span>NVR</span> Pro</div>
-    <select id="camSelect" aria-label="Chọn camera"></select>
-    <input type="date" id="dateInput" aria-label="Chọn ngày">
-    <button id="btnLive" class="active" onclick="playLive()">Trực tiếp (Live)</button>
-    <button id="btnGrid" onclick="toggleGrid()">⊞ Lưới</button>
-    <button class="warn" onclick="testMotion()">⚡ Test Motion</button>
-    <button onclick="showDiagnostics()">🔍 Chẩn đoán</button>
-    <button id="btnLogs" onclick="openLogsModal()">📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
-    <button class="primary" onclick="openCamModal()">+ Quản lý Camera</button>
-    <button onclick="openStorageModal()">⚙️ Lưu trữ</button>
-    <button onclick="openHassModal()">🛰️ Home Assistant</button>
-    <button onclick="openNotifyModal()">🔔 Thông báo</button>
-    <div class="spacer"></div>
-    <span id="statusText" style="font-size:13px;color:#ccc;">Đang khởi tạo...</span>
+    <button id="btnMenu" class="btn-menu" onclick="toggleMenu()" aria-label="Mở menu" aria-expanded="false">☰</button>
+    <div class="tb-main" id="tbMain">
+      <select id="camSelect" aria-label="Chọn camera"></select>
+      <input type="date" id="dateInput" aria-label="Chọn ngày">
+      <button id="btnLive" class="active" onclick="playLive()" data-perm="live">Trực tiếp (Live)</button>
+      <button id="btnGrid" onclick="toggleGrid()" data-perm="live">⊞ Lưới</button>
+      <button class="warn" onclick="testMotion()" data-admin data-perm="live">⚡ Test Motion</button>
+      <button onclick="showDiagnostics()" data-admin>🔍 Chẩn đoán</button>
+      <button id="btnLogs" onclick="openLogsModal()" data-admin>📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
+      <button class="primary" onclick="openCamModal()" data-admin>+ Quản lý Camera</button>
+      <button onclick="openStorageModal()" data-admin>⚙️ Lưu trữ</button>
+      <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
+      <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
+      <div class="spacer"></div>
+      <span id="statusText" style="font-size:13px;color:#ccc;">Đang khởi tạo...</span>
+      <span id="userChip" class="user-chip" hidden></span>
+      <button onclick="openSecModal()" title="Tài khoản, mật khẩu, 2FA &amp; nhật ký đăng nhập">🔐 Bảo mật</button>
+      <button id="btnLogout" onclick="doLogout()" hidden>⏻ Thoát</button>
+    </div>
   </header>
 
   <section class="stats-bar" id="statsBar">
@@ -177,15 +232,17 @@
       <span id="liveBadge" style="color:#4caf50;">● Live</span>
     </div>
     <div class="rec-tools">
-      <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)">🎮 PTZ</button>
-      <button onclick="lockCurrent()" title="Khoá đoạn bản ghi tại con trỏ để không bị xoá tự động">🔒 Khoá đoạn</button>
-      <button onclick="unlockCurrent()" title="Mở khoá đoạn bản ghi tại con trỏ">🔓 Mở khoá</button>
-      <span style="margin-left:8px;">Xuất clip:</span>
-      <input type="time" id="expFrom" step="1" aria-label="Từ giờ">
-      <span>→</span>
-      <input type="time" id="expTo" step="1" aria-label="Đến giờ">
-      <button class="primary" onclick="exportClip(false)">⬇️ Tải đoạn</button>
-      <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="expHc" style="width:auto;"> chuyển H.264</label>
+      <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)" data-perm="ptz">🎮 PTZ</button>
+      <button onclick="lockCurrent()" title="Khoá đoạn bản ghi tại con trỏ để không bị xoá tự động" data-perm="lock">🔒 Khoá đoạn</button>
+      <button onclick="unlockCurrent()" title="Mở khoá đoạn bản ghi tại con trỏ" data-perm="lock">🔓 Mở khoá</button>
+      <span class="export-wrap" data-perm="export">
+        <span>Xuất clip:</span>
+        <input type="time" id="expFrom" step="1" aria-label="Từ giờ">
+        <span>→</span>
+        <input type="time" id="expTo" step="1" aria-label="Đến giờ">
+        <button class="primary" onclick="exportClip(false)">⬇️ Tải đoạn</button>
+        <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="expHc" style="width:auto;"> chuyển H.264</label>
+      </span>
     </div>
     <div id="ptzBox" style="display:none; margin-top:8px;">
       <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-start;">
@@ -495,6 +552,105 @@
     </div>
   </div>
 
+  <!-- Modal Bảo mật & Tài khoản -->
+  <div class="modal" id="secModal">
+    <div class="modal-box" style="max-width:640px;">
+      <h3 style="margin-top:0">🔐 Bảo mật &amp; Tài khoản</h3>
+      <div class="sec-tabs" id="secTabs">
+        <button data-tab="me" class="active" onclick="secTab('me')">Tài khoản của tôi</button>
+        <button data-tab="users" data-admin onclick="secTab('users')">Tài khoản con</button>
+        <button data-tab="audit" data-admin onclick="secTab('audit')">Nhật ký đăng nhập</button>
+        <button data-tab="status" data-admin onclick="secTab('status')">Trạng thái bảo mật</button>
+      </div>
+
+      <div id="secTabMe">
+        <h4 style="margin:0 0 6px;">Đổi mật khẩu</h4>
+        <div id="pwRootNote" hidden style="font-size:12px;color:#aaa;">Tài khoản gốc đổi mật khẩu bằng biến môi trường <b>NVR_PASS</b> trong docker-compose (mục environment).</div>
+        <div id="pwBox">
+          <div class="form-row"><label>Mật khẩu hiện tại:</label><input type="password" id="pwOld" autocomplete="current-password"></div>
+          <div class="form-row"><label>Mật khẩu mới (tối thiểu 6 ký tự):</label><input type="password" id="pwNew" autocomplete="new-password"></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><button class="primary" onclick="saveMyPassword()">Lưu mật khẩu</button><span id="pwMsg" style="font-size:12px;"></span></div>
+        </div>
+
+        <h4 style="margin:16px 0 6px;">Xác thực 2 lớp (2FA)</h4>
+        <div id="tfaState" style="font-size:13px;color:#aaa;">Đang tải...</div>
+        <div id="tfaInitBox" hidden style="margin-top:8px;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <button onclick="tfaInit()">🔑 Tạo mã 2FA</button>
+            <span style="font-size:12px;color:#888;">Dùng app Google Authenticator / Authy / 1Password</span>
+          </div>
+          <div id="tfaSecretBox" hidden>
+            <div style="font-size:12px;color:#888;margin:8px 0 4px;">Nhập mã dưới đây vào app Authenticator, rồi điền mã 6 số để xác nhận:</div>
+            <div class="onvif-box" style="font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;" id="tfaSecret"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <input id="tfaCode" placeholder="Mã 6 số" inputmode="numeric" maxlength="6" style="width:120px;">
+              <button class="primary" onclick="tfaEnable()">Xác nhận &amp; bật</button>
+            </div>
+          </div>
+        </div>
+        <div id="tfaOffBox" hidden style="margin-top:8px;">
+          <div style="font-size:12px;color:#888;margin-bottom:6px;">Nhập mã 6 số hiện tại trong app để tắt 2FA:</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input id="tfaOffCode" placeholder="Mã 6 số" inputmode="numeric" maxlength="6" style="width:130px;">
+            <button class="warn" onclick="tfaDisable()">Tắt 2FA</button>
+          </div>
+        </div>
+        <div id="tfaMsg" style="font-size:12px;margin-top:6px;"></div>
+      </div>
+
+      <div id="secTabUsers" hidden>
+        <div id="secUsers"></div>
+        <h4 id="userFormTitle" style="margin:16px 0 6px;">➕ Tạo tài khoản con</h4>
+        <div class="grid-2">
+          <div class="form-row"><label>Tên đăng nhập:</label><input id="nuName" autocomplete="off" placeholder="vd: nguoi_xem"></div>
+          <div class="form-row"><label>Mật khẩu:</label><input type="password" id="nuPass" autocomplete="new-password" placeholder="tối thiểu 6 ký tự"></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row"><label>Vai trò:</label>
+            <select id="nuRole"><option value="user">Người dùng (giới hạn quyền)</option><option value="admin">Quản trị viên (toàn quyền)</option></select>
+          </div>
+          <div class="form-row"><label>Trạng thái:</label>
+            <label class="log-chk" style="padding-top:6px;"><input type="checkbox" id="nuEnabled" checked> Đang hoạt động (bỏ chọn = tạm khoá)</label>
+          </div>
+        </div>
+        <div class="form-row"><label>Quyền chọn lọc (chỉ áp dụng cho vai trò Người dùng):</label>
+          <div class="perm-grid">
+            <label class="log-chk"><input type="checkbox" id="npLive" checked> Xem trực tiếp</label>
+            <label class="log-chk"><input type="checkbox" id="npPlayback" checked> Xem lại bản ghi</label>
+            <label class="log-chk"><input type="checkbox" id="npEvents" checked> Xem sự kiện</label>
+            <label class="log-chk"><input type="checkbox" id="npExport"> Xuất clip</label>
+            <label class="log-chk"><input type="checkbox" id="npPtz"> Điều khiển PTZ</label>
+            <label class="log-chk"><input type="checkbox" id="npLock"> Khoá bản ghi</label>
+          </div>
+        </div>
+        <div class="form-row"><label>Camera được phép xem (bỏ trống = tất cả):</label><div class="cam-grid" id="nuCams"></div></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+          <button class="primary" onclick="saveUser()">💾 Lưu tài khoản</button>
+          <button onclick="resetUserForm()">Huỷ / Tạo mới</button>
+          <span id="userFormMsg" style="font-size:12px;"></span>
+        </div>
+        <div style="font-size:12px;color:#888;margin-top:8px;">Đổi mật khẩu hoặc tạm khoá tài khoản sẽ đăng xuất ngay các phiên đang mở của tài khoản đó. Tài khoản con không thấy được mật khẩu camera.</div>
+      </div>
+
+      <div id="secTabAudit" hidden>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <h4 style="margin:0 0 6px;">Nhật ký đăng nhập &amp; thao tác tài khoản</h4>
+          <button onclick="loadAudit()">↻ Tải lại</button>
+        </div>
+        <div id="auditList" class="log-list" style="height:42vh;">Đang tải...</div>
+      </div>
+
+      <div id="secTabStatus" hidden>
+        <h4 style="margin:0 0 6px;">Trạng thái bảo mật</h4>
+        <div id="secStatusBox" style="font-size:13px;color:#ccc;">Đang tải...</div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+        <button class="primary" onclick="closeSecModal()">Đóng</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null;
     let lastCursorSec = 0;
@@ -587,9 +743,10 @@
     }
 
     async function init() {
-      await loadSystem();
+      if (isAdmin()) await loadSystem();
       const res = await fetch("/api/cameras");
       cameras = await res.json();
+      if (cameras.detail) cameras = {};
       const sel = document.getElementById("camSelect");
       sel.innerHTML = "";
       for (const [id, info] of Object.entries(cameras)) {
@@ -599,8 +756,8 @@
         sel.appendChild(opt);
       }
       if (Object.keys(cameras).length === 0) {
-        document.getElementById("statusText").textContent = "Chưa có camera. Bấm '+ Quản lý Camera' để thêm.";
-        openCamModal();
+        document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm '+ Quản lý Camera' để thêm." : "Chưa có camera được cấp quyền.";
+        if (isAdmin()) openCamModal();
         return;
       }
       currentCam = sel.value;
@@ -1092,8 +1249,9 @@
     async function loadTimeline() {
       if (!currentCam) return;
       const res = await fetch(`/api/timeline/${currentCam}?date=${dateInput.value}`);
+      if (!res.ok) { segments = []; return; }
       const data = await res.json();
-      segments = data.segments;
+      segments = data.segments || [];
       const segLayer = document.getElementById("segLayer");
       const evtLayer = document.getElementById("evtLayer");
       const motionLayer = document.getElementById("motionLayer");
@@ -1111,7 +1269,7 @@
 
       // Tô màu vùng có chuyển động trên bản ghi liên tục (gộp các khoảng trùng nhau)
       const post = data.post_motion_sec || 60;
-      const spans = data.events
+      const spans = (data.events || [])
         .map(e => [e.sec_of_day, Math.min(86400, e.sec_of_day + post)])
         .sort((a, b) => a[0] - b[0]);
       const merged = [];
@@ -1131,7 +1289,7 @@
 
       const list = document.getElementById("eventsList");
       list.innerHTML = "";
-      data.events.forEach(e => {
+      (data.events || []).forEach(e => {
         const mark = document.createElement("div");
         mark.className = "evt-mark";
         mark.style.left = (e.sec_of_day / 86400 * 100) + "%";
@@ -1275,6 +1433,7 @@
 
     let _logsTimer = null, _logsData = null;
     async function updateLogBadge() {
+      if (ME && !isAdmin()) return;
       try {
         const d = await fetch("/api/logs?limit=50").then(r => r.json());
         const errs = (d.events || []).filter(e => e.level === "error").length;
@@ -1607,7 +1766,331 @@
       input.value = "";
     }
 
-    init();
+    // ================= Bảo mật: phiên, CSRF, phân quyền =================
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = function (url, opts = {}) {
+      const o = Object.assign({}, opts, { credentials: "same-origin" });
+      const method = (o.method || "GET").toUpperCase();
+      if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+        const h = new Headers(o.headers || {});
+        h.set("X-NVR-CSRF", "1");
+        if (o.body && typeof o.body === "string" && !h.has("Content-Type")) h.set("Content-Type", "application/json");
+        o.headers = h;
+      }
+      return _origFetch(url, o).then(r => {
+        if (r.status === 401) {
+          location.href = "/login";
+          throw new Error("Phiên đăng nhập đã hết hạn");
+        }
+        return r;
+      });
+    };
+
+    let ME = null;
+    function can(perm) { return !ME || ME.role === "admin" || ME.auth_enabled === false || (ME.perms && ME.perms[perm]); }
+    function isAdmin() { return !ME || ME.role === "admin" || ME.auth_enabled === false; }
+
+    async function initSecurity() {
+      try {
+        const r = await _origFetch("/api/me", { credentials: "same-origin" });
+        if (r.status === 401) { location.href = "/login"; return false; }
+        ME = await r.json();
+      } catch (e) { ME = null; }
+      const chip = document.getElementById("userChip");
+      if (chip) {
+        chip.hidden = false;
+        const badge = ME.auth_enabled === false ? ' <span style="color:#ffb74d;">bảo mật đang tắt</span>'
+          : (ME.role === "admin" ? ' <span class="badge">admin</span>' : "");
+        chip.innerHTML = "👤 <b>" + esc(ME.username) + "</b>" + badge + (ME.totp_enabled ? " 🔐" : "");
+      }
+      applyPermissions();
+      return true;
+    }
+
+    function applyPermissions() {
+      const admin = isAdmin();
+      document.querySelectorAll("[data-admin]").forEach(el => { el.hidden = !admin; });
+      document.querySelectorAll("[data-perm]").forEach(el => { el.hidden = !can(el.dataset.perm); });
+      document.getElementById("btnLogout").hidden = !!(ME && ME.auth_enabled === false);
+      if (ME && !can("live")) {
+        [".player-box", "#camStrip", "#gridView"].forEach(sel => {
+          const el = document.querySelector(sel);
+          if (el) el.style.display = "none";
+        });
+      }
+      if (ME && !can("playback")) {
+        [".timeline-container", "#eventsList"].forEach(sel => {
+          const el = document.querySelector(sel);
+          if (el) el.style.display = "none";
+        });
+      }
+      if (ME && !can("events")) {
+        const el = document.getElementById("eventsList");
+        if (el) el.style.display = "none";
+      }
+    }
+
+    function toggleMenu() {
+      const m = document.getElementById("tbMain");
+      m.classList.toggle("open");
+      document.getElementById("btnMenu").setAttribute("aria-expanded", m.classList.contains("open") ? "true" : "false");
+    }
+    function closeMenu() {
+      const m = document.getElementById("tbMain");
+      if (m) m.classList.remove("open");
+      document.getElementById("btnMenu").setAttribute("aria-expanded", "false");
+    }
+    document.getElementById("tbMain").addEventListener("click", (e) => {
+      if (e.target.closest("button") && window.innerWidth <= 900) closeMenu();
+    });
+    window.addEventListener("resize", () => {
+      if (window.innerWidth > 900) {
+        const m = document.getElementById("tbMain");
+        m.classList.remove("open");
+        document.getElementById("btnMenu").setAttribute("aria-expanded", "false");
+      }
+    });
+
+    async function doLogout() {
+      if (!confirm("Đăng xuất khỏi LiteNVR?")) return;
+      try { await fetch("/api/logout", { method: "POST" }); } catch (e) {}
+      location.href = "/login";
+    }
+
+    // ================= Modal Bảo mật & tài khoản con =================
+    const PERM_LABELS = [["live", "trực tiếp"], ["playback", "xem lại"], ["events", "sự kiện"], ["export", "xuất clip"], ["ptz", "PTZ"], ["lock", "khoá bản ghi"]];
+    let SEC_USERS = [], SEC_EDIT = "", SEC_ALL_CAMS = [];
+
+    function openSecModal() {
+      document.getElementById("secModal").style.display = "flex";
+      const active = document.querySelector("#secTabs button.active");
+      secTab(active && !active.hidden ? active.dataset.tab : "me");
+      loadTfaState();
+    }
+    function closeSecModal() { document.getElementById("secModal").style.display = "none"; }
+
+    function secTab(name) {
+      document.querySelectorAll("#secTabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+      document.getElementById("secTabMe").hidden = name !== "me";
+      document.getElementById("secTabUsers").hidden = name !== "users";
+      document.getElementById("secTabAudit").hidden = name !== "audit";
+      document.getElementById("secTabStatus").hidden = name !== "status";
+      if (name === "users") loadSecUsers();
+      if (name === "audit") loadAudit();
+      if (name === "status") loadSecStatus();
+    }
+
+    async function loadTfaState() {
+      const st = document.getElementById("tfaState");
+      const initBox = document.getElementById("tfaInitBox");
+      const offBox = document.getElementById("tfaOffBox");
+      document.getElementById("tfaSecretBox").hidden = true;
+      document.getElementById("tfaMsg").textContent = "";
+      const root = ME && ME.is_root;
+      document.getElementById("pwBox").style.display = root ? "none" : "";
+      document.getElementById("pwRootNote").hidden = !root;
+      if (root) {
+        st.textContent = "Tài khoản gốc được bảo vệ bằng NVR_PASS; 2FA áp dụng cho tài khoản con.";
+        initBox.hidden = true; offBox.hidden = true;
+        return;
+      }
+      if (ME && ME.totp_enabled) {
+        st.innerHTML = "🟢 <b>Đang bật</b> — mỗi lần đăng nhập cần thêm mã 6 số.";
+        initBox.hidden = true; offBox.hidden = false;
+      } else {
+        st.innerHTML = "⚪ <b>Chưa bật.</b> Nên bật để tài khoản an toàn kể cả khi lộ mật khẩu.";
+        initBox.hidden = false; offBox.hidden = true;
+      }
+    }
+    async function tfaInit() {
+      const r = await fetch("/api/me/totp/init", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { document.getElementById("tfaMsg").textContent = "❌ " + (d.detail || r.status); return; }
+      document.getElementById("tfaSecret").textContent = d.secret;
+      document.getElementById("tfaSecretBox").hidden = false;
+      document.getElementById("tfaCode").focus();
+    }
+    async function tfaEnable() {
+      const code = document.getElementById("tfaCode").value.trim();
+      const r = await fetch("/api/me/totp/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+      const d = await r.json().catch(() => ({}));
+      const msg = document.getElementById("tfaMsg");
+      if (!r.ok) { msg.style.color = "#ef5350"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "#4caf50"; msg.textContent = "✔ Đã bật 2FA.";
+      ME.totp_enabled = true;
+      loadTfaState();
+    }
+    async function tfaDisable() {
+      const code = document.getElementById("tfaOffCode").value.trim();
+      const r = await fetch("/api/me/totp/disable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+      const d = await r.json().catch(() => ({}));
+      const msg = document.getElementById("tfaMsg");
+      if (!r.ok) { msg.style.color = "#ef5350"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "#4caf50"; msg.textContent = "✔ Đã tắt 2FA.";
+      ME.totp_enabled = false;
+      loadTfaState();
+    }
+    async function saveMyPassword() {
+      const msg = document.getElementById("pwMsg");
+      const r = await fetch("/api/me/password", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_password: document.getElementById("pwOld").value, new_password: document.getElementById("pwNew").value })
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.style.color = "#ef5350"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "#4caf50"; msg.textContent = "✔ Đổi xong — chuyển về trang đăng nhập...";
+      setTimeout(() => { location.href = "/login"; }, 1200);
+    }
+
+    async function loadSecUsers() {
+      try {
+        const d = await fetch("/api/users").then(r => r.json());
+        SEC_USERS = d.users || [];
+        SEC_ALL_CAMS = d.cameras || [];
+        renderSecUsers();
+        renderNuCams();
+      } catch (e) { document.getElementById("secUsers").textContent = "Lỗi tải danh sách tài khoản"; }
+    }
+    function renderSecUsers() {
+      const box = document.getElementById("secUsers");
+      if (!SEC_USERS.length) { box.innerHTML = '<div style="color:#666;font-size:13px;">Chưa có tài khoản con.</div>'; return; }
+      box.innerHTML = SEC_USERS.map(u => {
+        const role = u.role === "admin" ? ' <span class="badge">admin</span>' : "";
+        const dis = u.enabled ? "" : ' <span class="badge off">tạm khoá</span>';
+        const tfa = u.totp_enabled ? " 🔐" : "";
+        let permsTxt;
+        if (u.role === "admin") permsTxt = "toàn quyền";
+        else permsTxt = PERM_LABELS.filter(([k]) => u.perms && u.perms[k]).map(([, l]) => l).join(", ") || "chưa cấp quyền nào";
+        const cams = (u.cameras && u.cameras.length) ? ("camera: " + u.cameras.join(", ")) : "tất cả camera";
+        const actions = u.is_root
+          ? '<span style="font-size:12px;color:#888;">đổi mật khẩu trong docker-compose (NVR_PASS)</span>'
+          : `<div style="display:flex;gap:6px;flex-wrap:wrap;">
+               <button onclick="editUser('${esc(u.username)}')">✏️ Sửa</button>
+               ${u.totp_enabled ? `<button class="warn" onclick="tfaOff('${esc(u.username)}')">🔓 Tắt 2FA</button>` : ""}
+               <button class="warn" onclick="delUser('${esc(u.username)}')">🗑 Xoá</button>
+             </div>`;
+        return `<div class="user-row"><div><b>${esc(u.username)}</b>${u.is_root ? ' <span class="badge" style="background:#1976d2">gốc</span>' : ""}${role}${dis}${tfa}<div style="color:#999;font-size:12px;">${esc(permsTxt)} · ${esc(cams)}</div></div>${actions}</div>`;
+      }).join("");
+    }
+    function renderNuCams(selected) {
+      const sel = selected || [];
+      document.getElementById("nuCams").innerHTML = SEC_ALL_CAMS.map(c =>
+        `<label class="log-chk"><input type="checkbox" value="${esc(c)}" ${sel.includes(c) ? "checked" : ""}> ${esc((cameras[c] && cameras[c].name) || c)}</label>`
+      ).join("") || '<span style="color:#666;font-size:12px;">Chưa có camera</span>';
+    }
+    function resetUserForm() {
+      SEC_EDIT = "";
+      document.getElementById("userFormTitle").textContent = "➕ Tạo tài khoản con";
+      document.getElementById("nuName").value = "";
+      document.getElementById("nuName").disabled = false;
+      document.getElementById("nuPass").value = "";
+      document.getElementById("nuPass").placeholder = "tối thiểu 6 ký tự";
+      document.getElementById("nuRole").value = "user";
+      document.getElementById("nuEnabled").checked = true;
+      document.getElementById("npLive").checked = true;
+      document.getElementById("npPlayback").checked = true;
+      document.getElementById("npEvents").checked = true;
+      document.getElementById("npExport").checked = false;
+      document.getElementById("npPtz").checked = false;
+      document.getElementById("npLock").checked = false;
+      renderNuCams([]);
+      document.getElementById("userFormMsg").textContent = "";
+    }
+    function editUser(name) {
+      const u = SEC_USERS.find(x => x.username === name);
+      if (!u) return;
+      SEC_EDIT = name;
+      document.getElementById("userFormTitle").textContent = "✏️ Sửa tài khoản: " + name;
+      document.getElementById("nuName").value = name;
+      document.getElementById("nuName").disabled = true;
+      document.getElementById("nuPass").value = "";
+      document.getElementById("nuPass").placeholder = "Đổi mật khẩu (bỏ trống = giữ nguyên)";
+      document.getElementById("nuRole").value = u.role;
+      document.getElementById("nuEnabled").checked = !!u.enabled;
+      document.getElementById("npLive").checked = !!(u.perms && u.perms.live);
+      document.getElementById("npPlayback").checked = !!(u.perms && u.perms.playback);
+      document.getElementById("npEvents").checked = !!(u.perms && u.perms.events);
+      document.getElementById("npExport").checked = !!(u.perms && u.perms.export);
+      document.getElementById("npPtz").checked = !!(u.perms && u.perms.ptz);
+      document.getElementById("npLock").checked = !!(u.perms && u.perms.lock);
+      renderNuCams(u.cameras || []);
+      document.getElementById("userFormMsg").textContent = "";
+    }
+    async function saveUser() {
+      const msg = document.getElementById("userFormMsg");
+      const payload = {
+        role: document.getElementById("nuRole").value,
+        enabled: document.getElementById("nuEnabled").checked,
+        perms: {
+          live: document.getElementById("npLive").checked,
+          playback: document.getElementById("npPlayback").checked,
+          events: document.getElementById("npEvents").checked,
+          export: document.getElementById("npExport").checked,
+          ptz: document.getElementById("npPtz").checked,
+          lock: document.getElementById("npLock").checked
+        },
+        cameras: Array.from(document.querySelectorAll("#nuCams input:checked")).map(i => i.value)
+      };
+      let r;
+      if (SEC_EDIT) {
+        const pw = document.getElementById("nuPass").value;
+        if (pw) payload.password = pw;
+        r = await fetch("/api/users/" + encodeURIComponent(SEC_EDIT), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      } else {
+        payload.username = document.getElementById("nuName").value.trim();
+        payload.password = document.getElementById("nuPass").value;
+        r = await fetch("/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      }
+      const d = await r.json().catch(() => ({}));
+      msg.style.color = r.ok ? "#4caf50" : "#ef5350";
+      msg.textContent = r.ok ? "✔ Đã lưu." : "❌ " + (d.detail || r.status);
+      if (r.ok) { resetUserForm(); loadSecUsers(); }
+    }
+    async function delUser(name) {
+      if (!confirm("Xoá tài khoản '" + name + "'? Các phiên đang mở sẽ bị đăng xuất ngay.")) return;
+      const r = await fetch("/api/users/" + encodeURIComponent(name), { method: "DELETE" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return alert("Không xoá được: " + (d.detail || r.status));
+      loadSecUsers();
+    }
+    async function tfaOff(name) {
+      if (!confirm("Tắt 2FA cho tài khoản '" + name + "'?")) return;
+      const r = await fetch("/api/users/" + encodeURIComponent(name) + "/totp_off", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) return alert("Không tắt được: " + (d.detail || r.status));
+      loadSecUsers();
+    }
+    async function loadAudit() {
+      const el = document.getElementById("auditList");
+      el.textContent = "Đang tải...";
+      try {
+        const d = await fetch("/api/audit?limit=200").then(r => r.json());
+        const labels = {
+          login_ok: "✅ đăng nhập", login_fail: "❌ sai mật khẩu", login_locked: "⛔ tạm khoá",
+          logout: "🚪 đăng xuất", user_create: "➕ tạo tài khoản", user_update: "✏️ sửa tài khoản",
+          user_delete: "🗑 xoá tài khoản", pw_change: "🔑 đổi mật khẩu", pw_change_fail: "❌ sai mật khẩu cũ",
+          totp_enable: "🔐 bật 2FA", totp_disable: "🔓 tắt 2FA"
+        };
+        el.innerHTML = (d.events || []).map(e =>
+          `<div class="audit-line"><span class="ts">${new Date(e.t * 1000).toLocaleString("vi-VN")}</span><span class="act">${labels[e.action] || esc(e.action)}</span><span>${esc(e.username)}</span><span style="color:#777;">${esc(e.ip || "")}</span><span style="color:#999;">${esc(e.detail || "")}</span></div>`
+        ).join("") || '<div class="log-empty">Chưa có sự kiện</div>';
+      } catch (e) { el.textContent = "Lỗi tải nhật ký"; }
+    }
+    async function loadSecStatus() {
+      const el = document.getElementById("secStatusBox");
+      try {
+        const d = await fetch("/api/security/status").then(r => r.json());
+        const warns = (d.warnings || []).map(w => `<div class="sec-warn">⚠️ ${esc(w)}</div>`).join("");
+        el.innerHTML = `
+          ${d.auth_enabled ? '<div class="sec-ok">✅ Đang bật xác thực đăng nhập</div>' : ""}
+          ${warns || (d.auth_enabled ? '<div class="sec-ok">✅ Không phát hiện vấn đề bảo mật.</div>' : "")}
+          <div style="margin-top:6px;">Tài khoản gốc: <b>${esc(d.root_user)}</b></div>
+          <div>Tài khoản con: <b>${d.users}</b> · Có 2FA: <b>${d.totp_users}</b> · Phiên đang mở: <b>${d.active_sessions}</b></div>
+          <div style="font-size:12px;color:#888;margin-top:8px;">Gợi ý: đổi mật khẩu gốc mạnh (12+ ký tự), tài khoản người xem chỉ cấp quyền xem trực tiếp, bật 2FA cho tài khoản quản trị. Nhật ký đăng nhập lưu trên ổ cứng, không bị xoá tự động khi dọn bản ghi.</div>`;
+      } catch (e) { el.textContent = "Lỗi tải trạng thái"; }
+    }
+
+    initSecurity().then(ok => { if (ok) init(); });
   </script>
 </body>
 </html>

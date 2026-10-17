@@ -3,10 +3,28 @@
 Ứng dụng NVR độc lập siêu nhẹ (CPU < 1%), ghi hình trực tiếp RTSP (`-c:v copy`) và nhận tín hiệu Motion từ Home Assistant.
 
 ## Đăng nhập web
-Web UI được bảo vệ bằng HTTP Basic Auth. Cấu hình qua biến môi trường:
-- `NVR_USER` (mặc định `admin`)
-- `NVR_PASS` (mặc định `admin`) — **nên đổi ngay**
-- `NVR_AUTH=off` để tắt đăng nhập (chỉ dùng trong LAN tin cậy)
+Web UI có **trang đăng nhập riêng** (`/login`), phiên làm việc bằng cookie an toàn, có thể **tạo tài khoản con** với quyền giới hạn và **xác thực 2 lớp (2FA)**.
+- `NVR_USER` (mặc định `admin`) — **tài khoản gốc**, toàn quyền, không xoá được.
+- `NVR_PASS` (mặc định `admin`) — **nên đổi ngay** (mật khẩu mạnh 12+ ký tự).
+- `NVR_AUTH=off` để tắt đăng nhập (chỉ dùng trong LAN tin cậy).
+- `NVR_IFRAME=on` nếu muốn nhúng giao diện vào iframe (mặc định chặn iframe để chống clickjacking).
+
+Mọi client cũ dùng **HTTP Basic Auth** (script, Home Assistant, ffmpeg/VLC, Node-RED) vẫn hoạt động như trước — chỉ giao diện web chuyển sang phiên đăng nhập.
+
+## Bảo mật & tài khoản con
+Bấm **🔐 Bảo mật** trên thanh công cụ:
+- **Tài khoản của tôi**: đổi mật khẩu, bật **2FA** (quét/nhập mã vào Google Authenticator, Authy… — sau khi bật, mỗi lần đăng nhập cần thêm mã 6 số).
+- **Tài khoản con** (chỉ quản trị viên): tạo tài khoản cho người xem. Chọn vai trò:
+  - **Quản trị viên**: toàn quyền như tài khoản gốc.
+  - **Người dùng**: tick chọn từng quyền — Xem trực tiếp, Xem lại bản ghi, Xem sự kiện, Xuất clip, Điều khiển PTZ, Khoá bản ghi — và **chọn từng camera được phép xem** (bỏ trống = tất cả). Người dùng chỉ thấy các nút được cấp quyền; mật khẩu camera bị che.
+- **Nhật ký đăng nhập**: mọi lần đăng nhập thành công/thất bại, tạo/sửa/xoá tài khoản, bật/tắt 2FA đều được ghi lại (kèm IP, thời gian) và **lưu trên ổ cứng**.
+- **Trạng thái bảo mật**: cảnh báo nếu mật khẩu gốc còn mặc định, xác thực đang tắt, hoặc không còn quản trị viên.
+
+Cơ chế chống tấn công tự động:
+- **Chống dò mật khẩu**: 8 lần sai trong 15 phút → tạm khoá theo IP 5 phút (HTTP 429).
+- **Chống CSRF**: mọi thao tác thay đổi dữ liệu qua phiên cookie đều phải kèm mã chống giả mạo; API dùng Basic Auth được miễn (tương thích script cũ).
+- **Phiên tự hết hạn** sau 7 ngày, đổi/xoá mật khẩu hoặc khoá tài khoản sẽ đăng xuất mọi phiên của tài khoản đó ngay.
+- **Header bảo mật**: CSP, chống MIME-sniffing, chặn iframe (có thể mở bằng `NVR_IFRAME=on`).
 
 ## Liên kết Home Assistant (lấy Motion bằng Token)
 Trên Web UI, bấm **🛰️ Home Assistant**:
@@ -77,6 +95,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **🎮 PTZ (ONVIF)**: bấm **🎮 PTZ** để hiện bàn điều hướng xoay/zoom (dùng tài khoản trong URL RTSP; camera cần hỗ trợ ONVIF). Chọn preset có sẵn trong danh sách và bấm **📍 Đến preset**. Nếu camera dùng cổng ONVIF khác 80, thêm `onvif_port` trong `config.json`.
 - **🔔 Thông báo Telegram/Webhook**: bấm **🔔 Thông báo**, dán **Bot Token** (tạo bot qua @BotFather), **Chat ID** và bật thông báo — mỗi khi có chuyển động, LiteNVR gửi tin kèm **ảnh snapshot** (tuỳ chọn). Ô **Webhook URL** cho phép đẩy JSON sang Node-RED/HA/n8n. Nút **📨 Gửi thử** để kiểm tra; tin nhắn giới hạn 1 tin/3 giây mỗi camera để tránh dội.
 - **💾 Sao lưu / Khôi phục cấu hình**: trong **⚙️ Lưu trữ**, bấm **Xuất cấu hình** để tải file JSON (camera, lịch, HA, thông báo) và **Nhập cấu hình** để khôi phục sau khi chạy container mới / khôi phục nguyên trạng.
+- **📱 Tối ưu điện thoại / máy tính bảng**: giao diện tự gọn thanh công cụ thành nút **☰** trên màn hình nhỏ, modal mở toàn màn hình, nút/ô nhập đủ lớn cho cảm ứng (ô nhập ≥16px, chống iOS tự phóng to), timeline cao hơn để kéo tua dễ hơn.
 
 
 ## Tích hợp Home Assistant (Motion Webhook - không cần token)
