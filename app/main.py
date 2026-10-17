@@ -849,6 +849,8 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
 
         def _hint(line: str) -> str:
             low = line.lower()
+            if ("server returned 404" in low or "404 not found" in low) and _go2rtc.get("running"):
+                return ("Nguồn camera lỗi khi lấy qua restream go2rtc (sai URL/tài khoản hoặc cam đang bận): " + line)
             if "5xx" in low or "server returned 5" in low or "453" in low or "454" in low or "461" in low:
                 return ("Camera từ chối kết nối RTSP (có thể đã đủ số phiên đồng thời — "
                         "kiểm tra Frigate/go2rtc/app hãng đang chiếm stream): " + line)
