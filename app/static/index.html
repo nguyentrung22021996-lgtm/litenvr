@@ -69,6 +69,25 @@
     .badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #388e3c; margin-left: 6px; }
     .badge.motion { background: #f57c00; }
     .badge.off { background: #616161; }
+    .log-badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 9px; background: #d32f2f; color: #fff; font-size: 11px; text-align: center; }
+    .log-cams { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .log-cam { display: flex; align-items: center; gap: 8px; padding: 6px 9px; background: #262626; border-radius: 6px; font-size: 12px; border-left: 3px solid #444; }
+    .log-cam.err { border-left-color: #d32f2f; }
+    .log-cam.warn { border-left-color: #f57c00; }
+    .log-cam.ok { border-left-color: #388e3c; }
+    .log-cam .nm { font-weight: 600; }
+    .log-cam .msg { color: #bbb; margin-left: auto; text-align: right; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-filter { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 12px; color: #bbb; }
+    .log-chk { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+    .log-list { background: #111; border: 1px solid #333; border-radius: 6px; padding: 8px; height: 38vh; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; }
+    .log-line { display: flex; gap: 8px; white-space: pre-wrap; word-break: break-word; }
+    .log-line .ts { color: #777; flex: none; }
+    .log-line .lv { flex: none; font-weight: 700; }
+    .log-line.info .lv { color: #64b5f6; }
+    .log-line.warn .lv { color: #ffb74d; }
+    .log-line.error .lv { color: #ef5350; }
+    .log-line .cid { color: #9ccc65; flex: none; }
+    .log-empty { color: #666; text-align: center; padding: 20px; }
   </style>
 </head>
 <body>
@@ -79,6 +98,7 @@
     <button id="btnLive" class="active" onclick="playLive()">Trực tiếp (Live)</button>
     <button class="warn" onclick="testMotion()">⚡ Test Motion</button>
     <button onclick="showDiagnostics()">🔍 Chẩn đoán</button>
+    <button id="btnLogs" onclick="openLogsModal()">📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
     <button class="primary" onclick="openCamModal()">+ Quản lý Camera</button>
     <button onclick="openStorageModal()">⚙️ Lưu trữ</button>
     <button onclick="openHassModal()">🛰️ Home Assistant</button>
@@ -265,6 +285,23 @@
     </div>
   </div>
 
+  <!-- Modal Nhật ký / Log lỗi -->
+  <div class="modal" id="logsModal">
+    <div class="modal-box" style="max-width:640px;">
+      <h3 style="margin-top:0">📋 Nhật ký &amp; Lỗi</h3>
+      <div id="logCams" class="log-cams"></div>
+      <div class="log-filter">
+        <label class="log-chk"><input type="checkbox" id="logOnlyErr" onchange="renderLogs()"> Chỉ hiện lỗi/cảnh báo</label>
+        <button onclick="clearServerLogHint()" title="Nhật ký lưu trong RAM, tự xoá khi khởi động lại">ℹ️</button>
+      </div>
+      <div id="logList" class="log-list"></div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
+        <button onclick="copyLogs()">📄 Sao chép</button>
+        <button class="primary" onclick="closeLogsModal()">Đóng</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal Liên kết Home Assistant -->
   <div class="modal" id="hassModal">
     <div class="modal-box">
@@ -312,6 +349,7 @@
 
   <script>
     let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null;
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
     const dateInput = document.getElementById("dateInput");
     dateInput.value = new Date().toISOString().split("T")[0];
@@ -431,6 +469,8 @@
       await loadStats();
       setInterval(loadStats, 5000);
       setInterval(refreshSnapshots, 30000);
+      updateLogBadge();
+      setInterval(updateLogBadge, 15000);
       await loadTimeline();
       playLive();
     }
@@ -929,6 +969,84 @@
         ].filter(Boolean);
         alert(lines.join("\n"));
       } catch (e) { alert("Không lấy được chẩn đoán: " + e); }
+    }
+
+    let _logsTimer = null, _logsData = null;
+    async function updateLogBadge() {
+      try {
+        const d = await fetch("/api/logs?limit=50").then(r => r.json());
+        const errs = (d.events || []).filter(e => e.level === "error").length;
+        const camErr = Object.values(d.cameras || {}).filter(c => !c.running || c.last_error).length;
+        const n = errs + camErr;
+        const b = document.getElementById("logBadge");
+        if (n > 0) { b.textContent = n > 99 ? "99+" : n; b.hidden = false; }
+        else b.hidden = true;
+      } catch (e) { /* im lặng */ }
+    }
+    function openLogsModal() {
+      document.getElementById("logsModal").style.display = "flex";
+      refreshLogs();
+      if (_logsTimer) clearInterval(_logsTimer);
+      _logsTimer = setInterval(refreshLogs, 5000);
+    }
+    function closeLogsModal() {
+      document.getElementById("logsModal").style.display = "none";
+      if (_logsTimer) { clearInterval(_logsTimer); _logsTimer = null; }
+    }
+    function clearServerLogHint() {
+      alert("Nhật ký lưu trong RAM và tự xoá khi khởi động lại. Dùng nút Sao chép để gửi lỗi cho người hỗ trợ.");
+    }
+    async function refreshLogs() {
+      try {
+        const r = await fetch("/api/logs?limit=200");
+        _logsData = await r.json();
+        renderLogs();
+      } catch (e) {
+        document.getElementById("logList").innerHTML = `<div class="log-empty">Không lấy được nhật ký: ${esc(String(e))}</div>`;
+      }
+    }
+    function fmtTs(t) {
+      const d = new Date(t * 1000);
+      return d.toLocaleTimeString("vi-VN", { hour12: false }) + " " + d.toLocaleDateString("vi-VN");
+    }
+    function renderLogs() {
+      if (!_logsData) return;
+      const cams = _logsData.cameras || {};
+      const box = document.getElementById("logCams");
+      box.innerHTML = Object.entries(cams).map(([id, c]) => {
+        let cls = "ok", msg = "Đang chạy";
+        if (!c.running) { cls = "err"; msg = c.last_error || "Không chạy"; }
+        else if (c.rate_limited) { cls = "warn"; msg = "Bị từ chối kết nối (5XX), đang chờ"; }
+        else if (c.detect_failed) { cls = "warn"; msg = "Chưa dò được codec"; }
+        const codec = c.detected_codec ? ` <span class="badge">${esc(c.detected_codec)}</span>` : "";
+        return `<div class="log-cam ${cls}"><span class="nm">${esc(c.name || id)}</span>${codec}<span class="msg" title="${esc(msg)}">${esc(msg)}</span></div>`;
+      }).join("") || `<div class="log-empty">Chưa có camera.</div>`;
+
+      const onlyErr = document.getElementById("logOnlyErr").checked;
+      let evs = _logsData.events || [];
+      if (onlyErr) evs = evs.filter(e => e.level !== "info");
+      const list = document.getElementById("logList");
+      if (!evs.length) {
+        list.innerHTML = `<div class="log-empty">Không có bản ghi${onlyErr ? " lỗi/cảnh báo" : ""}.</div>`;
+        return;
+      }
+      list.innerHTML = evs.map(e =>
+        `<div class="log-line ${e.level}"><span class="ts">${fmtTs(e.t)}</span>` +
+        `<span class="lv">${e.level === "error" ? "ERR" : e.level === "warn" ? "WARN" : "INFO"}</span>` +
+        (e.cam_id ? `<span class="cid">[${esc(e.cam_id)}]</span>` : "") +
+        `<span>${esc(e.msg)}</span></div>`
+      ).join("");
+    }
+    function copyLogs() {
+      if (!_logsData) return;
+      const lines = (["=== Camera ==="].concat(
+        Object.entries(_logsData.cameras || {}).map(([id, c]) => `${id} (${c.name}): running=${c.running} rate_limited=${c.rate_limited} codec=${c.detected_codec} err=${c.last_error || ""}`)
+      )).concat(["", "=== Nhật ký ==="]).concat(
+        (_logsData.events || []).map(e => `[${fmtTs(e.t)}] ${e.level.toUpperCase()} ${e.cam_id ? "(" + e.cam_id + ") " : ""}${e.msg}`)
+      );
+      const text = lines.join("\n");
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => alert("Đã sao chép nhật ký."), () => prompt("Sao chép nhật ký:", text));
+      else prompt("Sao chép nhật ký:", text);
     }
 
     init();

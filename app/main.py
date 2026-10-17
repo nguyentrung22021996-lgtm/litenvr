@@ -236,6 +236,20 @@ cam_status: Dict[str, dict] = {}
 # Cache codec đã dò được: cam_id -> (url_key, codec_name)
 codec_cache: Dict[str, tuple] = {}
 
+# Nhật ký sự kiện toàn ứng dụng (cho tab Log trên UI)
+APP_LOG: deque = deque(maxlen=300)
+_log_lock = threading.Lock()
+
+def log_event(level: str, msg: str, cam_id: str = ""):
+    """Ghi 1 dòng nhật ký (info/warn/error) để UI hiển thị và biết đường sửa."""
+    with _log_lock:
+        APP_LOG.append({
+            "t": int(time.time()),
+            "level": level,
+            "cam_id": cam_id,
+            "msg": msg,
+        })
+
 H264_BROWSER_SAFE_PIXFMT = {"yuv420p", "yuvj420p"}
 
 def detect_video_codec(cam_id: str, cam_info: dict):
@@ -410,6 +424,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         except Exception as e:
             st["running"] = False
             st["last_error"] = str(e)
+            log_event("error", f"ffmpeg không khởi động được: {e}", cam_id)
             print(f"[LiteNVR] ffmpeg lỗi khởi động cho {cam_id}: {e}", flush=True)
             if token.wait(backoff):
                 break
@@ -419,6 +434,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         ffmpeg_processes[cam_id] = proc
         st["running"] = True
         st["last_start"] = int(started)
+        log_event("info", "Bắt đầu luồng (ffmpeg)", cam_id)
 
         def _hint(line: str) -> str:
             low = line.lower()
@@ -434,6 +450,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             return line
 
         def _drain(p, cid, status):
+            warned = False
             try:
                 for line in p.stderr:
                     line = line.strip()
@@ -446,6 +463,9 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                             or " 453 " in low or "453 " in low
                             or "500 internal" in low or "503 " in low or "461 " in low):
                         status["rate_limited"] = True
+                    if not warned:
+                        warned = True
+                        log_event("error", status["last_error"], cid)
             except Exception:
                 pass
 
@@ -464,10 +484,13 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         ran = time.time() - started
         if ran > 10:
             backoff = 5
+            log_event("warn", f"Luồng dừng sau {int(ran)}s, thử lại sau {backoff}s", cam_id)
         elif st.get("rate_limited"):
             backoff = min(max(backoff * 2, 15), 120)
+            log_event("warn", f"Camera từ chối kết nối (5XX), chờ {backoff}s để nhả khoá", cam_id)
         else:
             backoff = min(max(backoff, 2), 30)
+            log_event("warn", f"Kết nối lỗi, thử lại sau {backoff}s", cam_id)
         if token.wait(backoff):
             break
 
@@ -722,6 +745,7 @@ def handle_motion(cam_id: str, label: str):
     # Kích hoạt cờ lưu video từ RAM xuống ổ cứng nếu camera đang ở chế độ Motion Only
     post_sec = int(CONFIG.get("post_motion_sec", 60))
     motion_active_until[cam_id] = time.time() + post_sec
+    log_event("info", f"Phát hiện chuyển động: {label}", cam_id)
 
     # Ưu tiên chụp Snapshot từ luồng phụ để lấy ảnh cực nhanh
     snap_rtsp = cam_info.get("sub_rtsp_url") or cam_info["rtsp_url"]
@@ -734,6 +758,7 @@ def handle_motion(cam_id: str, label: str):
         ])
     except Exception as e:
         print(f"[LiteNVR] Không chụp được snapshot cho {cam_id}: {e}", flush=True)
+        log_event("warn", f"Không chụp được snapshot: {e}", cam_id)
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -870,10 +895,12 @@ def hass_motion_listener():
                 hass_state["connected"] = True
                 hass_state["last_error"] = ""
                 print("[LiteNVR] Đã kết nối Home Assistant, đang lắng nghe chuyển động.", flush=True)
+                log_event("info", "Đã kết nối Home Assistant, đang lắng nghe chuyển động")
             except Exception as e:
                 hass_state["connected"] = False
                 hass_state["last_error"] = str(e)
                 print(f"[LiteNVR] Lỗi kết nối HA: {e}", flush=True)
+                log_event("error", f"Lỗi kết nối Home Assistant: {e}")
                 close_ws()
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)
@@ -888,6 +915,7 @@ def hass_motion_listener():
             hass_state["connected"] = False
             hass_state["last_error"] = str(e)
             print(f"[LiteNVR] Mất kết nối HA, thử lại: {e}", flush=True)
+            log_event("warn", f"Mất kết nối Home Assistant, thử lại: {e}")
             close_ws()
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
@@ -1049,6 +1077,24 @@ def get_timeline(cam_id: str, date: str):
         "events": events,
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
     }
+
+@app.get("/api/logs")
+def get_logs(limit: int = 200):
+    """Nhật ký hệ thống + trạng thái lỗi từng camera để UI hiển thị và gợi ý cách sửa."""
+    cams = {}
+    for cam_id, cam in CONFIG.get("cameras", {}).items():
+        st = cam_status.get(cam_id, {})
+        cams[cam_id] = {
+            "name": cam.get("name", cam_id),
+            "running": bool(st.get("running")),
+            "last_error": st.get("last_error", ""),
+            "rate_limited": bool(st.get("rate_limited", False)),
+            "detect_failed": bool(st.get("detect_failed", False)),
+            "detected_codec": st.get("detected_codec", ""),
+        }
+    events = list(APP_LOG)[-max(1, min(limit, 300)):]
+    events.reverse()
+    return {"events": events, "cameras": cams}
 
 @app.get("/api/status/{cam_id}")
 def get_cam_status(cam_id: str):
