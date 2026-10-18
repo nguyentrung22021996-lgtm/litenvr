@@ -702,7 +702,8 @@ def resolve_auth(request: Request) -> tuple:
 
 def cam_path_segment(path: str) -> Optional[str]:
     for prefix in ("/hls/", "/recordings/", "/snapshots/", "/api/live/", "/api/status/",
-                   "/api/timeline/", "/api/play/", "/api/export/", "/api/ptz/", "/api/locks/"):
+                   "/api/timeline/", "/api/play/", "/api/drive/play/", "/api/export/",
+                   "/api/ptz/", "/api/locks/"):
         if path.startswith(prefix):
             rest = path[len(prefix):]
             seg = rest.split("/", 1)[0]
@@ -719,6 +720,8 @@ def path_permission(request: Request) -> Optional[str]:
         return "live"
     if path == "/api/motion":
         return "live"
+    if path.startswith("/api/drive/play/"):
+        return "playback"  # xem lại bản ghi đã sao lưu lên Drive
     if path.startswith("/api/users") or path.startswith("/api/config") or path.startswith("/api/storage") \
             or path.startswith("/api/hass") or path.startswith("/api/notify") or path.startswith("/api/logs") \
             or path.startswith("/api/system") or path.startswith("/api/onvif") or path.startswith("/api/audit") \
@@ -2655,6 +2658,7 @@ def test_hass_connection(settings: HassSettings):
 def get_timeline(cam_id: str, date: str):
     cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
     segments = []
+    local_names = set()
     locked = locked_paths()
     if os.path.exists(cam_rec_dir):
         for fname in sorted(os.listdir(cam_rec_dir)):
@@ -2663,15 +2667,43 @@ def get_timeline(cam_id: str, date: str):
                     time_part = fname.replace(".mp4", "").split("_")[1]
                     h, m, s = map(int, time_part.split("-"))
                     start_sec = h * 3600 + m * 60 + s
+                    local_names.add(fname)
                     segments.append({
                         "file": f"/recordings/{cam_id}/{fname}",
                         "fname": fname,
                         "time": time_part.replace("-", ":"),
                         "start_sec": start_sec,
                         "locked": f"{cam_id}/{fname}" in locked,
+                        "drive": False,
                     })
                 except Exception:
                     pass
+
+    # Bổ sung các đoạn chỉ còn trên Google Drive (đã tải lên, đã xoá khỏi ổ cứng)
+    try:
+        rows = db_conn().execute(
+            "SELECT name FROM drive_uploads WHERE cam_id=? AND status='done' AND name GLOB ? ORDER BY name",
+            (cam_id, date + "_*.mp4")).fetchall()
+    except Exception:
+        rows = []
+    for (fname,) in rows:
+        if fname in local_names:
+            continue
+        try:
+            time_part = fname.replace(".mp4", "").split("_")[1]
+            h, m, s = map(int, time_part.split("-"))
+            start_sec = h * 3600 + m * 60 + s
+        except Exception:
+            continue
+        segments.append({
+            "file": f"/api/play/{cam_id}/{fname}",
+            "fname": fname,
+            "time": time_part.replace("-", ":"),
+            "start_sec": start_sec,
+            "locked": f"{cam_id}/{fname}" in locked,
+            "drive": True,
+        })
+    segments.sort(key=lambda s: s["start_sec"])
 
     conn = db_conn()
     c = conn.cursor()
@@ -3057,6 +3089,112 @@ def drive_delete_file(file_id: str) -> bool:
         if e.status == 404:
             return True  # đã bị xoá từ trước
         raise
+
+
+# --- Tải bản ghi từ Drive về ổ cứng để xem lại (tua/seek) ---
+_drive_fetch_lock = threading.Lock()
+_drive_fetching: Dict[str, threading.Event] = {}   # "cam/fname" -> Event báo tải xong
+_drive_fetch_prog: Dict[str, dict] = {}            # "cam/fname" -> tiến độ tải
+
+def drive_download_file(file_id: str, dest_path: str, kbps: int, prog: dict) -> int:
+    """Tải 1 file từ Drive về dest_path (ghi qua .part rồi đổi tên). kbps: 0 = không giới hạn."""
+    token = drive_access_token()
+    url = (DRIVE_API_BASE + "/files/" + urllib.parse.quote(file_id)
+           + "?alt=media&supportsAllDrives=true")
+    tmp = dest_path + ".part"
+    last_err: Exception = DriveHttpError(500, {"error": "Tải thất bại"})
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+            done = 0
+            with urllib.request.urlopen(req, timeout=300) as r, open(tmp, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0) or int(prog.get("total") or 0)
+                prog["total"], prog["done"] = total, 0
+                while True:
+                    chunk = r.read(262144)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    prog["done"] = done
+                    if kbps > 0:
+                        time.sleep(len(chunk) / max(1, kbps * 125))
+            os.replace(tmp, dest_path)
+            return done
+        except urllib.error.HTTPError as e:
+            last_err = e
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            if e.code == 401 and attempt == 0:
+                token = drive_access_token(force=True)
+                continue
+            if e.code >= 500 and attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise DriveHttpError(e.code, {"error": "Tải bản ghi từ Drive thất bại"})
+        except Exception as e:
+            last_err = e
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise
+    raise DriveHttpError(500, {"error": str(last_err)})
+
+
+def _drive_fetch_job(key: str, cam: str, name: str, file_id: str, path: str):
+    prog = _drive_fetch_prog.setdefault(key, {})
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        drive_download_file(file_id, path, int(gd_cfg().get("bandwidth_kbps") or 0), prog)
+        prog["state"] = "done"
+    except Exception as e:
+        prog["state"] = "error"
+        prog["error"] = f"Lỗi tải bản ghi từ Drive: {e}"
+        log_event("warn", prog["error"], cam)
+    finally:
+        with _drive_fetch_lock:
+            ev = _drive_fetching.pop(key, None)
+        if ev:
+            ev.set()
+
+
+def ensure_local_recording(cam_id: str, fname: str, timeout: float = 1800) -> Optional[str]:
+    """Trả về đường dẫn file bản ghi trên ổ cứng; nếu chỉ còn trên Drive thì tải về trước.
+    Trả None nếu không có bản ghi này ở đâu cả."""
+    cam = os.path.basename(cam_id)
+    name = os.path.basename(fname)
+    path = os.path.join(RECORDINGS_DIR, cam, name)
+    if os.path.isfile(path):
+        return path
+    try:
+        row = db_conn().execute(
+            "SELECT drive_id FROM drive_uploads WHERE path=? AND status='done' AND drive_id<>''",
+            (f"{cam}/{name}",)).fetchone()
+    except Exception:
+        row = None
+    if not row or not row[0]:
+        return None
+    key = f"{cam}/{name}"
+    with _drive_fetch_lock:
+        ev = _drive_fetching.get(key)
+        if ev is None:
+            ev = threading.Event()
+            _drive_fetching[key] = ev
+            _drive_fetch_prog[key] = {"state": "downloading", "done": 0, "total": 0, "error": ""}
+            threading.Thread(target=_drive_fetch_job,
+                             args=(key, cam, name, row[0], path), daemon=True).start()
+    if not ev.wait(timeout):
+        raise HTTPException(status_code=504, detail="Tải bản ghi từ Drive quá lâu, vui lòng thử lại")
+    if os.path.isfile(path):
+        return path
+    err = (_drive_fetch_prog.get(key) or {}).get("error") or "Không tải được bản ghi từ Drive"
+    raise HTTPException(status_code=502, detail=err)
 
 
 def _rec_name_ts(name: str) -> Optional[float]:
@@ -3580,6 +3718,31 @@ def drive_upload_now(body: DriveNow):
     return {"status": "ok", "queued": queued}
 
 
+@app.get("/api/drive/play/{cam_id}/{fname}")
+def drive_play_status(cam_id: str, fname: str):
+    """Tiến độ tải bản ghi từ Drive về ổ cứng (để UI hiện % khi xem lại)."""
+    cam = os.path.basename(cam_id)
+    name = os.path.basename(fname)
+    path = os.path.join(RECORDINGS_DIR, cam, name)
+    if os.path.isfile(path):
+        return {"state": "local", "done": 1, "total": 1}
+    pr = _drive_fetch_prog.get(f"{cam}/{name}") or {}
+    if pr.get("state") == "error":
+        return {"state": "error", "error": pr.get("error", ""),
+                "done": int(pr.get("done") or 0), "total": int(pr.get("total") or 0)}
+    if pr.get("state") in ("downloading", "done"):
+        return {"state": pr["state"], "done": int(pr.get("done") or 0),
+                "total": int(pr.get("total") or 0)}
+    row = None
+    try:
+        row = db_conn().execute(
+            "SELECT drive_id FROM drive_uploads WHERE path=? AND status='done'",
+            (f"{cam}/{name}",)).fetchone()
+    except Exception:
+        pass
+    return {"state": "drive" if row else "none", "done": 0, "total": 0}
+
+
 @app.post("/api/drive/cleanup")
 def drive_cleanup_now():
     if not drive_connected():
@@ -3628,10 +3791,34 @@ def _segments_between(cam_id: str, date: str, start_sec: float, end_sec: float) 
     """Các segment giao với khoảng [start_sec, end_sec] (giây trong ngày)."""
     cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
     out = []
-    if not os.path.isdir(cam_dir):
-        return out
-    for fname in sorted(os.listdir(cam_dir)):
-        if not (fname.startswith(date) and fname.endswith(".mp4")):
+    local_names = set()
+    if os.path.isdir(cam_dir):
+        for fname in sorted(os.listdir(cam_dir)):
+            if not (fname.startswith(date) and fname.endswith(".mp4")):
+                continue
+            try:
+                time_part = fname.replace(".mp4", "").split("_")[1]
+                h, m, s = map(int, time_part.split("-"))
+            except Exception:
+                continue
+            st = h * 3600 + m * 60 + s
+            fp = os.path.join(cam_dir, fname)
+            mt = datetime.fromtimestamp(os.path.getmtime(fp))
+            en = mt.hour * 3600 + mt.minute * 60 + mt.second
+            if mt.strftime("%Y-%m-%d") != date or en <= st:
+                en = st + 60
+            local_names.add(fname)
+            if st < end_sec and en > start_sec:
+                out.append((fp, st, en))
+    # Các đoạn chỉ còn trên Drive: tải về rồi đưa vào danh sách ghép clip
+    try:
+        rows = db_conn().execute(
+            "SELECT name FROM drive_uploads WHERE cam_id=? AND status='done' AND name GLOB ? ORDER BY name",
+            (cam_id, date + "_*.mp4")).fetchall()
+    except Exception:
+        rows = []
+    for (fname,) in rows:
+        if fname in local_names:
             continue
         try:
             time_part = fname.replace(".mp4", "").split("_")[1]
@@ -3639,13 +3826,16 @@ def _segments_between(cam_id: str, date: str, start_sec: float, end_sec: float) 
         except Exception:
             continue
         st = h * 3600 + m * 60 + s
-        fp = os.path.join(cam_dir, fname)
-        mt = datetime.fromtimestamp(os.path.getmtime(fp))
-        en = mt.hour * 3600 + mt.minute * 60 + mt.second
-        if en <= st:
-            en = st + 60
-        if st < end_sec and en > start_sec:
-            out.append((fp, st, en))
+        if not (st < end_sec and st + 60 > start_sec):
+            continue
+        try:
+            fp = ensure_local_recording(cam_id, fname)
+        except HTTPException as e:
+            log_event("warn", f"Xuất clip: bỏ đoạn trên Drive ({fname}): {e.detail}", cam_id)
+            continue
+        if fp:
+            out.append((fp, st, st + 60))
+    out.sort(key=lambda x: x[1])
     return out
 
 def _fmt_hms(sec: float) -> str:
@@ -3789,8 +3979,8 @@ def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0):
     (dùng cho camera H.265/HEVC mà không cần ghi lại). ss = tua tới giây thứ N."""
     safe_cam = os.path.basename(cam_id)
     safe_name = os.path.basename(fname)
-    path = os.path.join(RECORDINGS_DIR, safe_cam, safe_name)
-    if not os.path.isfile(path):
+    path = ensure_local_recording(safe_cam, safe_name)
+    if not path:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản ghi")
 
     if not t:

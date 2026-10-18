@@ -498,6 +498,10 @@
       background: #059669;
     }
 
+    .seg-mark.drive {
+      background: #38bdf8;
+    }
+
     .motion-mark {
       position: absolute;
       top: 0;
@@ -2196,6 +2200,7 @@
       if (!currentCam) return;
       document.getElementById("btnLive").classList.add("active");
       currentSegStartSec = null;
+      stopDriveFetchPoll();
       const scrub = document.getElementById("scrubTime");
       if (scrub) scrub.textContent = "● Đang xem trực tiếp";
       const statusEl = document.getElementById("statusText");
@@ -2250,9 +2255,9 @@
 
       segments.forEach(s => {
         const el = document.createElement("div");
-        el.className = "seg-mark";
+        el.className = "seg-mark" + (s.drive ? " drive" : "");
         el.style.left = (s.start_sec / 86400 * 100) + "%";
-        el.title = "Có bản ghi: " + s.time;
+        el.title = (s.drive ? "☁️ Có bản ghi trên Drive: " : "Có bản ghi: ") + s.time;
         segLayer.appendChild(el);
       });
 
@@ -2363,31 +2368,63 @@
     }
 
     let currentSegStartSec = null;
+    let driveFetchPoll = null;
+    function stopDriveFetchPoll() {
+      if (driveFetchPoll) { clearInterval(driveFetchPoll); driveFetchPoll = null; }
+    }
+    function pollDriveFetch(cam, fname) {
+      stopDriveFetchPoll();
+      const url = `/api/drive/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}`;
+      const tick = async () => {
+        let d;
+        try { d = await (await fetch(url)).json(); } catch (e) { return; }
+        if (d.state === "local" || d.state === "done") { stopDriveFetchPoll(); return; }
+        if (d.state === "error") {
+          stopDriveFetchPoll();
+          document.getElementById("statusText").textContent = "⚠️ " + (d.error || "Không tải được bản ghi từ Drive");
+          return;
+        }
+        const pct = d.total ? Math.floor(d.done / d.total * 100) : 0;
+        document.getElementById("statusText").textContent =
+          `☁️ Đang tải bản ghi từ Drive… ${pct}% (${drvFmtBytes(d.done)}/${drvFmtBytes(d.total)})`;
+      };
+      tick();
+      driveFetchPoll = setInterval(tick, 1000);
+    }
     function playSegment(idx, offset) {
       stopLiveHeartbeat();
       const seg = segments[idx];
       const parts = seg.file.split("/");
       const cam = parts[2] || currentCam;
-      const fname = parts[parts.length - 1];
+      const fname = seg.fname || parts[parts.length - 1];
       const transUrl = `/api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1&ss=${Math.max(0, offset || 0).toFixed(2)}`;
 
       currentSegStartSec = seg.start_sec;
-      document.getElementById("statusText").textContent = `Phát lại: ${seg.time}`;
+      document.getElementById("statusText").textContent = seg.drive
+        ? `☁️ Bản ghi trên Drive — đang tải về… (${seg.time})`
+        : `Phát lại: ${seg.time}`;
+      if (seg.drive) pollDriveFetch(cam, fname); else stopDriveFetchPoll();
       let triedTranscode = false;
 
       const startAt = () => {
         try { video.currentTime = triedTranscode ? 0 : offset; } catch (e) {}
         video.play().catch(() => {});
       };
-      video.onloadedmetadata = () => { video.onloadedmetadata = null; startAt(); };
+      video.onloadedmetadata = () => {
+        video.onloadedmetadata = null;
+        stopDriveFetchPoll();
+        if (seg.drive) document.getElementById("statusText").textContent = `☁️ Phát lại từ Drive: ${seg.time}`;
+        startAt();
+      };
       video.onerror = () => {
         if (!triedTranscode) {
           triedTranscode = true;
           document.getElementById("statusText").textContent =
             "Đang chuyển mã sang H.264 để phát (camera H.265)...";
-          video.onloadedmetadata = () => { video.onloadedmetadata = null; startAt(); };
+          video.onloadedmetadata = () => { video.onloadedmetadata = null; stopDriveFetchPoll(); startAt(); };
           video.src = transUrl;
         } else {
+          stopDriveFetchPoll();
           document.getElementById("statusText").textContent =
             "Không phát được bản ghi này. Bấm 🔍 Chẩn đoán để xem lỗi.";
           __clientLog("error", "Không phát được bản ghi: " + seg.file);
