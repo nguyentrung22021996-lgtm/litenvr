@@ -107,7 +107,8 @@ Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng
 2. **OAuth consent screen**: chọn External → điền tên app, thêm email của bạn vào **Test users** → sau đó bấm **Publish app** (⚠️ nếu để chế độ *Testing*, Google sẽ hết hạn refresh token sau 7 ngày và LiteNVR sẽ báo lỗi xác thực định kỳ).
 3. **Credentials → Create credentials → OAuth client ID** → loại **TVs and Limited Input devices** → copy **Client ID** và **Client secret**.
 4. Trong LiteNVR: **☁️ Google Drive** → dán Client ID/secret → bấm **Kết nối Google** → mở [google.com/device](https://www.google.com/device) trên điện thoại/máy tính, nhập mã hiện trên LiteNVR → **Đồng ý**. Xong!
-5. Đã có refresh token sẵn (rclone, script cũ…)? Mở mục **Dán token có sẵn** trong hộp thoại và dán Client ID/secret/refresh token thay vì làm bước 4.
+   - Google chỉ cho phép luồng "mã thiết bị" dùng scope **`drive.file`** — LiteNVR chỉ nhìn thấy/quản lý các file và thư mục **do chính nó tạo** (đủ cho sao lưu vì app tự tạo thư mục `LiteNVR`). Đây là giới hạn của Google, không phải lỗi.
+5. Đã có refresh token sẵn (rclone, script cũ…)? Mở mục **Dán token có sẵn** trong hộp thoại và dán Client ID/secret/refresh token thay vì làm bước 4. Token tạo bằng scope `.../auth/drive` (đầy đủ) cũng dùng được — khi đó có thể trỏ `root_folder_id` vào thư mục có sẵn bất kỳ.
 
 **Cài đặt trong hộp thoại Drive:**
 - **Camera sao lưu**: bỏ trống = tất cả camera.

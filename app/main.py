@@ -49,7 +49,7 @@ BUFFER_DIR = "/dev/shm/buffer"
 DRIVE_OAUTH_BASE = os.environ.get("NVR_DRIVE_OAUTH_BASE", "https://oauth2.googleapis.com").rstrip("/")
 DRIVE_API_BASE = os.environ.get("NVR_DRIVE_API_BASE", "https://www.googleapis.com/drive/v3").rstrip("/")
 DRIVE_UPLOAD_BASE = os.environ.get("NVR_DRIVE_UPLOAD_BASE", "https://www.googleapis.com/upload/drive/v3").rstrip("/")
-DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+DRIVE_SCOPE = os.environ.get("NVR_DRIVE_SCOPE", "https://www.googleapis.com/auth/drive.file")
 DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
 DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
 DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
@@ -3426,7 +3426,16 @@ def drive_connect_start(body: DriveConnect):
     try:
         j = _form_post(DRIVE_OAUTH_BASE + "/device/code", {"client_id": cid, "scope": DRIVE_SCOPE})
     except DriveHttpError as e:
-        raise HTTPException(status_code=400, detail=f"Google từ chối: {e.payload}")
+        err = str((e.payload or {}).get("error", "")) if isinstance(e.payload, dict) else ""
+        if err == "invalid_scope":
+            hint = ("Google chỉ cho phép scope drive.file (hoặc drive.appdata) với client "
+                    "TVs and Limited Input devices. Kiểm tra biến môi trường NVR_DRIVE_SCOPE nếu bạn tự đổi.")
+        elif err == "invalid_client":
+            hint = ("Client ID sai hoặc không phải loại 'TVs and Limited Input devices'. "
+                    "Tạo lại đúng loại client trong Google Cloud Console.")
+        else:
+            hint = str(e.payload)
+        raise HTTPException(status_code=400, detail=f"Google từ chối: {hint}")
     if not j.get("device_code"):
         raise HTTPException(status_code=400, detail=f"Phản hồi không hợp lệ: {j}")
     drive_pending_auth.update({
