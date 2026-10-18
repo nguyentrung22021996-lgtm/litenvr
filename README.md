@@ -95,6 +95,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - Thẻ **CPU / RAM / Bộ nhớ** cập nhật mỗi 5 giây kèm biểu đồ mini (sparkline) theo thời gian thực.
 - **CPU** hiển thị % toàn hệ thống và %CPU riêng của từng tiến trình ffmpeg (dưới mỗi camera).
 - **RAM / Bộ nhớ** có thanh màu đổi theo mức (xanh → cam ≥75% → đỏ ≥90%).
+- **Sức khoẻ luồng**: ffmpeg báo tiến độ (`-progress`), LiteNVR hiển thị **fps** từng camera; nếu không có khung mới trong 20 giây thì đánh dấu **⏸ đứng** và tự khởi động lại luồng. Xem qua `GET /api/stats`/`/api/system` (mục `cam_health`: `fps`, `stalled`, `state`, `age_sec`).
 - Lưới **camera trực quan**: ô camera hiện ảnh chuyển động mới nhất, chế độ (24/7 / Motion / Live / Lịch), bấm để chuyển nhanh.
 - Trên bản ghi liên tục, các **khoảng có chuyển động được tô màu cam** trên thanh thời gian để dễ dò lại đúng đoạn.
 - **Tìm kiếm sự kiện**: thanh lọc phía trên danh sách sự kiện cho phép tìm theo **nhãn/camera**, chọn **camera**, và giới hạn **khoảng ngày**. Kết quả gộp toàn hệ thống (không chỉ camera/ngày đang xem); bấm một kết quả để nhảy đúng camera, ngày và phát tại thời điểm sự kiện. API: `GET /api/events?cam_id=&q=&date_from=&date_to=&limit=`.

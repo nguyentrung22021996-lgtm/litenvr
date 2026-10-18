@@ -1703,8 +1703,14 @@
         statsHist.mem = hist.samples.map(s => s.mem_percent);
         document.getElementById("cpuVal").textContent = cur.cpu_percent.toFixed(0) + "%";
         const camCpu = Object.entries(cur.cam_cpu || {});
+        const health = Object.entries(cur.cam_health || {}).map(([c, h]) => {
+          if (h && h.stalled) return `${c} ⏸ đứng`;
+          if (h && h.fps != null) return `${c} ${Number(h.fps).toFixed(1)}fps`;
+          return null;
+        }).filter(Boolean);
         document.getElementById("cpuSub").textContent =
-          camCpu.length ? camCpu.map(([c, v]) => `${c} ${v}%`).join(" · ") : "toàn hệ thống";
+          (camCpu.length ? camCpu.map(([c, v]) => `${c} ${v}%`).join(" · ") : "toàn hệ thống") +
+          (health.length ? " · " + health.join(" · ") : "");
         document.getElementById("ramVal").textContent = cur.mem_percent.toFixed(0) + "%";
         let ramSub = `${(cur.mem_used_mb / 1024).toFixed(1)} / ${(cur.mem_total_mb / 1024).toFixed(1)} GB (toàn máy)`;
         const mm = sys && sys.memory;

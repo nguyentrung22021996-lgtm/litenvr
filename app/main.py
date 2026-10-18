@@ -141,6 +141,7 @@ def collect_stats() -> dict:
     s = {"t": int(time.time()), "cpu_percent": read_cpu_percent(), "cam_cpu": read_cam_cpu()}
     s.update(read_mem())
     s.update(read_disk())
+    s["cam_health"] = health_snapshot()
     return s
 
 def stats_sampler():
@@ -164,6 +165,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
     threading.Thread(target=motion_supervisor, daemon=True).start()
+    threading.Thread(target=stream_health_supervisor, daemon=True).start()
     threading.Thread(target=go2rtc_monitor, daemon=True).start()
     try:
         yield
@@ -831,6 +833,8 @@ _disk_warn = {"t": 0.0}
 motion_active_until: Dict[str, float] = {}
 # Chẩn đoán trạng thái camera (cho UI/log)
 cam_status: Dict[str, dict] = {}
+# Sức khoẻ luồng theo camera (fps, lần nhận khung gần nhất, đứng/không)
+cam_health: Dict[str, dict] = {}
 # Cache codec đã dò được: cam_id -> (url_key, codec_name)
 codec_cache: Dict[str, tuple] = {}
 
@@ -1517,6 +1521,9 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
             os.path.join(target_dir, "%Y-%m-%d_%H-%M-%S.mp4")
         ])
 
+    # Báo tiến độ ra stderr (key=value) để giám sát fps và phát hiện luồng đứng.
+    cmd.extend(["-progress", "pipe:2", "-stats_period", "5"])
+
     # Nhánh 2: Phát trực tiếp HLS trên RAM (/dev/shm/hls)
     # include_live=False khi không ai xem (tiết kiệm CPU transcode).
     if include_live:
@@ -1603,6 +1610,73 @@ def start_camera_worker(cam_id: str):
         worker_tokens[cam_id] = token
     threading.Thread(target=_camera_worker_loop, args=(cam_id, token), daemon=True).start()
 
+_PROGRESS_KEYS = {"frame", "fps", "bitrate", "total_size", "out_time_us", "out_time_ms",
+                  "out_time", "dup_frames", "drop_frames", "speed", "progress"}
+_PROGRESS_FRAME_KEYS = {"frame", "fps", "out_time_us", "out_time_ms", "out_time"}
+
+
+def _note_progress(line: str, cam_id: str) -> bool:
+    """Cập nhật sức khoẻ luồng từ một dòng tiến độ ffmpeg. Trả True nếu là dòng tiến độ."""
+    key, _, val = line.partition("=")
+    key = key.strip()
+    if key not in _PROGRESS_KEYS:
+        return False
+    h = cam_health.setdefault(cam_id, {})
+    if key in _PROGRESS_FRAME_KEYS:
+        h["last_frame_at"] = time.time()
+    if key == "fps":
+        try:
+            h["fps"] = float(val)
+        except ValueError:
+            pass
+    elif key == "out_time_ms":
+        try:
+            h["out_time_ms"] = int(val)
+        except ValueError:
+            pass
+    elif key == "progress":
+        h["state"] = val.strip()
+    return True
+
+
+def health_snapshot() -> Dict[str, dict]:
+    now = time.time()
+    out: Dict[str, dict] = {}
+    for cid, h in cam_health.items():
+        last = h.get("last_frame_at")
+        out[cid] = {
+            "fps": h.get("fps"),
+            "stalled": bool(h.get("stalled")),
+            "state": h.get("state"),
+            "age_sec": round(now - last, 1) if last else None,
+        }
+    return out
+
+
+def stream_health_supervisor():
+    """Theo dõi tiến độ ffmpeg mỗi camera; khởi động lại nếu luồng đứng quá lâu."""
+    stall_sec = 20
+    while not _shutdown.is_set():
+        try:
+            now = time.time()
+            with worker_lock:
+                procs = list(ffmpeg_processes.items())
+            for cam_id, proc in procs:
+                h = cam_health.setdefault(cam_id, {})
+                last = h.get("last_frame_at")
+                stalled = bool(proc.poll() is None and last and now - last > stall_sec)
+                h["stalled"] = stalled
+                if stalled and not h.get("restart_attempted"):
+                    h["restart_attempted"] = True
+                    log_event("warn", f"Luồng đứng >{stall_sec}s (không có khung mới), khởi động lại", cam_id)
+                    _restart_camera_process(cam_id, proc)
+                elif not stalled:
+                    h["restart_attempted"] = False
+        except Exception as e:
+            log_event("warn", f"stream_health_supervisor: {e}")
+        _shutdown.wait(10)
+
+
 def _camera_worker_loop(cam_id: str, token: threading.Event):
     backoff = 2
     st = cam_status.setdefault(cam_id, {})
@@ -1638,6 +1712,8 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                 st["last_start"] = int(started)
                 st["_sched"] = sched
                 st["_live_mode"] = include_live
+                cam_health[cam_id] = {"last_frame_at": time.time(), "fps": None,
+                                      "stalled": False, "restart_attempted": False}
         except Exception as e:
             if token.is_set() or _shutdown.is_set():
                 break
@@ -1673,6 +1749,8 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                 for line in p.stderr:
                     line = line.strip()
                     if not line or token.is_set():
+                        continue
+                    if _note_progress(line, cid):
                         continue
                     status["log"].append(line)
                     status["last_error"] = _hint(line)
@@ -2200,6 +2278,7 @@ def get_system_info():
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
         "ram_buffer": bool(CONFIG.get("ram_buffer", True)),
         "motion_detect": bool(_motion_cfg().get("enabled")),
+        "cam_health": health_snapshot(),
         "live_idle_stop_sec": LIVE_IDLE_STOP_SEC,
         "live_max_height": LIVE_MAX_HEIGHT,
         "go2rtc": {

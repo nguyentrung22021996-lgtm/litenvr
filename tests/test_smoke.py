@@ -219,6 +219,18 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("720", vf)
         self.assertIn("ih", vf)
 
+    def test_stream_health_progress(self):
+        self.m.cam_health.clear()
+        self.assertTrue(self.m._note_progress("fps=25.0", "c1"))
+        self.assertTrue(self.m._note_progress("frame=120", "c1"))
+        self.assertTrue(self.m._note_progress("progress=continue", "c1"))
+        self.assertFalse(self.m._note_progress("some rtsp error", "c1"))
+        snap = self.m.health_snapshot()
+        self.assertEqual(snap["c1"]["fps"], 25.0)
+        self.assertEqual(snap["c1"]["state"], "continue")
+        self.assertIsNotNone(snap["c1"]["age_sec"])
+        self.assertIn("-progress", self.m.build_ffmpeg_cmd("cam", self._cam()))
+
     def test_motion_detect_command(self):
         cmd = self.m.build_motion_detect_cmd("cam", self._cam())
         joined = " ".join(cmd)
