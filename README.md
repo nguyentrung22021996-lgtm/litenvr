@@ -112,6 +112,7 @@ Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng
 
 **Cài đặt trong hộp thoại Drive:**
 - **Camera sao lưu**: bỏ trống = tất cả camera.
+- **Nơi lưu (trong Sửa camera)**: mỗi camera chọn *Cả hai* (mặc định — giữ trên ổ cứng + sao lưu Drive nếu đã bật), *Chỉ ổ cứng*, hoặc *Chỉ Google Drive* — bản ghi tải lên Drive xong sẽ **tự xoá khỏi ổ cứng** để tiết kiệm dung lượng. Nếu Drive chưa bật/mất kết nối, camera *Chỉ Drive* vẫn ghi tạm ra ổ cứng và tải lên ngay khi Drive hoạt động lại (không mất dữ liệu). Camera *Chỉ ổ cứng* bị khoá trong danh sách *Camera sao lưu* của hộp thoại Drive.
 - **Giới hạn tốc độ**: chừa băng thông internet (Mbps), để 0 = không giới hạn.
 - **Giới hạn dung lượng LiteNVR trên Drive (GB)**: 0 = không giới hạn; vượt mức → tự xoá cũ nhất.
 - **Chừa trống tối thiểu trên Drive (MB)**: Drive còn ít hơn mức này → tự xoá cũ nhất (tối thiểu 200MB).

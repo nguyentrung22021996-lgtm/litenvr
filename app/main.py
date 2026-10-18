@@ -1908,6 +1908,7 @@ class CameraItem(BaseModel):
     audio_mode: str = "aac"
     record_mode: str = "continuous"  # continuous | motion | off
     video_codec: str = "auto"        # auto | copy | h264 (h264 = tương thích trình duyệt)
+    storage_target: str = "both"     # hdd | drive | both — nơi lưu bản ghi
     room: str = ""                   # Nhóm/phòng để lọc camera
     tags: str = ""                   # Nhãn tự do, cách nhau dấu phẩy
     onvif_port: int = 80             # Cổng ONVIF/PTZ (nếu khác 80)
@@ -2179,6 +2180,7 @@ def add_or_update_camera(item: CameraItem):
         "audio_mode": item.audio_mode,
         "record_mode": item.record_mode,
         "video_codec": item.video_codec,
+        "storage_target": item.storage_target if item.storage_target in ("hdd", "drive", "both") else "both",
         "room": item.room,
         "tags": item.tags,
         "onvif_port": int(item.onvif_port or 80),
@@ -2205,7 +2207,9 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "sub_rtsp_url": (item.sub_rtsp_url or "").strip(),
             "rtsp_transport": item.rtsp_transport,
             "audio_mode": item.audio_mode, "record_mode": item.record_mode,
-            "video_codec": item.video_codec, "room": item.room, "tags": item.tags,
+            "video_codec": item.video_codec,
+            "storage_target": item.storage_target if item.storage_target in ("hdd", "drive", "both") else "both",
+            "room": item.room, "tags": item.tags,
             "onvif_port": int(item.onvif_port or 80),
             "schedule_enabled": bool(item.schedule_enabled),
             "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
@@ -2807,6 +2811,24 @@ def drive_connected() -> bool:
                 and (g.get("refresh_token") or "").strip())
 
 
+def cam_drive_target(cam_id: str) -> str:
+    """Nơi lưu của camera: hdd | drive | both (thiếu = both để giữ hành vi cũ)."""
+    cam = CONFIG.get("cameras", {}).get(cam_id) or {}
+    t = str(cam.get("storage_target") or "both")
+    return t if t in ("hdd", "drive", "both") else "both"
+
+
+def cam_uploads_drive(cam_id: str) -> bool:
+    """Camera này có được tải bản ghi lên Drive không (theo cài đặt Drive + camera)."""
+    g = gd_cfg()
+    if not g.get("enabled") or not drive_connected():
+        return False
+    cams_filter = g.get("cameras") or []
+    if cams_filter and cam_id not in cams_filter:
+        return False
+    return cam_drive_target(cam_id) in ("drive", "both")
+
+
 def drive_notify(text: str, force: bool = False):
     """Gửi cảnh báo Drive qua Telegram (nếu bật), tối đa 1 tin/phút để tránh spam."""
     now = time.time()
@@ -3050,14 +3072,12 @@ def _rec_name_ts(name: str) -> Optional[float]:
 
 def drive_scan_once():
     """Thêm các file bản ghi hoàn chỉnh chưa có trong hàng đợi (bỏ file đang ghi)."""
-    g = gd_cfg()
-    cams_filter = g.get("cameras") or []
-    since = float(g.get("since_ts") or 0)
+    since = float(gd_cfg().get("since_ts") or 0)
     now = time.time()
     conn = db_conn()
     added = 0
     for cam_id in list(CONFIG.get("cameras", {}).keys()):
-        if cams_filter and cam_id not in cams_filter:
+        if not cam_uploads_drive(cam_id):
             continue
         cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
         if not os.path.isdir(cam_dir):
@@ -3091,9 +3111,7 @@ def drive_scan_once():
 
 def drive_queue_backfill(cam_id: str, date_from: str, date_to: str) -> int:
     """Đưa bản ghi cũ (theo khoảng ngày) vào hàng đợi tải bù."""
-    g = gd_cfg()
-    cams_filter = g.get("cameras") or []
-    cams = [c for c in ([cam_id] if cam_id else CONFIG.get("cameras", {})) if not cams_filter or c in cams_filter]
+    cams = [c for c in ([cam_id] if cam_id else CONFIG.get("cameras", {})) if cam_uploads_drive(c)]
     try:
         d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
         d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
@@ -3212,6 +3230,12 @@ def drive_process_row(row) -> str:
             "UPDATE drive_uploads SET status='done', error='', drive_id=?, size=?, tries=0, next_try=0, updated=? WHERE path=?",
             (res.get("id") or "", size, now, row["path"]))
         conn.commit()
+        if cam_drive_target(row["cam_id"]) == "drive":
+            # Camera chỉ lưu trên Drive: xoá bản gốc trên ổ cứng sau khi tải xong
+            try:
+                os.remove(local_path)
+            except Exception:
+                pass
         q = drive_state.get("quota")
         if q and q.get("limit"):
             q["usage"] = int(q.get("usage", 0)) + size
@@ -3369,7 +3393,8 @@ def get_drive():
     recent = [dict(r) for r in conn.execute(
         "SELECT path, cam_id, name, ts, size, status, error, updated FROM drive_uploads "
         "ORDER BY updated DESC LIMIT 30").fetchall()]
-    cameras = [{"id": cid, "name": (c or {}).get("name") or cid}
+    cameras = [{"id": cid, "name": (c or {}).get("name") or cid,
+                "storage_target": cam_drive_target(cid)}
                for cid, c in CONFIG.get("cameras", {}).items()]
     return {
         "enabled": bool(g.get("enabled")),
@@ -3547,6 +3572,8 @@ def drive_test():
 def drive_upload_now(body: DriveNow):
     if not drive_connected():
         raise HTTPException(status_code=400, detail="Chưa kết nối Google Drive")
+    if not gd_cfg().get("enabled"):
+        raise HTTPException(status_code=400, detail="Sao lưu Drive đang tắt — bật trước rồi thử lại")
     queued = drive_queue_backfill(body.cam_id.strip(), body.date_from.strip(),
                                   (body.date_to or body.date_from).strip())
     log_event("info", f"Drive: xếp hàng tải bù {queued} đoạn ghi")

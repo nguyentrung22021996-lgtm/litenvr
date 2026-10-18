@@ -1186,12 +1186,21 @@
           </select>
         </div>
         <div class="form-row">
-          <label>Chế độ ghi hình ổ cứng:</label>
+          <label>Chế độ ghi hình:</label>
           <select id="inpRecordMode">
             <option value="continuous">Lưu liên tục 24/7</option>
             <option value="motion">Chỉ lưu khi có chuyển động (HASS)</option>
             <option value="off">Chỉ xem trực tiếp (Không lưu)</option>
           </select>
+        </div>
+        <div class="form-row">
+          <label>Nơi lưu bản ghi:</label>
+          <select id="inpStorageTarget" onchange="updateStorageHint()">
+            <option value="both">Cả hai (ổ cứng + Google Drive)</option>
+            <option value="hdd">Chỉ ổ cứng</option>
+            <option value="drive">Chỉ Google Drive (tự xoá ổ cứng sau khi tải xong)</option>
+          </select>
+          <small id="storageTargetHint" style="color:#94a3b8;font-size:12px;"></small>
         </div>
       </div>
 
@@ -1800,6 +1809,7 @@
                          </div>`;
         box.appendChild(div);
       }
+      updateStorageHint();
       document.getElementById("camModal").style.display = "flex";
     }
     function closeCamModal() { document.getElementById("camModal").style.display = "none"; }
@@ -1810,6 +1820,8 @@
       document.getElementById("inpCamName").value = c.name || "";
       document.getElementById("inpBrand").value = c.brand || "custom";
       document.getElementById("inpRecordMode").value = c.record_mode || "continuous";
+      document.getElementById("inpStorageTarget").value = c.storage_target || "both";
+      updateStorageHint();
       document.getElementById("inpRtsp").value = c.rtsp_url || "";
       document.getElementById("inpSubRtsp").value = c.sub_rtsp_url || "";
       document.getElementById("inpTransport").value = c.rtsp_transport || "tcp";
@@ -1821,6 +1833,15 @@
       const rows = document.getElementById("schedRows");
       rows.innerHTML = "";
       (c.schedule || []).forEach(w => addSchedRow(w));
+    }
+
+    function updateStorageHint() {
+      const el = document.getElementById("inpStorageTarget");
+      const hint = document.getElementById("storageTargetHint");
+      const v = el ? el.value : "both";
+      if (v === "drive") hint.textContent = "Bản ghi tải lên Google Drive rồi tự xoá khỏi ổ cứng (cần bật ☁️ Google Drive).";
+      else if (v === "both") hint.textContent = "Giữ trên ổ cứng và sao lưu lên Google Drive (nếu đã bật).";
+      else hint.textContent = "Chỉ lưu trên ổ cứng, không tải lên Drive.";
     }
 
     function addSchedRow(w) {
@@ -1860,6 +1881,7 @@
         name: document.getElementById("inpCamName").value.trim(),
         brand: document.getElementById("inpBrand").value,
         record_mode: document.getElementById("inpRecordMode").value,
+        storage_target: document.getElementById("inpStorageTarget").value,
         rtsp_url: document.getElementById("inpRtsp").value.trim(),
         sub_rtsp_url: document.getElementById("inpSubRtsp").value.trim(),
         rtsp_transport: document.getElementById("inpTransport").value,
@@ -1905,6 +1927,7 @@
           cam_id: parts[0], name: parts[1], rtsp_url: parts[2],
           sub_rtsp_url: parts[3] || "", brand: "custom",
           record_mode: document.getElementById("inpRecordMode").value,
+          storage_target: document.getElementById("inpStorageTarget").value,
           rtsp_transport: document.getElementById("inpTransport").value,
           audio_mode: document.getElementById("inpAudio").value,
           video_codec: document.getElementById("inpVideoCodec").value,
@@ -3132,13 +3155,14 @@
         : "";
 
       const cl = document.getElementById("drvCamList");
-      const sig = d.cameras_all.map(c => c.id + ":" + c.name).join("|") + "#" + (d.cameras || []).join(",");
+      const sig = d.cameras_all.map(c => c.id + ":" + c.name + ":" + c.storage_target).join("|") + "#" + (d.cameras || []).join(",");
       if (cl.dataset.sig !== sig) {
         cl.dataset.sig = sig;
         const sel = new Set(d.cameras || []);
-        cl.innerHTML = d.cameras_all.map(c =>
-          `<label style="display:flex;flex-direction:row;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" class="drvCam" value="${esc(c.id)}" ${sel.has(c.id) ? "checked" : ""}> ${esc(c.name)}</label>`
-        ).join("") || '<span style="color:#64748b;font-size:12px;">Chưa có camera</span>';
+        cl.innerHTML = d.cameras_all.map(c => {
+          const noDrive = c.storage_target === "hdd";
+          return `<label style="display:flex;flex-direction:row;align-items:center;gap:6px;cursor:pointer;${noDrive ? "opacity:.55;" : ""}" ${noDrive ? 'title="Camera đang đặt Nơi lưu = Chỉ ổ cứng, không tải lên Drive."' : ""}><input type="checkbox" class="drvCam" value="${esc(c.id)}" ${sel.has(c.id) ? "checked" : ""} ${noDrive ? "disabled" : ""}> ${esc(c.name)}${noDrive ? " (chỉ ổ cứng)" : ""}</label>`;
+        }).join("") || '<span style="color:#64748b;font-size:12px;">Chưa có camera</span>';
       }
       const focusId = (document.activeElement || {}).id;
       if (focusId !== "drvEnabled") document.getElementById("drvEnabled").checked = !!d.enabled;
