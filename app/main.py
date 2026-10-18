@@ -2588,6 +2588,19 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
         except Exception as e:
             log_event("warn", f"Telegram thông báo lỗi: {e}", cam_id)
 
+def _latest_snapshot(cam_id: str) -> str:
+    """Ảnh snapshot mới nhất hiện có của camera (dùng làm ảnh dự phòng cho sự kiện)."""
+    try:
+        names = [f for f in os.listdir(SNAPSHOTS_DIR)
+                 if f.startswith(cam_id + "_") and f.endswith(".jpg")]
+        if not names:
+            return ""
+        names.sort(key=lambda n: os.path.getmtime(os.path.join(SNAPSHOTS_DIR, n)), reverse=True)
+        return os.path.join(SNAPSHOTS_DIR, names[0])
+    except OSError:
+        return ""
+
+
 def _start_snapshot(cam_id: str, cam_info: dict, snap_path: str) -> str:
     with _snapshot_lock:
         if _shutdown.is_set():
@@ -2656,6 +2669,8 @@ def handle_motion(cam_id: str, label: str):
     log_event("info", f"Phát hiện chuyển động: {label}", cam_id)
 
     snap_path = _start_snapshot(cam_id, cam_info, snap_path)
+    if not snap_path:
+        snap_path = _latest_snapshot(cam_id)   # hết chỗ chụp: dùng ảnh mới nhất để sự kiện vẫn có ảnh
     snap_filename = os.path.basename(snap_path) if snap_path else None
 
     conn = db_conn()
@@ -3231,10 +3246,17 @@ def search_events(request: Request, cam_id: str = "", q: str = "",
     out = []
     for r in rows:
         cid = r[1]
+        t = (r[4] or "").replace("-", ":")
+        try:
+            hh, mm, ss = (int(x) for x in t.split(":")[:3])
+            sec_of_day = hh * 3600 + mm * 60 + ss
+        except Exception:
+            sec_of_day = 0
         out.append({
             "id": r[0], "cam_id": cid,
             "cam_name": (cams.get(cid) or {}).get("name", cid),
-            "timestamp": r[2], "date": r[3], "time": r[4], "label": r[5],
+            "timestamp": r[2], "date": r[3], "time": t, "label": r[5],
+            "sec_of_day": sec_of_day,
             "snapshot": f"/snapshots/{r[6]}" if r[6] else "",
         })
     return {"events": out, "count": len(out)}

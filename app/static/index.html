@@ -1654,7 +1654,7 @@
   </div>
 
   <script>
-    let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null;
+    let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null, liveMode = true;
     let lastCursorSec = 0;
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
@@ -1798,6 +1798,11 @@
       await loadStats();
       setInterval(loadStats, 5000);
       setInterval(refreshSnapshots, 30000);
+      // Khi đang xem trực tiếp, tự cập nhật danh sách sự kiện để ảnh chuyển động mới hiện ra.
+      setInterval(() => {
+        const searching = (document.getElementById("evtSearchQ") || {}).value;
+        if (liveMode && !searching && document.visibilityState === "visible") loadTimeline();
+      }, 15000);
       updateLogBadge();
       setInterval(updateLogBadge, 15000);
       await loadTimeline();
@@ -2262,6 +2267,7 @@
       if (!currentCam) return;
       document.getElementById("btnLive").classList.add("active");
       currentSegStartSec = null;
+      liveMode = true;
       stopDriveFetchPoll();
       const scrub = document.getElementById("scrubTime");
       if (scrub) scrub.textContent = "● Đang xem trực tiếp";
@@ -2353,7 +2359,7 @@
 
         const card = document.createElement("div");
         card.className = "event-card";
-        card.onclick = () => playAtSecond(e.sec_of_day);
+        card.onclick = () => openEvent(currentCam, dateInput.value, e.sec_of_day);
         card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
                           <div style="margin-top:8px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>
                           <button class="evt-dl" title="Tải clip quanh sự kiện này" onclick="event.stopPropagation(); exportEvent(${e.sec_of_day})">⬇️</button>`;
@@ -2423,13 +2429,9 @@
         card.style.cursor = "pointer";
         card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
           <div style="margin-top:8px;font-size:13px;"><b>${esc(e.cam_name)}</b><br>${e.date} ${e.time} - ${esc(e.label)}</div>`;
-        card.onclick = () => {
-          document.getElementById("camSelect").value = e.cam_id;
-          currentCam = e.cam_id;
-          dateInput.value = e.date;
-          loadTimeline();
-          playAtSecond(parseInt(e.time.split(":")[0]) * 3600 + parseInt(e.time.split(":")[1]) * 60 + parseInt(e.time.split(":")[2]));
-        };
+        const sec = (typeof e.sec_of_day === "number") ? e.sec_of_day
+          : parseInt(e.time.split(":")[0]) * 3600 + parseInt(e.time.split(":")[1]) * 60 + parseInt(e.time.split(":")[2]);
+        card.onclick = () => openEvent(e.cam_id, e.date, sec);
         box.appendChild(card);
       });
       if (!(data.events || []).length) {
@@ -2476,8 +2478,25 @@
       bar.addEventListener("pointercancel", () => { scrubbing = false; bar.classList.remove("scrubbing"); });
     }
 
+    async function openEvent(camId, date, sec) {
+      stopDriveFetchPoll();
+      const sel = document.getElementById("camSelect");
+      if (camId && sel.value !== camId) {
+        sel.value = camId;
+        currentCam = camId;
+      }
+      if (date && dateInput.value !== date) {
+        dateInput.value = date;
+      }
+      await loadTimeline();
+      playAtSecond(sec);
+      const v = document.getElementById("videoPlayer");
+      if (v && v.scrollIntoView) v.scrollIntoView({behavior: "smooth", block: "center"});
+    }
+
     function playAtSecond(targetSec) {
       if (hls) { hls.destroy(); hls = null; }
+      liveMode = false;
       document.getElementById("btnLive").classList.remove("active");
       setCursor(targetSec, false);
       document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(targetSec);

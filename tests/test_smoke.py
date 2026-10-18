@@ -149,6 +149,8 @@ class ApiTests(_AppCase):
         self.assertEqual(j["count"], 1)
         self.assertEqual(j["events"][0]["label"], "Người lạ")
         self.assertEqual(j["events"][0]["snapshot"], "/snapshots/s.jpg")
+        self.assertEqual(j["events"][0]["time"], "10:00:00")
+        self.assertEqual(j["events"][0]["sec_of_day"], 36000)
         self.assertEqual(self.client.get("/api/events?q=Người", headers=auth()).json()["count"], 2)
         self.assertEqual(self.client.get("/api/events?q=khong-co", headers=auth()).json()["count"], 0)
         j = self.client.get("/api/events?date_from=2026-02-01&date_to=2026-02-28", headers=auth()).json()
@@ -179,6 +181,35 @@ class ApiTests(_AppCase):
         self.assertEqual(r.headers["content-type"], "image/jpeg")
         self.assertGreater(len(r.content), 0)
         self.client.delete("/api/cameras/camThumb2", headers=auth())
+
+    def test_motion_fallback_snapshot(self):
+        d = self.m.SNAPSHOTS_DIR
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "camF_1.jpg"), "w") as f:
+            f.write("x")
+        self.m.CONFIG.setdefault("cameras", {})["camF"] = {
+            "name": "F", "rtsp_url": "rtsp://x", "record_mode": "motion"}
+        acquired = 0
+        while self.m._snapshot_slots.acquire(blocking=False):
+            acquired += 1
+        try:
+            self.m.handle_motion("camF", "test")
+        finally:
+            for _ in range(acquired):
+                self.m._snapshot_slots.release()
+            self.m.CONFIG["cameras"].pop("camF", None)
+        row = self.m.db_conn().execute(
+            "SELECT snapshot FROM events WHERE cam_id='camF' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(row[0], "camF_1.jpg")
+
+    def test_latest_snapshot_fallback(self):
+        d = self.m.SNAPSHOTS_DIR
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, "camX_100.jpg")
+        with open(p, "w") as f:
+            f.write("x")
+        self.assertEqual(self.m._latest_snapshot("camX"), p)
+        self.assertEqual(self.m._latest_snapshot("nope"), "")
 
     def test_camera_retention_api(self):
         self.client.post("/api/cameras", json={"cam_id": "camRet", "name": "R", "rtsp_url": "rtsp://x",

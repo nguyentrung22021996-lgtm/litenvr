@@ -99,7 +99,9 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **Sức khoẻ luồng**: ffmpeg báo tiến độ (`-progress`), LiteNVR hiển thị **fps** từng camera; nếu không có khung mới trong 20 giây thì đánh dấu **⏸ đứng** và tự khởi động lại luồng. Xem qua `GET /api/stats`/`/api/system` (mục `cam_health`: `fps`, `stalled`, `state`, `age_sec`).
 - Lưới **camera trực quan**: ô camera hiện ảnh chuyển động mới nhất, chế độ (24/7 / Motion / Live / Lịch), bấm để chuyển nhanh.
 - Trên bản ghi liên tục, các **khoảng có chuyển động được tô màu cam** trên thanh thời gian để dễ dò lại đúng đoạn.
-- **Tìm kiếm sự kiện**: thanh lọc phía trên danh sách sự kiện cho phép tìm theo **nhãn/camera**, chọn **camera**, và giới hạn **khoảng ngày**. Kết quả gộp toàn hệ thống (không chỉ camera/ngày đang xem); bấm một kết quả để nhảy đúng camera, ngày và phát tại thời điểm sự kiện. API: `GET /api/events?cam_id=&q=&date_from=&date_to=&limit=`.
+- **Ảnh sự kiện**: mỗi sự kiện chuyển động hiện kèm **ảnh snapshot** (thumbnail trong danh sách). Nếu hai ffmpeg chụp ảnh đang bận, sự kiện vẫn dùng **ảnh mới nhất** của camera làm dự phòng nên không bị thiếu ảnh.
+- **Bấm ảnh sự kiện để xem đúng đoạn**: bấm vào ảnh một sự kiện (trên timeline hoặc trong kết quả tìm kiếm) để tự chuyển đúng camera, đúng ngày và **phát tại thời điểm sự kiện** (chờ danh sách đoạn tải xong trước khi phát, không phát sai đoạn).
+- **Tìm kiếm sự kiện**: thanh lọc phía trên danh sách sự kiện cho phép tìm theo **nhãn/camera**, chọn **camera**, và giới hạn **khoảng ngày**. Kết quả gộp toàn hệ thống (không chỉ camera/ngày đang xem); bấm một kết quả để nhảy đúng camera, ngày và phát tại thời điểm sự kiện. Danh sách sự kiện tự cập nhật khi đang xem trực tiếp. API: `GET /api/events?cam_id=&q=&date_from=&date_to=&limit=` (trả kèm `time` `HH:MM:SS` và `sec_of_day`).
 - **Ảnh thu nhỏ khi tua**: khi kéo/đưa chuột lên thanh thời gian, một ảnh thu nhỏ của đoạn bản ghi gần con trỏ hiện ra (tạo bằng ffmpeg và cache trong `/dev/shm`). API: `GET /api/thumb/{cam}/{fname}` (trả JPEG, tự tạo lại khi file gốc mới hơn).
 
 ## Tính năng NVR nâng cao
