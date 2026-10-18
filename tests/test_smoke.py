@@ -138,6 +138,48 @@ class ApiTests(_AppCase):
         self.client.post("/api/motion_detect", json={"enabled": False}, headers=auth())
         self.assertFalse(self.client.get("/api/motion_detect", headers=auth()).json()["enabled"])
 
+    def test_events_search(self):
+        conn = self.m.db_conn()
+        conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
+                     "VALUES (?,?,?,?,?,?)", ("camS", 100, "2026-01-02", "10-00-00", "Người lạ", "s.jpg"))
+        conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
+                     "VALUES (?,?,?,?,?,?)", ("camT", 200, "2026-02-03", "11-00-00", "Người quen", "t.jpg"))
+        conn.commit()
+        j = self.client.get("/api/events?cam_id=camS", headers=auth()).json()
+        self.assertEqual(j["count"], 1)
+        self.assertEqual(j["events"][0]["label"], "Người lạ")
+        self.assertEqual(j["events"][0]["snapshot"], "/snapshots/s.jpg")
+        self.assertEqual(self.client.get("/api/events?q=Người", headers=auth()).json()["count"], 2)
+        self.assertEqual(self.client.get("/api/events?q=khong-co", headers=auth()).json()["count"], 0)
+        j = self.client.get("/api/events?date_from=2026-02-01&date_to=2026-02-28", headers=auth()).json()
+        self.assertEqual(j["count"], 1)
+        self.assertEqual(j["events"][0]["cam_id"], "camT")
+
+    def test_thumbnail_validation(self):
+        self.assertEqual(self.client.get("/api/thumb/nope/x.mp4", headers=auth()).status_code, 404)
+        self.client.post("/api/cameras", json={"cam_id": "camThumb", "name": "T", "rtsp_url": "rtsp://x"},
+                         headers=auth())
+        self.assertEqual(self.client.get("/api/thumb/camThumb/bad.txt", headers=auth()).status_code, 400)
+        self.assertEqual(self.client.get("/api/thumb/camThumb/missing.mp4", headers=auth()).status_code, 404)
+        self.client.delete("/api/cameras/camThumb", headers=auth())
+
+    def test_thumbnail_generation(self):
+        if subprocess.call(["ffmpeg", "-version"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL) != 0:
+            self.skipTest("ffmpeg không có sẵn")
+        self.client.post("/api/cameras", json={"cam_id": "camThumb2", "name": "T2", "rtsp_url": "rtsp://x"},
+                         headers=auth())
+        rec = os.path.join(self.m.RECORDINGS_DIR, "camThumb2")
+        os.makedirs(rec, exist_ok=True)
+        subprocess.check_call(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=5",
+                               "-t", "2", "-pix_fmt", "yuv420p", os.path.join(rec, "2026-01-01_00-00-00.mp4")],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = self.client.get("/api/thumb/camThumb2/2026-01-01_00-00-00.mp4", headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["content-type"], "image/jpeg")
+        self.assertGreater(len(r.content), 0)
+        self.client.delete("/api/cameras/camThumb2", headers=auth())
+
 
 class BuilderTests(unittest.TestCase):
     @classmethod

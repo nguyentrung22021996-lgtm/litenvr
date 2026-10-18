@@ -46,6 +46,7 @@ SNAPSHOTS_DIR = os.path.join(STORAGE_DIR, "snapshots")
 DB_PATH = os.path.join(STORAGE_DIR, "nvr.db")
 HLS_DIR = "/dev/shm/hls"
 BUFFER_DIR = "/dev/shm/buffer"
+THUMBS_DIR = os.path.join(BUFFER_DIR, "thumbs")
 
 # Google Drive (24/7 backup) — các URL có thể override qua env để test bằng mock server
 DRIVE_OAUTH_BASE = os.environ.get("NVR_DRIVE_OAUTH_BASE", "https://oauth2.googleapis.com").rstrip("/")
@@ -731,7 +732,7 @@ def resolve_auth(request: Request) -> tuple:
 def cam_path_segment(path: str) -> Optional[str]:
     for prefix in ("/hls/", "/recordings/", "/snapshots/", "/api/live/", "/api/status/",
                    "/api/timeline/", "/api/play/", "/api/drive/play/", "/api/export/",
-                   "/api/ptz/", "/api/locks/"):
+                   "/api/thumb/", "/api/ptz/", "/api/locks/"):
         if path.startswith(prefix):
             rest = path[len(prefix):]
             seg = rest.split("/", 1)[0]
@@ -761,7 +762,8 @@ def path_permission(request: Request) -> Optional[str]:
         return "live"
     if path.startswith(("/api/stats", "/api/status/")):
         return "live"
-    if path.startswith(("/api/play/", "/api/timeline/", "/recordings/", "/snapshots/", "/api/latest_snapshots")):
+    if path.startswith(("/api/play/", "/api/timeline/", "/api/events", "/api/thumb/",
+                        "/recordings/", "/snapshots/", "/api/latest_snapshots")):
         return "playback"
     if path.startswith("/api/export/"):
         return "export"
@@ -3031,6 +3033,112 @@ def get_timeline(cam_id: str, date: str):
         "events": events,
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
     }
+
+_thumb_slots = threading.BoundedSemaphore(2)
+
+
+def _thumb_path(cam_id: str, fname: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", fname)
+    return os.path.join(THUMBS_DIR, cam_id, safe + ".jpg")
+
+
+def generate_thumbnail(cam_id: str, fname: str) -> Optional[str]:
+    """Tạo (và cache) ảnh thu nhỏ cho một đoạn ghi hình cục bộ. Trả None nếu không có."""
+    src = os.path.join(RECORDINGS_DIR, cam_id, fname)
+    if not os.path.isfile(src):
+        return None
+    out = _thumb_path(cam_id, fname)
+    try:
+        if os.path.isfile(out) and os.path.getsize(out) > 0 and \
+                os.path.getmtime(out) >= os.path.getmtime(src):
+            return out
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tmp = out + f".{os.getpid()}.part.jpg"
+    cmd = [*_ffmpeg_base_args(), "-y", "-ss", "1", "-i", src, "-frames:v", "1",
+           "-vf", "scale=320:-2", "-q:v", "4", tmp]
+    rc = -1
+    with _thumb_slots:
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                rc = proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                _terminate_process(proc)
+        except Exception:
+            rc = -1
+    if rc == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+        try:
+            os.replace(tmp, out)
+            return out
+        except OSError:
+            return None
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    return None
+
+
+@app.get("/api/thumb/{cam_id}/{fname}")
+def get_thumbnail(cam_id: str, fname: str, request: Request):
+    assert_cam_access(request, cam_id)
+    if cam_id not in CONFIG.get("cameras", {}):
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.mp4", fname):
+        raise HTTPException(status_code=400, detail="Tên file không hợp lệ")
+    path = generate_thumbnail(cam_id, fname)
+    if not path:
+        raise HTTPException(status_code=404, detail="Không tạo được ảnh thu nhỏ")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/events")
+def search_events(request: Request, cam_id: str = "", q: str = "",
+                  date_from: str = "", date_to: str = "", limit: int = 200):
+    """Tìm kiếm sự kiện chuyển động toàn hệ thống theo camera, nhãn và khoảng ngày."""
+    u = getattr(request.state, "user", None) or {}
+    allowed = None if (u.get("role") == "admin" or not u.get("cameras")) else set(u["cameras"])
+    try:
+        limit = max(1, min(int(limit or 200), 1000))
+    except Exception:
+        limit = 200
+    sql = "SELECT id, cam_id, timestamp, date_str, time_str, label, snapshot FROM events WHERE 1=1"
+    params: list = []
+    if cam_id:
+        assert_cam_access(request, cam_id)
+        sql += " AND cam_id=?"
+        params.append(cam_id)
+    elif allowed is not None:
+        if not allowed:
+            return {"events": [], "count": 0}
+        sql += " AND cam_id IN (%s)" % ",".join("?" * len(allowed))
+        params.extend(sorted(allowed))
+    if date_from:
+        sql += " AND date_str>=?"
+        params.append(date_from)
+    if date_to:
+        sql += " AND date_str<=?"
+        params.append(date_to)
+    if q:
+        like = f"%{q}%"
+        sql += " AND (label LIKE ? OR cam_id LIKE ?)"
+        params.extend([like, like])
+    sql += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+    rows = db_conn().execute(sql, params).fetchall()
+    cams = CONFIG.get("cameras", {})
+    out = []
+    for r in rows:
+        cid = r[1]
+        out.append({
+            "id": r[0], "cam_id": cid,
+            "cam_name": (cams.get(cid) or {}).get("name", cid),
+            "timestamp": r[2], "date": r[3], "time": r[4], "label": r[5],
+            "snapshot": f"/snapshots/{r[6]}" if r[6] else "",
+        })
+    return {"events": out, "count": len(out)}
 
 @app.get("/api/locks")
 def list_locks():

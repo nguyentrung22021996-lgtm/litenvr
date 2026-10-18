@@ -97,6 +97,8 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **RAM / Bộ nhớ** có thanh màu đổi theo mức (xanh → cam ≥75% → đỏ ≥90%).
 - Lưới **camera trực quan**: ô camera hiện ảnh chuyển động mới nhất, chế độ (24/7 / Motion / Live / Lịch), bấm để chuyển nhanh.
 - Trên bản ghi liên tục, các **khoảng có chuyển động được tô màu cam** trên thanh thời gian để dễ dò lại đúng đoạn.
+- **Tìm kiếm sự kiện**: thanh lọc phía trên danh sách sự kiện cho phép tìm theo **nhãn/camera**, chọn **camera**, và giới hạn **khoảng ngày**. Kết quả gộp toàn hệ thống (không chỉ camera/ngày đang xem); bấm một kết quả để nhảy đúng camera, ngày và phát tại thời điểm sự kiện. API: `GET /api/events?cam_id=&q=&date_from=&date_to=&limit=`.
+- **Ảnh thu nhỏ khi tua**: khi kéo/đưa chuột lên thanh thời gian, một ảnh thu nhỏ của đoạn bản ghi gần con trỏ hiện ra (tạo bằng ffmpeg và cache trong `/dev/shm`). API: `GET /api/thumb/{cam}/{fname}` (trả JPEG, tự tạo lại khi file gốc mới hơn).
 
 ## Tính năng NVR nâng cao
 - **⊞ Lưới nhiều camera**: bấm **⊞ Lưới** để xem 4 camera cùng lúc (bấm tiếp để chuyển 9 ô, bấm lần nữa để tắt). Bấm vào một ô để quay về chế độ 1 camera. Live trong lưới tự khởi động và tự dừng khi bạn thoát lưới (tiết kiệm CPU).

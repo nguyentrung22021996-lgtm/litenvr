@@ -1099,6 +1099,7 @@
       <div class="cursor-line" id="cursorLine" style="left:0%"></div>
       <div class="cursor-handle" id="cursorHandle" style="left:0%"></div>
       <div class="time-tip" id="timeTip" style="left:0%">00:00:00</div>
+      <img id="segThumb" alt="" style="display:none; position:absolute; bottom:110%; left:0%; width:160px; max-height:90px; object-fit:cover; border:1px solid var(--border-subtle); border-radius:6px; pointer-events:none; z-index:50; box-shadow:0 6px 18px rgba(0,0,0,.5);">
     </div>
     <div class="timeline-legend">
       <span><i style="background:#059669"></i>Bản ghi 24/7</span>
@@ -1152,6 +1153,14 @@
     </div>
   </div>
 
+  <div id="evtSearchBar" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 14px;">
+    <input id="evtSearchQ" placeholder="🔎 Tìm sự kiện (nhãn, camera)…" style="flex:1; min-width:170px;" oninput="debouncedEventSearch()">
+    <select id="evtSearchCam"><option value="">Tất cả camera</option></select>
+    <input type="date" id="evtSearchFrom" title="Từ ngày" onchange="runEventSearch()">
+    <input type="date" id="evtSearchTo" title="Đến ngày" onchange="runEventSearch()">
+    <button onclick="clearEventSearch()">✕ Xoá lọc</button>
+  </div>
+  <div class="events-list" id="searchResults" style="display:none;"></div>
   <div class="events-list" id="eventsList"></div>
 
   <!-- Modal Quản lý Camera -->
@@ -1749,6 +1758,15 @@
         const modeTxt = info.record_mode === "motion" ? " [Motion]" : (info.record_mode === "off" ? " [Live]" : " [24/7]");
         opt.value = id; opt.textContent = info.name + (info.room ? " · " + info.room : "") + (info.schedule_enabled ? " [Lịch]" : modeTxt);
         sel.appendChild(opt);
+      }
+      const searchCam = document.getElementById("evtSearchCam");
+      if (searchCam) {
+        searchCam.innerHTML = '<option value="">Tất cả camera</option>';
+        for (const [id, info] of Object.entries(cameras)) {
+          const o = document.createElement("option");
+          o.value = id; o.textContent = info.name;
+          searchCam.appendChild(o);
+        }
       }
       if (Object.keys(cameras).length === 0) {
         document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm '+ Quản lý Camera' để thêm." : "Chưa có camera được cấp quyền.";
@@ -2349,6 +2367,71 @@
       if (line) line.style.left = pct + "%";
       if (handle) handle.style.left = pct + "%";
       if (tip) { tip.style.left = pct + "%"; tip.textContent = fmtHMS(sec); }
+      const thumb = document.getElementById("segThumb");
+      if (thumb) {
+        const seg = showTip ? segments.filter(s => !s.drive && s.start_sec <= sec).pop() : null;
+        if (seg) {
+          if (thumb.dataset.seg !== seg.fname) {
+            thumb.dataset.seg = seg.fname;
+            thumb.src = `/api/thumb/${currentCam}/${seg.fname}`;
+          }
+          thumb.style.display = "block";
+          thumb.style.left = Math.max(0, Math.min(pct, 86)) + "%";
+        } else {
+          thumb.style.display = "none";
+          thumb.dataset.seg = "";
+        }
+      }
+    }
+
+    let _evtSearchTimer = null;
+    function debouncedEventSearch() {
+      clearTimeout(_evtSearchTimer);
+      _evtSearchTimer = setTimeout(runEventSearch, 350);
+    }
+    async function runEventSearch() {
+      const q = document.getElementById("evtSearchQ").value.trim();
+      const cam = document.getElementById("evtSearchCam").value;
+      const from = document.getElementById("evtSearchFrom").value;
+      const to = document.getElementById("evtSearchTo").value;
+      const box = document.getElementById("searchResults");
+      const list = document.getElementById("eventsList");
+      if (!q && !cam && !from && !to) { box.style.display = "none"; list.style.display = ""; return; }
+      const params = new URLSearchParams();
+      if (cam) params.set("cam_id", cam);
+      if (q) params.set("q", q);
+      if (from) params.set("date_from", from);
+      if (to) params.set("date_to", to);
+      let data = { events: [] };
+      try { data = await fetch("/api/events?" + params.toString()).then(r => r.json()); } catch (e) {}
+      box.innerHTML = "";
+      (data.events || []).forEach(e => {
+        const card = document.createElement("div");
+        card.className = "event-card";
+        card.style.cursor = "pointer";
+        card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
+          <div style="margin-top:8px;font-size:13px;"><b>${esc(e.cam_name)}</b><br>${e.date} ${e.time} - ${esc(e.label)}</div>`;
+        card.onclick = () => {
+          document.getElementById("camSelect").value = e.cam_id;
+          currentCam = e.cam_id;
+          dateInput.value = e.date;
+          loadTimeline();
+          playAtSecond(parseInt(e.time.split(":")[0]) * 3600 + parseInt(e.time.split(":")[1]) * 60 + parseInt(e.time.split(":")[2]));
+        };
+        box.appendChild(card);
+      });
+      if (!(data.events || []).length) {
+        box.innerHTML = '<div style="color:#94a3b8; padding:12px;">Không có sự kiện phù hợp.</div>';
+      }
+      box.style.display = "";
+      list.style.display = "none";
+    }
+    function clearEventSearch() {
+      document.getElementById("evtSearchQ").value = "";
+      document.getElementById("evtSearchCam").value = "";
+      document.getElementById("evtSearchFrom").value = "";
+      document.getElementById("evtSearchTo").value = "";
+      runEventSearch();
     }
 
     let scrubbing = false;
