@@ -1044,6 +1044,7 @@
       <button id="btnLogs" onclick="openLogsModal()" data-admin>📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
       <button class="primary" onclick="openCamModal()" data-admin>+ Quản lý Camera</button>
       <button onclick="openStorageModal()" data-admin>⚙️ Lưu trữ</button>
+      <button onclick="openDriveModal()" data-admin>☁️ Google Drive <span id="driveBadge" class="log-badge" hidden>0</span></button>
       <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
       <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
       <div class="spacer"></div>
@@ -1322,6 +1323,91 @@
         <input type="file" id="restoreFile" accept="application/json,.json" style="display:none;" onchange="importConfigFile(this)">
       </div>
       <div id="backupMsg" style="font-size:12px;color:#94a3b8;margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <!-- Modal Google Drive -->
+  <div class="modal" id="driveModal">
+    <div class="modal-box" style="max-width:720px;">
+      <h3 style="margin-top:0">☁️ Sao lưu Google Drive (24/7)</h3>
+      <div id="drvStatusLine" style="font-size:13.5px;color:#cbd5e1;margin-bottom:6px;">Đang tải...</div>
+      <div id="drvQuotaLine" style="font-size:12.5px;color:#94a3b8;margin-bottom:8px;"></div>
+      <div id="drvPaused" hidden style="font-size:13px;color:#fbbf24;margin-bottom:10px;"></div>
+
+      <div id="drvConnectBox" style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
+        <div style="font-weight:600;margin-bottom:6px;">🔗 Kết nối tài khoản Google</div>
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;line-height:1.55;">
+          Vào <b>console.cloud.google.com</b> → tạo dự án → bật <b>Google Drive API</b> → tạo OAuth client loại
+          <b>"TVs and Limited Input devices"</b> (mục Credentials). Sau đó dán Client ID / Client Secret vào đây.
+          Hướng dẫn từng bước có trong README («Sao lưu Google Drive»).
+        </div>
+        <div class="grid-2">
+          <label>Client ID <input id="drvClientId" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false"></label>
+          <label>Client Secret <input id="drvClientSecret" type="password" placeholder="GOCSPX-..." autocomplete="off"></label>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+          <button class="primary" onclick="driveConnectStart()">🔗 Kết nối bằng mã thiết bị</button>
+        </div>
+        <div id="drvCodeBox" hidden style="margin-top:12px;background:var(--bg-input);border:1px solid var(--border-focus);border-radius:10px;padding:14px;text-align:center;">
+          <div style="font-size:12px;color:#94a3b8;">Mở trang Google bên dưới và nhập mã này:</div>
+          <div id="drvUserCode" style="font-size:28px;font-weight:800;letter-spacing:5px;margin:8px 0;color:#60a5fa;font-variant-numeric:tabular-nums;"></div>
+          <button style="width:auto;padding:8px 16px;" onclick="window.open('https://www.google.com/device','_blank','noopener')">Mở google.com/device ↗</button>
+          <div id="drvPollMsg" style="font-size:12px;color:#94a3b8;margin-top:10px;">Đang chờ bạn cấp quyền... (tự kiểm tra mỗi 4 giây)</div>
+        </div>
+        <details style="margin-top:12px;">
+          <summary style="cursor:pointer;font-size:13px;color:#94a3b8;">Hoặc dán Refresh Token có sẵn (rclone / OAuth Playground)</summary>
+          <textarea id="drvPasteToken" rows="3" placeholder='Dán refresh_token, hoặc cả JSON token của rclone: {"access_token":"...","refresh_token":"..."}' style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--bg-input);color:#fff;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px;font-family:inherit;"></textarea>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button onclick="drivePasteToken()">💾 Kết nối bằng token</button>
+          </div>
+        </details>
+      </div>
+
+      <div id="drvConnectedBox" hidden style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
+        <div id="drvConnInfo" style="font-size:12.5px;color:#94a3b8;margin-bottom:10px;"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button onclick="driveTest()">🔎 Kiểm tra kết nối</button>
+          <button class="warn" onclick="driveDisconnect()">⛔ Ngắt kết nối</button>
+        </div>
+      </div>
+
+      <div style="font-weight:600;margin:12px 0 8px;">⚙️ Cài đặt sao lưu</div>
+      <label class="log-chk" style="font-size:13px;margin-bottom:8px;">
+        <input type="checkbox" id="drvEnabled"> Bật sao lưu bản ghi lên Google Drive
+      </label>
+      <div style="font-size:12px;color:#94a3b8;margin:6px 0 4px;">Camera sao lưu (không chọn = tất cả):</div>
+      <div id="drvCamList" class="perm-grid"></div>
+      <div class="grid-2" style="margin-top:10px;">
+        <label>Giới hạn tốc độ tải lên (Mbps — 0 = không giới hạn) <input type="number" id="drvBandwidth" min="0" step="1"></label>
+        <label>Giới hạn dung lượng NVR dùng (GB — 0 = dùng tới khi Drive gần đầy) <input type="number" id="drvMaxGb" min="0" step="50"></label>
+        <label>Dọn file cũ nhất khi Drive còn trống dưới (MB) <input type="number" id="drvMinFree" min="200" step="500"></label>
+      </div>
+      <div style="font-size:12px;color:#94a3b8;margin-top:6px;">Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+        <button class="primary" onclick="saveDrive()">💾 Lưu cài đặt</button>
+      </div>
+      <div id="drvMsg" style="font-size:12.5px;color:#94a3b8;margin-top:8px;"></div>
+
+      <hr style="border:0;border-top:1px solid var(--border-subtle);margin:16px 0 12px;">
+
+      <div style="font-weight:600;margin-bottom:8px;">📊 Trạng thái &amp; hàng đợi</div>
+      <div id="drvStats" style="font-size:13px;color:#cbd5e1;display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+        <span style="font-size:13px;">Tải bù bản ghi cũ:</span>
+        <select id="drvNowCam" style="width:auto;max-width:200px;"></select>
+        <input type="date" id="drvNowFrom" style="width:auto;">
+        <span>→</span>
+        <input type="date" id="drvNowTo" style="width:auto;">
+        <button onclick="driveUploadNow()">🔼 Tải lên ngay</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <button onclick="driveCleanupNow()">🧹 Dọn Drive ngay</button>
+        <button onclick="driveRetry()">🔁 Thử lại file lỗi</button>
+      </div>
+      <div id="drvRecent" style="max-height:220px;overflow-y:auto;border:1px solid var(--border-subtle);border-radius:var(--radius-sm);"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+        <button onclick="closeDriveModal()">Đóng</button>
+      </div>
     </div>
   </div>
 
@@ -2748,7 +2834,8 @@
       const top = open[open.length - 1];
       const closers = {
         camModal: closeCamModal, storageModal: closeStorageModal, logsModal: closeLogsModal,
-        hassModal: closeHassModal, notifyModal: closeNotifyModal, secModal: closeSecModal
+        hassModal: closeHassModal, notifyModal: closeNotifyModal, secModal: closeSecModal,
+        driveModal: closeDriveModal
       };
       const fn = closers[top.id];
       if (fn) fn(); else top.style.display = "none";
@@ -2974,6 +3061,233 @@
           <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Gợi ý: đổi mật khẩu gốc mạnh (12+ ký tự), tài khoản người xem chỉ cấp quyền xem trực tiếp, bật 2FA cho tài khoản quản trị. Nhật ký đăng nhập lưu trên ổ cứng, không bị xoá tự động khi dọn bản ghi.</div>`;
       } catch (e) { el.textContent = "Lỗi tải trạng thái"; }
     }
+
+    // ================= Google Drive (sao lưu 24/7) =================
+    let _drvTimer = null, _drvPollTimer = null, _drvData = null;
+
+    async function openDriveModal() {
+      document.getElementById("driveModal").style.display = "flex";
+      const today = new Date().toISOString().slice(0, 10);
+      if (!document.getElementById("drvNowFrom").value) {
+        document.getElementById("drvNowFrom").value = today;
+        document.getElementById("drvNowTo").value = today;
+      }
+      await loadDrive();
+      if (!_drvTimer) _drvTimer = setInterval(loadDrive, 5000);
+    }
+    function closeDriveModal() {
+      document.getElementById("driveModal").style.display = "none";
+      if (_drvTimer) { clearInterval(_drvTimer); _drvTimer = null; }
+      if (_drvPollTimer) { clearInterval(_drvPollTimer); _drvPollTimer = null; }
+    }
+    function drvMsg(msg, err) {
+      const el = document.getElementById("drvMsg");
+      el.style.color = err ? "#f87171" : "#10b981";
+      el.textContent = msg;
+    }
+    function drvFmtBytes(n) {
+      n = Number(n || 0);
+      if (n >= 1e12) return (n / 1e12).toFixed(2) + " TB";
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB";
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + " MB";
+      if (n >= 1e3) return (n / 1e3).toFixed(0) + " KB";
+      return n + " B";
+    }
+    const DRV_STATUS = { pending: "Chờ tải", uploading: "Đang tải", done: "Đã tải lên",
+                         error: "Lỗi", deleted: "Đã dọn", skipped: "Bỏ qua" };
+
+    async function loadDrive() {
+      let d;
+      try { d = await fetch("/api/drive").then(r => r.json()); } catch (e) { return; }
+      _drvData = d;
+      const line = document.getElementById("drvStatusLine");
+      if (d.auth_error) {
+        line.innerHTML = '⚠️ <span style="color:#f87171;">' + esc(d.auth_error) + '</span>';
+      } else if (d.connected) {
+        line.innerHTML = '✅ Đã kết nối Google Drive — thư mục: <b>' + esc(d.folder_name) + '</b>'
+          + (d.enabled ? '' : ' <span style="color:#fbbf24;">(chưa bật sao lưu)</span>');
+      } else {
+        line.innerHTML = '⛔ Chưa kết nối Google Drive';
+      }
+      const pz = document.getElementById("drvPaused");
+      if (d.paused && d.paused_reason) { pz.hidden = false; pz.textContent = "⏸ " + d.paused_reason; }
+      else pz.hidden = true;
+
+      document.getElementById("drvConnectBox").hidden = !!d.connected;
+      document.getElementById("drvConnectedBox").hidden = !d.connected;
+      const q = d.quota;
+      document.getElementById("drvQuotaLine").textContent =
+        (q && q.limit) ? ("💾 Drive đã dùng " + drvFmtBytes(q.usage) + " / " + drvFmtBytes(q.limit)
+                          + " — còn trống " + drvFmtBytes(q.free))
+        : (d.connected ? "💾 Chưa lấy được dung lượng Drive (bấm Kiểm tra kết nối)." : "");
+      document.getElementById("drvConnInfo").textContent = d.connected
+        ? ("Client ID: " + (d.client_id || "(đã lưu)") + " · Refresh token: " + (d.has_refresh_token ? "đã lưu" : "chưa có"))
+        : "";
+
+      const cl = document.getElementById("drvCamList");
+      const sig = d.cameras_all.map(c => c.id + ":" + c.name).join("|") + "#" + (d.cameras || []).join(",");
+      if (cl.dataset.sig !== sig) {
+        cl.dataset.sig = sig;
+        const sel = new Set(d.cameras || []);
+        cl.innerHTML = d.cameras_all.map(c =>
+          `<label style="display:flex;flex-direction:row;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" class="drvCam" value="${esc(c.id)}" ${sel.has(c.id) ? "checked" : ""}> ${esc(c.name)}</label>`
+        ).join("") || '<span style="color:#64748b;font-size:12px;">Chưa có camera</span>';
+      }
+      const focusId = (document.activeElement || {}).id;
+      if (focusId !== "drvEnabled") document.getElementById("drvEnabled").checked = !!d.enabled;
+      if (focusId !== "drvBandwidth") document.getElementById("drvBandwidth").value = Math.round((d.bandwidth_kbps || 0) / 1000);
+      if (focusId !== "drvMaxGb") document.getElementById("drvMaxGb").value = d.max_gb || 0;
+      if (focusId !== "drvMinFree") document.getElementById("drvMinFree").value = d.min_free_mb || 2000;
+
+      if (isAdmin()) {
+        const pending = (d.counts.pending || 0) + (d.counts.uploading || 0);
+        const badge = document.getElementById("driveBadge");
+        const show = (pending > 0 || (d.counts.error || 0) > 0);
+        badge.hidden = !show;
+        badge.textContent = pending + ((d.counts.error || 0) ? "・" + d.counts.error + "⚠" : "");
+      }
+
+      const c = d.counts;
+      document.getElementById("drvStats").innerHTML =
+        `<span>📥 Chờ: <b>${c.pending || 0}</b></span>` +
+        `<span>⬆️ Đang tải: <b>${c.uploading || 0}</b></span>` +
+        `<span>✅ Đã tải: <b>${c.done || 0}</b> (${drvFmtBytes(d.uploaded_bytes)})</span>` +
+        `<span${c.error ? ' style="color:#f87171;"' : ''}>❌ Lỗi: <b>${c.error || 0}</b></span>` +
+        `<span>🗑 Đã dọn: <b>${c.deleted || 0}</b></span>`;
+
+      const selCam = document.getElementById("drvNowCam");
+      if (selCam.dataset.filled !== String(d.cameras_all.length)) {
+        selCam.dataset.filled = String(d.cameras_all.length);
+        selCam.innerHTML = (d.cameras_all.length > 1 ? '<option value="">Tất cả camera</option>' : "")
+          + d.cameras_all.map(cc => `<option value="${esc(cc.id)}">${esc(cc.name)}</option>`).join("");
+      }
+
+      const rec = document.getElementById("drvRecent");
+      rec.innerHTML = (d.recent && d.recent.length) ? d.recent.map(r => {
+        const st = DRV_STATUS[r.status] || r.status;
+        const color = r.status === "done" ? "#10b981" : r.status === "error" ? "#f87171"
+                    : r.status === "deleted" ? "#64748b" : r.status === "skipped" ? "#64748b" : "#fbbf24";
+        const camName = (d.cameras_all.find(x => x.id === r.cam_id) || {}).name || r.cam_id;
+        return `<div class="audit-line"><span class="ts" style="flex:none;">${new Date((r.ts || 0) * 1000).toLocaleString("vi-VN")}</span>`
+          + `<span style="flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(camName)} · ${esc(r.name)}</span>`
+          + `<span style="flex:none;">${drvFmtBytes(r.size)}</span>`
+          + `<span style="flex:none;color:${color};" title="${esc(r.error || "")}">${st}</span></div>`;
+      }).join("") : '<div style="padding:10px;color:#64748b;font-size:12.5px;">Chưa có file nào được đưa lên Drive.</div>';
+    }
+
+    async function driveConnectStart() {
+      const cid = document.getElementById("drvClientId").value.trim();
+      const sec = document.getElementById("drvClientSecret").value.trim();
+      if (!cid || !sec) { drvMsg("Nhập đủ Client ID và Client Secret.", true); return; }
+      drvMsg("Đang xin mã từ Google...");
+      const r = await fetch("/api/drive/connect", { method: "POST", body: JSON.stringify({ client_id: cid, client_secret: sec }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
+      document.getElementById("drvCodeBox").hidden = false;
+      document.getElementById("drvUserCode").textContent = d.user_code || "?";
+      document.getElementById("drvPollMsg").textContent = "Đang chờ bạn cấp quyền... (tự kiểm tra mỗi 4 giây)";
+      drvMsg("");
+      if (_drvPollTimer) clearInterval(_drvPollTimer);
+      _drvPollTimer = setInterval(drivePoll, 4000);
+    }
+    async function drivePoll() {
+      let d = {};
+      try { d = await fetch("/api/drive/connect/poll").then(r => r.json()); } catch (e) { return; }
+      if (d.status === "pending" || d.status === "none") return;
+      if (_drvPollTimer) { clearInterval(_drvPollTimer); _drvPollTimer = null; }
+      if (d.status === "ok") {
+        document.getElementById("drvCodeBox").hidden = true;
+        document.getElementById("drvClientSecret").value = "";
+        drvMsg("✅ Kết nối thành công! Giờ bật sao lưu rồi bấm «Lưu cài đặt».");
+        loadDrive();
+        return;
+      }
+      const msgs = { expired: "Mã đã hết hạn — bấm «Kết nối bằng mã thiết bị» lại.", denied: "Bạn đã từ chối cấp quyền." };
+      drvMsg("❌ " + (msgs[d.status] || d.detail || d.status), true);
+    }
+    async function drivePasteToken() {
+      const rt = document.getElementById("drvPasteToken").value.trim();
+      const cid = document.getElementById("drvClientId").value.trim();
+      const sec = document.getElementById("drvClientSecret").value.trim();
+      if (!rt) { drvMsg("Dán refresh token (hoặc JSON của rclone) trước đã.", true); return; }
+      drvMsg("Đang kiểm tra token...");
+      const r = await fetch("/api/drive/token", { method: "POST", body: JSON.stringify({ client_id: cid, client_secret: sec, refresh_token: rt }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
+      document.getElementById("drvPasteToken").value = "";
+      document.getElementById("drvClientSecret").value = "";
+      drvMsg("✅ Đã lưu token và kết nối thành công!");
+      loadDrive();
+    }
+    async function driveTest() {
+      drvMsg("Đang kiểm tra...");
+      const r = await fetch("/api/drive/test", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
+      drvMsg("✅ Kết nối tốt! " + (d.quota ? ("Drive còn trống " + drvFmtBytes(d.quota.free)) : ""));
+      loadDrive();
+    }
+    async function driveDisconnect() {
+      if (!confirm("Ngắt kết nối Google Drive? File đã tải lên Drive vẫn giữ nguyên. Sao lưu sẽ dừng lại.")) return;
+      await fetch("/api/drive/disconnect", { method: "POST" });
+      drvMsg("Đã ngắt kết nối.");
+      loadDrive();
+    }
+    async function saveDrive() {
+      const cams = [...document.querySelectorAll(".drvCam:checked")].map(x => x.value);
+      const bw = Math.max(0, Math.round(parseFloat(document.getElementById("drvBandwidth").value || "0") * 1000));
+      const body = {
+        enabled: document.getElementById("drvEnabled").checked,
+        folder_name: (_drvData && _drvData.folder_name) || "LiteNVR",
+        cameras: cams,
+        bandwidth_kbps: bw,
+        max_gb: Math.max(0, parseFloat(document.getElementById("drvMaxGb").value || "0")),
+        min_free_mb: Math.max(200, parseInt(document.getElementById("drvMinFree").value || "2000", 10))
+      };
+      const r = await fetch("/api/drive", { method: "POST", body: JSON.stringify(body) });
+      if (!r.ok) { drvMsg("❌ Không lưu được cài đặt", true); return; }
+      drvMsg("✅ Đã lưu cài đặt sao lưu.");
+      loadDrive();
+    }
+    async function driveUploadNow() {
+      const cam = document.getElementById("drvNowCam").value;
+      const from = document.getElementById("drvNowFrom").value;
+      const to = document.getElementById("drvNowTo").value || from;
+      if (!from) { drvMsg("Chọn ngày bắt đầu trước.", true); return; }
+      drvMsg("Đang quét bản ghi...");
+      const r = await fetch("/api/drive/now", { method: "POST", body: JSON.stringify({ cam_id: cam, date_from: from, date_to: to }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
+      drvMsg("✅ Đã xếp hàng " + d.queued + " đoạn ghi."
+        + ((_drvData && !_drvData.enabled) ? " Lưu ý: bật «Sao lưu» và Lưu cài đặt để bắt đầu tải." : ""));
+      loadDrive();
+    }
+    async function driveCleanupNow() {
+      drvMsg("Đang dọn Drive...");
+      const r = await fetch("/api/drive/cleanup", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
+      drvMsg(d.deleted ? ("🧹 Đã xoá " + d.deleted + " file cũ, giải phóng " + drvFmtBytes(d.freed) + ".") : "Không cần dọn gì (còn đủ chỗ).");
+      loadDrive();
+    }
+    async function driveRetry() {
+      const r = await fetch("/api/drive/retry", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      drvMsg(r.ok ? ("🔁 Đã đưa " + (d.requeued || 0) + " file lỗi về hàng đợi.") : "❌ Lỗi thử lại", !r.ok);
+      loadDrive();
+    }
+
+    setInterval(async () => {
+      if (!isAdmin() || document.getElementById("driveModal").style.display === "flex") return;
+      try {
+        const d = await fetch("/api/drive").then(r => r.json());
+        const pending = (d.counts.pending || 0) + (d.counts.uploading || 0);
+        const badge = document.getElementById("driveBadge");
+        const show = (pending > 0 || (d.counts.error || 0) > 0);
+        badge.hidden = !show;
+        badge.textContent = pending + ((d.counts.error || 0) ? "・" + d.counts.error + "⚠" : "");
+      } catch (e) {}
+    }, 60000);
 
     initSecurity().then(ok => { if (ok) init(); });
   </script>

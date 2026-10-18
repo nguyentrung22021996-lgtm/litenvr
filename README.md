@@ -98,6 +98,26 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **📱 Tối ưu điện thoại / máy tính bảng**: giao diện tự gọn thanh công cụ thành nút **☰** trên màn hình nhỏ, modal mở toàn màn hình, nút/ô nhập đủ lớn cho cảm ứng (ô nhập ≥16px, chống iOS tự phóng to), timeline cao hơn để kéo tua dễ hơn.
 
 
+## Sao lưu 24/7 lên Google Drive (tự dọn khi đầy)
+Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng: mọi đoạn ghi hoàn chỉnh sẽ **tự động tải lên Drive 24/7** vào thư mục `LiteNVR/<tên camera>`. Khi Drive đầy, LiteNVR **tự xoá các file cũ nhất do chính nó tải lên** (xoá vĩnh viễn, không vào thùng rác, để giải phóng dung lượng ngay) rồi tiếp tục tải. File đang được ghi sẽ không bị đụng tới; file lỗi được **thử lại tự động** (5 lần, chờ tăng dần).
+
+**Cách kết nối Google (làm 1 lần):**
+1. Vào [console.cloud.google.com](https://console.cloud.google.com) → tạo Project → **APIs & Services → Library** → bật **Google Drive API**.
+2. **OAuth consent screen**: chọn External → điền tên app, thêm email của bạn vào **Test users** → sau đó bấm **Publish app** (⚠️ nếu để chế độ *Testing*, Google sẽ hết hạn refresh token sau 7 ngày và LiteNVR sẽ báo lỗi xác thực định kỳ).
+3. **Credentials → Create credentials → OAuth client ID** → loại **TVs and Limited Input devices** → copy **Client ID** và **Client secret**.
+4. Trong LiteNVR: **☁️ Google Drive** → dán Client ID/secret → bấm **Kết nối Google** → mở [google.com/device](https://www.google.com/device) trên điện thoại/máy tính, nhập mã hiện trên LiteNVR → **Đồng ý**. Xong!
+5. Đã có refresh token sẵn (rclone, script cũ…)? Mở mục **Dán token có sẵn** trong hộp thoại và dán Client ID/secret/refresh token thay vì làm bước 4.
+
+**Cài đặt trong hộp thoại Drive:**
+- **Camera sao lưu**: bỏ trống = tất cả camera.
+- **Giới hạn tốc độ**: chừa băng thông internet (Mbps), để 0 = không giới hạn.
+- **Giới hạn dung lượng LiteNVR trên Drive (GB)**: 0 = không giới hạn; vượt mức → tự xoá cũ nhất.
+- **Chừa trống tối thiểu trên Drive (MB)**: Drive còn ít hơn mức này → tự xoá cũ nhất (tối thiểu 200MB).
+- **Tải bù theo ngày**: đẩy các bản ghi cũ (trước khi bật) lên Drive theo khoảng ngày — có thể rất nhiều, nên chạy vào lúc rảnh.
+- Nút **🔎 Kiểm tra kết nối**, **Dọn ngay**, **↻ Thử lại file lỗi** và danh sách các file gần đây kèm trạng thái.
+
+⚠️ Chỉ các đoạn ghi **sau khi bật** mới tự lên Drive; bản ghi cũ dùng nút *Tải bù theo ngày*. Xoá tự động là **vĩnh viễn** (không khôi phục được từ thùng rác).
+
 ## Tích hợp Home Assistant (Motion Webhook - không cần token)
 HA chủ động gọi webhook khi phát hiện chuyển động:
 ```yaml

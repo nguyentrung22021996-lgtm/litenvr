@@ -45,6 +45,15 @@ DB_PATH = os.path.join(STORAGE_DIR, "nvr.db")
 HLS_DIR = "/dev/shm/hls"
 BUFFER_DIR = "/dev/shm/buffer"
 
+# Google Drive (24/7 backup) — các URL có thể override qua env để test bằng mock server
+DRIVE_OAUTH_BASE = os.environ.get("NVR_DRIVE_OAUTH_BASE", "https://oauth2.googleapis.com").rstrip("/")
+DRIVE_API_BASE = os.environ.get("NVR_DRIVE_API_BASE", "https://www.googleapis.com/drive/v3").rstrip("/")
+DRIVE_UPLOAD_BASE = os.environ.get("NVR_DRIVE_UPLOAD_BASE", "https://www.googleapis.com/upload/drive/v3").rstrip("/")
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+DRIVE_TICK = float(os.environ.get("NVR_DRIVE_TICK", "20"))
+DRIVE_CHUNK = int(os.environ.get("NVR_DRIVE_CHUNK", str(16 * 1024 * 1024)))
+DRIVE_RETRY_BASE = float(os.environ.get("NVR_DRIVE_RETRY_BASE", "60"))
+
 for d in [RECORDINGS_DIR, SNAPSHOTS_DIR, HLS_DIR, BUFFER_DIR]:
     os.makedirs(d, exist_ok=True)
 
@@ -146,6 +155,7 @@ async def lifespan(app: FastAPI):
             start_camera_worker(cam_id)
     threading.Thread(target=motion_buffer_manager, daemon=True).start()
     threading.Thread(target=cleanup_worker, daemon=True).start()
+    threading.Thread(target=drive_worker, daemon=True).start()
     threading.Thread(target=hass_motion_listener, daemon=True).start()
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
@@ -255,6 +265,19 @@ DEFAULT_CONFIG = {
         "telegram_chat_id": "",
         "webhook_url": "",
         "with_photo": True
+    },
+    "gdrive": {
+        "enabled": False,
+        "client_id": "",
+        "client_secret": "",
+        "refresh_token": "",
+        "folder_name": "LiteNVR",     # Thư mục gốc trên Drive (tự tạo)
+        "root_folder_id": "",
+        "cameras": [],                # [] = tất cả camera; hoặc danh sách cam_id
+        "bandwidth_kbps": 0,          # 0 = không giới hạn tốc độ tải lên
+        "max_gb": 0,                  # 0 = chỉ dọn khi Drive thật sự gần đầy
+        "min_free_mb": 2000,          # Dọn file cũ khi Drive còn trống dưới mức này
+        "since_ts": 0                 # Chỉ sao lưu bản ghi mới hơn mốc này (0 = mọi bản ghi)
     }
 }
 
@@ -267,6 +290,11 @@ def _normalize_config(cfg: dict) -> dict:
     nt = cfg.setdefault("notify", {})
     for k, v in DEFAULT_CONFIG["notify"].items():
         nt.setdefault(k, v)
+    gd = cfg.setdefault("gdrive", {})
+    for k, v in DEFAULT_CONFIG["gdrive"].items():
+        gd.setdefault(k, v)
+    if not isinstance(gd.get("cameras"), list):
+        gd["cameras"] = []
     # Di trú: camera cũ lưu "copy" nay chuyển sang "auto" để tự dò H.265
     for cam in cfg.get("cameras", {}).values():
         if cam.get("video_codec") in (None, "", "copy"):
@@ -329,6 +357,23 @@ def init_db():
             note TEXT
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS drive_uploads (
+            path TEXT PRIMARY KEY,
+            cam_id TEXT,
+            name TEXT,
+            ts REAL,
+            size INTEGER,
+            status TEXT,
+            error TEXT,
+            drive_id TEXT,
+            tries INTEGER DEFAULT 0,
+            next_try REAL DEFAULT 0,
+            updated REAL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_drive_status ON drive_uploads(status, next_try)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_drive_ts ON drive_uploads(ts)")
     conn.commit()
 
 init_db()
@@ -677,7 +722,7 @@ def path_permission(request: Request) -> Optional[str]:
     if path.startswith("/api/users") or path.startswith("/api/config") or path.startswith("/api/storage") \
             or path.startswith("/api/hass") or path.startswith("/api/notify") or path.startswith("/api/logs") \
             or path.startswith("/api/system") or path.startswith("/api/onvif") or path.startswith("/api/audit") \
-            or path.startswith("/api/security"):
+            or path.startswith("/api/security") or path.startswith("/api/drive"):
         return "__admin__"
     if path.startswith("/api/cameras"):
         return "__admin__"  # POST/DELETE/bulk đổi cấu hình camera
@@ -2629,6 +2674,818 @@ def test_notify():
     if not results:
         raise HTTPException(status_code=400, detail="Chưa bật Telegram và chưa có Webhook URL")
     return {"status": "ok", "results": results}
+
+# ---------------- Sao lưu Google Drive (24/7) ----------------
+# Kiến trúc: quét thư mục bản ghi -> hàng đợi SQLite (drive_uploads) -> luồng nền
+# upload resumable (có giới hạn tốc độ) -> kiểm tra quota định kỳ -> khi Drive gần
+# đầy (hoặc vượt max_gb) thì xoá VĨNH VIỄN file cũ nhất đã tải lên để dọn chỗ.
+
+REC_NAME_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.mp4$")
+
+drive_state = {
+    "paused": False, "reason": "", "retry_at": 0.0,
+    "last_scan": 0.0, "last_cleanup": 0.0,
+    "auth_error": "", "quota": None, "quota_ts": 0.0,
+}
+drive_pending_auth = {}  # phiên xác thực thiết bị đang chờ (device flow)
+_drive_token_cache = {"token": "", "exp": 0.0}
+_drive_notify_last = {"t": 0.0}
+
+
+class DriveHttpError(Exception):
+    def __init__(self, status: int, payload: Any):
+        self.status = status
+        self.payload = payload
+        super().__init__(f"HTTP {status}: {json.dumps(payload, ensure_ascii=False)[:300]}")
+
+
+class DriveAuthError(Exception):
+    pass
+
+
+def gd_cfg() -> dict:
+    g = CONFIG.setdefault("gdrive", dict(DEFAULT_CONFIG["gdrive"]))
+    for k, v in DEFAULT_CONFIG["gdrive"].items():
+        g.setdefault(k, v)
+    return g
+
+
+def drive_connected() -> bool:
+    g = gd_cfg()
+    return bool((g.get("client_id") or "").strip() and (g.get("client_secret") or "").strip()
+                and (g.get("refresh_token") or "").strip())
+
+
+def drive_notify(text: str, force: bool = False):
+    """Gửi cảnh báo Drive qua Telegram (nếu bật), tối đa 1 tin/phút để tránh spam."""
+    now = time.time()
+    if not force and now - _drive_notify_last["t"] < 60:
+        return
+    _drive_notify_last["t"] = now
+    try:
+        nt = CONFIG.get("notify") or {}
+        if nt.get("telegram_enabled") and nt.get("telegram_token") and nt.get("telegram_chat_id"):
+            _telegram_send(nt["telegram_token"], str(nt["telegram_chat_id"]), "☁️ LiteNVR Drive: " + text)
+    except Exception:
+        pass
+
+
+def _http_json(url: str, data: Any = None, headers: Optional[dict] = None,
+               method: Optional[str] = None, timeout: int = 30) -> Any:
+    body = json.dumps(data).encode() if data is not None else None
+    req = urllib.request.Request(
+        url, data=body,
+        method=method or ("POST" if body is not None else "GET"),
+        headers={"Content-Type": "application/json; charset=UTF-8", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"raw": raw.decode("utf-8", "replace")[:400]}
+        raise DriveHttpError(e.code, payload)
+
+
+def _form_post(url: str, fields: dict, timeout: int = 30) -> dict:
+    body = urllib.parse.urlencode(fields).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"raw": raw.decode("utf-8", "replace")[:400]}
+        raise DriveHttpError(e.code, payload)
+
+
+def drive_access_token(force: bool = False) -> str:
+    """Đổi refresh_token lấy access_token (cache trong RAM tới khi gần hết hạn)."""
+    now = time.time()
+    if not force and _drive_token_cache["token"] and now < _drive_token_cache["exp"]:
+        return _drive_token_cache["token"]
+    if not drive_connected():
+        raise DriveAuthError("Chưa kết nối Google Drive")
+    g = gd_cfg()
+    try:
+        j = _form_post(DRIVE_OAUTH_BASE + "/token", {
+            "client_id": g["client_id"], "client_secret": g["client_secret"],
+            "refresh_token": g["refresh_token"], "grant_type": "refresh_token"})
+    except DriveHttpError as e:
+        err = str((e.payload or {}).get("error") or e.payload)
+        raise DriveAuthError(f"Token bị từ chối ({err}) — cần kết nối lại Google Drive")
+    tok = j.get("access_token") or ""
+    if not tok:
+        raise DriveAuthError("Google không trả access_token")
+    _drive_token_cache["token"] = tok
+    _drive_token_cache["exp"] = now + max(60, int(j.get("expires_in", 3600)) - 120)
+    drive_state["auth_error"] = ""
+    return tok
+
+
+def drive_api(method: str, path: str, data: Any = None, retry_auth: bool = True) -> Any:
+    """Gọi Drive REST API (path bắt đầu bằng /...). Tự thử lại 1 lần sau khi refresh token."""
+    url = DRIVE_API_BASE + path
+    try:
+        return _http_json(url, data=data, method=method,
+                          headers={"Authorization": "Bearer " + drive_access_token()})
+    except DriveHttpError as e:
+        if e.status == 401 and retry_auth:
+            drive_access_token(force=True)
+            return drive_api(method, path, data, retry_auth=False)
+        raise
+
+
+def drive_quota(use_cache: bool = True) -> Optional[dict]:
+    now = time.time()
+    if use_cache and drive_state["quota"] and now - drive_state["quota_ts"] < 600:
+        return drive_state["quota"]
+    try:
+        j = drive_api("GET", "/about?fields=storageQuota")
+        q = j.get("storageQuota") or {}
+        info = {"limit": int(q.get("limit", 0) or 0), "usage": int(q.get("usage", 0) or 0)}
+        info["free"] = max(0, info["limit"] - info["usage"]) if info["limit"] else 0
+        drive_state["quota"] = info
+        drive_state["quota_ts"] = now
+        return info
+    except DriveAuthError:
+        raise
+    except Exception:
+        return drive_state["quota"]
+
+
+def drive_ensure_folder(name: str, parent_id: str = "") -> str:
+    safe = name.replace("\\", "\\\\").replace("'", "\\'")
+    q = f"name = '{safe}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    if parent_id:
+        q += f" and '{parent_id}' in parents"
+    j = drive_api("GET", "/files?" + urllib.parse.urlencode({
+        "q": q, "fields": "files(id,name)", "pageSize": "5",
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}))
+    files = j.get("files") or []
+    if files:
+        return files[0]["id"]
+    meta = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id:
+        meta["parents"] = [parent_id]
+    j = drive_api("POST", "/files?fields=id&supportsAllDrives=true", data=meta)
+    return j.get("id") or ""
+
+
+def drive_cam_folder(cam_id: str) -> str:
+    """Đảm bảo có LiteNVR/<tên camera>/ trên Drive; lưu id vào config để tái sử dụng."""
+    g = gd_cfg()
+    cams = CONFIG.get("cameras", {})
+    root_id = (g.get("root_folder_id") or "").strip()
+    if not root_id:
+        root_id = drive_ensure_folder((g.get("folder_name") or "LiteNVR").strip() or "LiteNVR")
+        g["root_folder_id"] = root_id
+        save_config(CONFIG)
+    if not cam_id:
+        return root_id
+    cam_name = (cams.get(cam_id) or {}).get("name") or cam_id
+    cmap = g.setdefault("cam_folders", {})
+    fid = (cmap.get(cam_id) or "").strip()
+    if not fid:
+        fid = drive_ensure_folder(cam_name, root_id)
+        cmap[cam_id] = fid
+        save_config(CONFIG)
+    return fid
+
+
+def drive_upload_file(local_path: str, name: str, parent_id: str, kbps: int = 0) -> dict:
+    """Upload resumable từng phần (chunk). Giới hạn tốc độ kbps: 0 = không giới hạn."""
+    token = drive_access_token()
+    size = os.path.getsize(local_path)
+    meta = {"name": name, "parents": [parent_id]}
+    req = urllib.request.Request(
+        DRIVE_UPLOAD_BASE + "/files?uploadType=resumable&supportsAllDrives=true",
+        data=json.dumps(meta).encode(), method="POST",
+        headers={"Authorization": "Bearer " + token,
+                 "Content-Type": "application/json; charset=UTF-8",
+                 "X-Upload-Content-Type": "video/mp4",
+                 "X-Upload-Content-Length": str(size)})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            session_url = r.headers.get("Location") or ""
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"raw": raw.decode("utf-8", "replace")[:400]}
+        raise DriveHttpError(e.code, payload)
+    if not session_url:
+        raise DriveHttpError(500, {"error": "Google không trả URL phiên upload"})
+
+    chunk_size = DRIVE_CHUNK if kbps <= 0 else max(262144, min(int(kbps * 125 * 5), 32 * 1024 * 1024))
+    pos = 0
+    with open(local_path, "rb") as f:
+        while pos < size:
+            chunk = f.read(min(chunk_size, size - pos))
+            if not chunk:
+                break
+            end = pos + len(chunk)
+            if kbps > 0:
+                time.sleep(len(chunk) / max(1, kbps * 125))
+            for attempt in range(4):
+                try:
+                    req = urllib.request.Request(
+                        session_url, data=chunk, method="PUT",
+                        headers={"Content-Range": f"bytes {pos}-{end - 1}/{size}",
+                                 "Content-Length": str(len(chunk))})
+                    with urllib.request.urlopen(req, timeout=180) as r:
+                        raw = r.read()
+                        return json.loads(raw) if raw else {}
+                except urllib.error.HTTPError as e:
+                    if e.code == 308:  # chưa xong, Google đã nhận chunk
+                        break
+                    if e.code >= 500 and attempt < 3:
+                        time.sleep(3 * (attempt + 1))
+                        continue
+                    raw = e.read()
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        payload = {"raw": raw.decode("utf-8", "replace")[:400]}
+                    raise DriveHttpError(e.code, payload)
+            pos = end
+    # Hiếm khi tới đây (file thay đổi kích thước giữa chừng) — hỏi trạng thái cuối
+    req = urllib.request.Request(session_url, data=b"", method="PUT",
+                                 headers={"Content-Range": f"bytes */{size}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"raw": raw.decode("utf-8", "replace")[:400]}
+        raise DriveHttpError(e.code, payload)
+
+
+def drive_delete_file(file_id: str) -> bool:
+    """Xoá vĩnh viễn (không vào thùng rác) — giải phóng dung lượng Drive ngay."""
+    if not file_id:
+        return False
+    try:
+        drive_api("DELETE", f"/files/{urllib.parse.quote(file_id)}?supportsAllDrives=true")
+        return True
+    except DriveHttpError as e:
+        if e.status == 404:
+            return True  # đã bị xoá từ trước
+        raise
+
+
+def _rec_name_ts(name: str) -> Optional[float]:
+    m = REC_NAME_RE.match(name)
+    if not m:
+        return None
+    try:
+        y, mo, d, h, mi, s = [int(x) for x in m.groups()]
+        return datetime(y, mo, d, h, mi, s).timestamp()
+    except Exception:
+        return None
+
+
+def drive_scan_once():
+    """Thêm các file bản ghi hoàn chỉnh chưa có trong hàng đợi (bỏ file đang ghi)."""
+    g = gd_cfg()
+    cams_filter = g.get("cameras") or []
+    since = float(g.get("since_ts") or 0)
+    now = time.time()
+    conn = db_conn()
+    added = 0
+    for cam_id in list(CONFIG.get("cameras", {}).keys()):
+        if cams_filter and cam_id not in cams_filter:
+            continue
+        cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
+        if not os.path.isdir(cam_dir):
+            continue
+        try:
+            names = sorted(f for f in os.listdir(cam_dir) if REC_NAME_RE.match(f))
+        except Exception:
+            continue
+        for i, name in enumerate(names):
+            if i == len(names) - 1:
+                continue  # file mới nhất có thể đang được ffmpeg ghi
+            fpath = os.path.join(cam_dir, name)
+            try:
+                st = os.stat(fpath)
+            except Exception:
+                continue
+            if now - st.st_mtime < 10:
+                continue  # vừa chốt xong, chờ ổn định
+            ts = _rec_name_ts(name) or st.st_mtime
+            if ts < since:
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO drive_uploads (path, cam_id, name, ts, size, status, tries, next_try, updated) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, ?)",
+                (f"{cam_id}/{name}", cam_id, name, ts, st.st_size, now))
+            added += cur.rowcount
+    if added:
+        conn.commit()
+    return added
+
+
+def drive_queue_backfill(cam_id: str, date_from: str, date_to: str) -> int:
+    """Đưa bản ghi cũ (theo khoảng ngày) vào hàng đợi tải bù."""
+    g = gd_cfg()
+    cams_filter = g.get("cameras") or []
+    cams = [c for c in ([cam_id] if cam_id else CONFIG.get("cameras", {})) if not cams_filter or c in cams_filter]
+    try:
+        d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
+        d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Ngày không hợp lệ (định dạng YYYY-MM-DD)")
+    if d_to < d_from:
+        raise HTTPException(status_code=400, detail="Ngày kết thúc phải sau ngày bắt đầu")
+    conn = db_conn()
+    now = time.time()
+    queued = 0
+    for cid in cams:
+        cam_dir = os.path.join(RECORDINGS_DIR, cid)
+        if not os.path.isdir(cam_dir):
+            continue
+        try:
+            names = sorted(f for f in os.listdir(cam_dir) if REC_NAME_RE.match(f))
+        except Exception:
+            continue
+        for name in names:
+            ts = _rec_name_ts(name)
+            if ts is None:
+                continue
+            day = datetime.fromtimestamp(ts).date()
+            if not (d_from <= day <= d_to):
+                continue
+            fpath = os.path.join(cam_dir, name)
+            try:
+                size = os.path.getsize(fpath)
+            except Exception:
+                continue
+            rel = f"{cid}/{name}"
+            row = conn.execute("SELECT status FROM drive_uploads WHERE path=?", (rel,)).fetchone()
+            if row and row["status"] in ("pending", "uploading", "done"):
+                continue  # đang chờ/đang lên/đã lên thì thôi
+            conn.execute(
+                "INSERT OR REPLACE INTO drive_uploads (path, cam_id, name, ts, size, status, error, drive_id, tries, next_try, updated) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', '', '', 0, 0, ?)",
+                (rel, cid, name, ts, size, now))
+            queued += 1
+    conn.commit()
+    return queued
+
+
+def drive_cleanup(force: bool = False) -> dict:
+    """Dọn Drive: xoá vĩnh viễn file cũ nhất khi vượt max_gb hoặc Drive sắp đầy."""
+    g = gd_cfg()
+    if not drive_connected():
+        return {"deleted": 0, "freed": 0, "reason": "chưa kết nối"}
+    conn = db_conn()
+    rows = conn.execute(
+        "SELECT path, name, cam_id, drive_id, size, ts FROM drive_uploads "
+        "WHERE status='done' ORDER BY ts ASC").fetchall()
+    used = sum(int(r["size"] or 0) for r in rows)
+    max_gb = float(g.get("max_gb") or 0)
+    min_free = max(200, int(g.get("min_free_mb") or 2000)) * 1024 * 1024
+    target_used = max_gb * 1_000_000_000 if max_gb > 0 else None
+    quota = drive_quota(use_cache=not force) or {}
+    limit = int(quota.get("limit") or 0)
+    free = int(quota.get("free") or 0) if limit else None
+    ok_used = target_used is None or used <= target_used
+    ok_free = free is None or free >= min_free
+    if ok_used and ok_free:
+        return {"deleted": 0, "freed": 0, "reason": "ok", "used": used,
+                "free": free, "limit": limit}
+    deleted, freed = 0, 0
+    now = time.time()
+    for r in rows:
+        if deleted >= 300:  # giới hạn an toàn mỗi lượt
+            break
+        if ok_used and ok_free:
+            break
+        try:
+            drive_delete_file(r["drive_id"])
+        except DriveAuthError:
+            raise
+        except Exception as e:
+            log_event("error", f"Drive: không xoá được {r['name']}: {e}")
+            continue
+        size = int(r["size"] or 0)
+        conn.execute("UPDATE drive_uploads SET status='deleted', updated=? WHERE path=?", (now, r["path"]))
+        deleted += 1
+        freed += size
+        used -= size
+        if free is not None:
+            free += size
+        ok_used = target_used is None or used <= target_used * 0.98
+        ok_free = free is None or free >= min_free
+    conn.commit()
+    if deleted:
+        # Giữ cache quota khớp thực tế (tránh dọn lặp vì số cũ)
+        q = drive_state.get("quota")
+        if q and q.get("limit"):
+            q["usage"] = max(0, int(q.get("usage", 0)) - freed)
+            q["free"] = max(0, int(q.get("limit", 0)) - q["usage"])
+        drive_state["quota_ts"] = time.time()
+    return {"deleted": deleted, "freed": freed, "reason": "cleaned",
+            "used": used, "free": free, "limit": limit}
+
+
+def drive_process_row(row) -> str:
+    """Upload 1 file. Trả về trạng thái mới: done | pending | error | skipped."""
+    conn = db_conn()
+    now = time.time()
+    g = gd_cfg()
+    local_path = os.path.join(RECORDINGS_DIR, row["cam_id"], row["name"])
+    if not os.path.exists(local_path):
+        conn.execute("UPDATE drive_uploads SET status='skipped', error='file đã bị xoá khỏi ổ cứng', updated=? WHERE path=?",
+                     (now, row["path"]))
+        conn.commit()
+        return "skipped"
+    try:
+        folder_id = drive_cam_folder(row["cam_id"])
+        size = os.path.getsize(local_path)
+        res = drive_upload_file(local_path, row["name"], folder_id, int(g.get("bandwidth_kbps") or 0))
+        conn.execute(
+            "UPDATE drive_uploads SET status='done', error='', drive_id=?, size=?, tries=0, next_try=0, updated=? WHERE path=?",
+            (res.get("id") or "", size, now, row["path"]))
+        conn.commit()
+        q = drive_state.get("quota")
+        if q and q.get("limit"):
+            q["usage"] = int(q.get("usage", 0)) + size
+            q["free"] = max(0, int(q.get("limit", 0)) - q["usage"])
+        return "done"
+    except DriveAuthError as e:
+        drive_state["auth_error"] = str(e)
+        drive_state["paused"] = True
+        drive_state["reason"] = "Lỗi xác thực Google — cần kết nối lại"
+        drive_state["retry_at"] = now + 3600
+        drive_notify(str(e) + " — vào LiteNVR → Google Drive để kết nối lại.")
+        conn.execute("UPDATE drive_uploads SET status='pending', updated=? WHERE path=?", (now, row["path"]))
+        conn.commit()
+        return "pending"
+    except DriveHttpError as e:
+        payload = json.dumps(e.payload, ensure_ascii=False)
+        if e.status == 403 and ("quota" in payload or "storageQuota" in payload):
+            drive_state["paused"] = True
+            drive_state["reason"] = "Drive đã hết dung lượng — đang dọn file cũ"
+            drive_state["retry_at"] = now + 300
+            drive_notify("Drive hết dung lượng, LiteNVR sẽ dọn file cũ nhất rồi tiếp tục tải lên.")
+            conn.execute("UPDATE drive_uploads SET status='pending', updated=? WHERE path=?", (now, row["path"]))
+            conn.commit()
+            return "pending"
+        return drive_mark_retry(conn, row, now, f"HTTP {e.status}: {payload[:200]}")
+    except Exception as e:
+        return drive_mark_retry(conn, row, now, str(e)[:200])
+
+
+def drive_mark_retry(conn, row, now: float, err: str) -> str:
+    tries = int(row["tries"] or 0) + 1
+    if tries >= 5:
+        conn.execute("UPDATE drive_uploads SET status='error', error=?, tries=?, updated=? WHERE path=?",
+                     (err, tries, now, row["path"]))
+        conn.commit()
+        return "error"
+    conn.execute("UPDATE drive_uploads SET status='pending', error=?, tries=?, next_try=?, updated=? WHERE path=?",
+                 (err, tries, now + min(DRIVE_RETRY_BASE * (2 ** tries), 1800), now, row["path"]))
+    conn.commit()
+    return "pending"
+
+
+def drive_worker():
+    while True:
+        try:
+            conn = db_conn()
+            # Treo từ lần chạy trước (app bị restart giữa chừng) -> trả về hàng đợi
+            conn.execute("UPDATE drive_uploads SET status='pending' WHERE status='uploading'")
+            conn.commit()
+            break
+        except Exception:
+            time.sleep(5)
+    last_quota_check = 0.0
+    while True:
+        try:
+            g = gd_cfg()
+            if not g.get("enabled") or not drive_connected():
+                time.sleep(DRIVE_TICK)
+                continue
+            now = time.time()
+            if drive_state["paused"]:
+                if now >= drive_state["retry_at"]:
+                    drive_state["paused"] = False
+                    drive_state["reason"] = ""
+                else:
+                    time.sleep(DRIVE_TICK)
+                    continue
+            if now - drive_state["last_scan"] >= DRIVE_TICK:
+                drive_scan_once()
+                drive_state["last_scan"] = now
+            row = db_conn().execute(
+                "SELECT * FROM drive_uploads WHERE status='pending' AND (next_try IS NULL OR next_try<=?) "
+                "ORDER BY ts ASC LIMIT 1", (now,)).fetchone()
+            if row is not None:
+                db_conn().execute("UPDATE drive_uploads SET status='uploading' WHERE path=?", (row["path"],))
+                db_conn().commit()
+                drive_process_row(row)
+                # Kiểm tra quota mỗi 5 phút (hoặc khi có lỗi vừa xử lý)
+                if time.time() - last_quota_check > 300:
+                    last_quota_check = time.time()
+                    try:
+                        drive_cleanup()
+                    except DriveAuthError:
+                        pass
+                    except Exception:
+                        pass
+                continue
+            # Hàng đợi trống: dọn định kỳ 10 phút/lần
+            if now - drive_state["last_cleanup"] > 600:
+                drive_state["last_cleanup"] = now
+                try:
+                    drive_cleanup()
+                except DriveAuthError:
+                    pass
+                except Exception:
+                    pass
+            time.sleep(DRIVE_TICK)
+        except DriveAuthError:
+            time.sleep(DRIVE_TICK)
+        except Exception as e:
+            log_event("error", f"Drive worker lỗi: {str(e)[:200]}")
+            time.sleep(DRIVE_TICK)
+
+
+class DriveSettings(BaseModel):
+    enabled: bool = False
+    folder_name: str = "LiteNVR"
+    cameras: List[str] = []
+    bandwidth_kbps: int = 0
+    max_gb: float = 0
+    min_free_mb: int = 2000
+
+
+class DriveConnect(BaseModel):
+    client_id: str
+    client_secret: str
+
+
+class DriveToken(BaseModel):
+    client_id: str = ""
+    client_secret: str = ""
+    refresh_token: str = ""
+
+
+class DriveNow(BaseModel):
+    cam_id: str = ""
+    date_from: str
+    date_to: str = ""
+
+
+def drive_counts() -> dict:
+    rows = db_conn().execute(
+        "SELECT status, COUNT(*) AS n, COALESCE(SUM(size), 0) AS s FROM drive_uploads GROUP BY status").fetchall()
+    out = {"pending": 0, "uploading": 0, "done": 0, "error": 0, "skipped": 0, "deleted": 0}
+    bytes_map = {k: 0 for k in out}
+    for r in rows:
+        if r["status"] in out:
+            out[r["status"]] = r["n"]
+            bytes_map[r["status"]] = int(r["s"] or 0)
+    out["_bytes"] = bytes_map
+    return out
+
+
+@app.get("/api/drive")
+def get_drive():
+    g = gd_cfg()
+    conn = db_conn()
+    connected = drive_connected()
+    if connected and drive_state["quota"] is None:
+        try:
+            drive_quota(use_cache=True)
+        except Exception:
+            pass
+    counts = drive_counts()
+    recent = [dict(r) for r in conn.execute(
+        "SELECT path, cam_id, name, ts, size, status, error, updated FROM drive_uploads "
+        "ORDER BY updated DESC LIMIT 30").fetchall()]
+    cameras = [{"id": cid, "name": (c or {}).get("name") or cid}
+               for cid, c in CONFIG.get("cameras", {}).items()]
+    return {
+        "enabled": bool(g.get("enabled")),
+        "connected": drive_connected(),
+        "auth_error": drive_state["auth_error"],
+        "paused": drive_state["paused"],
+        "paused_reason": drive_state["reason"],
+        "client_id": g.get("client_id", ""),
+        "has_client_secret": bool((g.get("client_secret") or "").strip()),
+        "has_refresh_token": bool((g.get("refresh_token") or "").strip()),
+        "folder_name": g.get("folder_name", "LiteNVR"),
+        "cameras": g.get("cameras") or [],
+        "bandwidth_kbps": int(g.get("bandwidth_kbps") or 0),
+        "max_gb": float(g.get("max_gb") or 0),
+        "min_free_mb": int(g.get("min_free_mb") or 2000),
+        "since_ts": float(g.get("since_ts") or 0),
+        "counts": counts,
+        "uploaded_bytes": counts["_bytes"]["done"],
+        "queued_bytes": counts["_bytes"]["pending"] + counts["_bytes"]["uploading"] + counts["_bytes"]["error"],
+        "quota": drive_state["quota"] if drive_connected() else None,
+        "recent": recent,
+        "cameras_all": cameras,
+    }
+
+
+@app.post("/api/drive")
+def update_drive(settings: DriveSettings):
+    g = gd_cfg()
+    was_enabled = bool(g.get("enabled"))
+    g["enabled"] = settings.enabled
+    folder = settings.folder_name.strip() or "LiteNVR"
+    if folder != g.get("folder_name"):
+        g["folder_name"] = folder
+        g["root_folder_id"] = ""
+        g["cam_folders"] = {}
+    g["cameras"] = [c for c in settings.cameras if c in CONFIG.get("cameras", {})]
+    g["bandwidth_kbps"] = max(0, int(settings.bandwidth_kbps))
+    g["max_gb"] = max(0.0, float(settings.max_gb))
+    g["min_free_mb"] = max(200, int(settings.min_free_mb))
+    if settings.enabled and not was_enabled and not float(g.get("since_ts") or 0):
+        # Bật lần đầu: chỉ sao lưu bản ghi mới từ giờ trở đi (tránh tự đẩy hàng TB cũ lên)
+        g["since_ts"] = time.time()
+    save_config(CONFIG)
+    log_event("info", f"Cấu hình Google Drive: {'bật' if settings.enabled else 'tắt'}"
+                      + (f", giới hạn tốc độ {g['bandwidth_kbps']} kbps" if g["bandwidth_kbps"] else ""))
+    return {"status": "ok"}
+
+
+@app.post("/api/drive/connect")
+def drive_connect_start(body: DriveConnect):
+    cid, sec = body.client_id.strip(), body.client_secret.strip()
+    if not cid or not sec:
+        raise HTTPException(status_code=400, detail="Cần nhập Client ID và Client Secret")
+    try:
+        j = _form_post(DRIVE_OAUTH_BASE + "/device/code", {"client_id": cid, "scope": DRIVE_SCOPE})
+    except DriveHttpError as e:
+        raise HTTPException(status_code=400, detail=f"Google từ chối: {e.payload}")
+    if not j.get("device_code"):
+        raise HTTPException(status_code=400, detail=f"Phản hồi không hợp lệ: {j}")
+    drive_pending_auth.update({
+        "device_code": j["device_code"], "client_id": cid, "client_secret": sec,
+        "interval": int(j.get("interval", 5)), "exp": time.time() + int(j.get("expires_in", 900)),
+        "last_poll": 0.0})
+    return {"user_code": j.get("user_code", ""),
+            "verification_url": j.get("verification_url", "https://www.google.com/device"),
+            "expires_in": int(j.get("expires_in", 900)),
+            "interval": int(j.get("interval", 5))}
+
+
+@app.get("/api/drive/connect/poll")
+def drive_connect_poll():
+    pa = drive_pending_auth
+    if not pa:
+        return {"status": "none"}
+    if time.time() > pa["exp"]:
+        drive_pending_auth.clear()
+        return {"status": "expired"}
+    if time.time() - pa["last_poll"] < pa["interval"]:
+        return {"status": "pending"}
+    pa["last_poll"] = time.time()
+    try:
+        j = _form_post(DRIVE_OAUTH_BASE + "/token", {
+            "client_id": pa["client_id"], "client_secret": pa["client_secret"],
+            "device_code": pa["device_code"],
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code"})
+    except DriveHttpError as e:
+        err = str((e.payload or {}).get("error") or "")
+        if err == "authorization_pending":
+            return {"status": "pending"}
+        if err == "slow_down":
+            pa["interval"] += 5
+            return {"status": "pending"}
+        if err == "access_denied":
+            drive_pending_auth.clear()
+            return {"status": "denied"}
+        if err == "expired_token":
+            drive_pending_auth.clear()
+            return {"status": "expired"}
+        return {"status": "error", "detail": str(e.payload)[:300]}
+    if not j.get("refresh_token"):
+        return {"status": "error", "detail": "Google không trả refresh_token — hãy xoá quyền cũ của app "
+                                             "tại myaccount.google.com/permissions rồi thử lại"}
+    cid, sec = pa["client_id"], pa["client_secret"]
+    drive_pending_auth.clear()
+    drive_apply_tokens(cid, sec, j["refresh_token"])
+    return {"status": "ok"}
+
+
+def drive_apply_tokens(cid: str, sec: str, refresh_token: str):
+    g = gd_cfg()
+    g["client_id"] = cid.strip()
+    g["client_secret"] = sec.strip()
+    g["refresh_token"] = refresh_token.strip()
+    g["root_folder_id"] = ""
+    g["cam_folders"] = {}
+    save_config(CONFIG)
+    _drive_token_cache["token"] = ""
+    drive_state["auth_error"] = ""
+    drive_state["paused"] = False
+    drive_state["reason"] = ""
+    try:
+        drive_cam_folder(next(iter(CONFIG.get("cameras", {})), ""))  # tạo thư mục gốc ngay
+    except DriveAuthError as e:
+        drive_state["auth_error"] = str(e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        pass
+
+
+@app.post("/api/drive/token")
+def drive_save_token(body: DriveToken):
+    cid, sec, rt = body.client_id.strip(), body.client_secret.strip(), body.refresh_token.strip()
+    # Hỗ trợ dán nguyên JSON token của rclone: {"access_token": ..., "refresh_token": ...}
+    if rt.startswith("{"):
+        try:
+            j = json.loads(rt)
+            rt = (j.get("refresh_token") or "").strip()
+            cid = cid or (j.get("client_id") or "").strip()
+            sec = sec or (j.get("client_secret") or "").strip()
+        except Exception:
+            raise HTTPException(status_code=400, detail="JSON token không đọc được")
+    if not (cid and sec and rt):
+        raise HTTPException(status_code=400, detail="Cần đủ Client ID, Client Secret và Refresh Token "
+                                                    "(refresh token của rclone cần kèm client_id/secret đã tạo token đó)")
+    drive_apply_tokens(cid, sec, rt)
+    return {"status": "ok"}
+
+
+@app.post("/api/drive/test")
+def drive_test():
+    if not drive_connected():
+        raise HTTPException(status_code=400, detail="Chưa kết nối Google Drive")
+    try:
+        drive_access_token(force=True)
+        quota = drive_quota(use_cache=False)
+        drive_cam_folder(next(iter(CONFIG.get("cameras", {})), ""))
+    except DriveAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)[:300])
+    drive_state["auth_error"] = ""
+    return {"status": "ok", "quota": quota}
+
+
+@app.post("/api/drive/now")
+def drive_upload_now(body: DriveNow):
+    if not drive_connected():
+        raise HTTPException(status_code=400, detail="Chưa kết nối Google Drive")
+    queued = drive_queue_backfill(body.cam_id.strip(), body.date_from.strip(),
+                                  (body.date_to or body.date_from).strip())
+    log_event("info", f"Drive: xếp hàng tải bù {queued} đoạn ghi")
+    return {"status": "ok", "queued": queued}
+
+
+@app.post("/api/drive/cleanup")
+def drive_cleanup_now():
+    if not drive_connected():
+        raise HTTPException(status_code=400, detail="Chưa kết nối Google Drive")
+    try:
+        res = drive_cleanup(force=True)
+    except DriveAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    log_event("info", f"Drive dọn tay: xoá {res.get('deleted', 0)} file, giải phóng "
+                      f"{round(int(res.get('freed') or 0) / 1e6)} MB")
+    return {"status": "ok", **res}
+
+
+@app.post("/api/drive/retry")
+def drive_retry_errors():
+    cur = db_conn().execute(
+        "UPDATE drive_uploads SET status='pending', tries=0, next_try=0, error='' WHERE status='error'")
+    db_conn().commit()
+    return {"status": "ok", "requeued": cur.rowcount}
+
+
+@app.post("/api/drive/disconnect")
+def drive_disconnect():
+    g = gd_cfg()
+    g["refresh_token"] = ""
+    g["root_folder_id"] = ""
+    g["cam_folders"] = {}
+    g["enabled"] = False
+    save_config(CONFIG)
+    _drive_token_cache["token"] = ""
+    drive_state["auth_error"] = ""
+    log_event("info", "Đã ngắt kết nối Google Drive (file trên Drive giữ nguyên)")
+    return {"status": "ok"}
 
 # ---------------- PTZ (ONVIF) ----------------
 @app.post("/api/ptz/{cam_id}")
