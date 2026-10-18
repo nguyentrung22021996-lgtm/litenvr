@@ -1591,6 +1591,10 @@
         <label>Webhook URL (tùy chọn - nhận POST JSON, dùng cho Node-RED/HASS/n8n):</label>
         <input id="ntWebhook" placeholder="http://...">
       </div>
+      <div class="form-row">
+        <label>Địa chỉ LiteNVR để tạo link "Xem lại" (tùy chọn, VD http://192.168.5.63:9895):</label>
+        <input id="ntPublicUrl" placeholder="http://192.168.5.63:9895">
+      </div>
       <hr style="border:0; border-top:1px solid var(--border-subtle); margin:14px 0 12px;">
       <h4 style="margin:0 0 8px;">💽 Cảnh báo sức khoẻ ổ đĩa</h4>
       <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
@@ -1930,6 +1934,25 @@
       await loadTimeline();
       playLive();
       if (gridCount > 0) renderGrid();
+      applyDeepLink();
+    }
+
+    function applyDeepLink() {
+      if (window.__deepLinkDone) return;
+      const q = new URLSearchParams(location.search);
+      const cam = q.get("cam");
+      if (!cam || !cameras[cam]) return;
+      window.__deepLinkDone = true;
+      const sel = document.getElementById("camSelect");
+      if (sel) sel.value = cam;
+      currentCam = cam;
+      renderCamStrip();
+      const t = parseFloat(q.get("t"));
+      if (!isNaN(t) && t >= 0) {
+        openEvent(cam, q.get("date") || "", t);
+      } else {
+        loadTimeline();
+      }
     }
 
     async function refreshSnapshots() {
@@ -3080,6 +3103,7 @@
       document.getElementById("ntTokenHint").textContent = cfg.has_telegram_token ? "✔ Đã lưu token (để trống khi lưu = giữ nguyên)" : "";
       document.getElementById("ntPhoto").checked = cfg.with_photo !== false;
       document.getElementById("ntWebhook").value = cfg.webhook_url || "";
+      document.getElementById("ntPublicUrl").value = cfg.public_url || "";
       document.getElementById("ntDiskAlert").checked = !!cfg.disk_alert_enabled;
       document.getElementById("ntDiskWarn").value = cfg.disk_warn_percent || 85;
       document.getElementById("ntDiskCrit").value = cfg.disk_crit_percent || 95;
@@ -3113,6 +3137,7 @@
         telegram_token: document.getElementById("ntToken").value.trim(),
         telegram_chat_id: document.getElementById("ntChatId").value.trim(),
         webhook_url: document.getElementById("ntWebhook").value.trim(),
+        public_url: document.getElementById("ntPublicUrl").value.trim(),
         with_photo: document.getElementById("ntPhoto").checked,
         disk_alert_enabled: document.getElementById("ntDiskAlert").checked,
         disk_warn_percent: parseFloat(document.getElementById("ntDiskWarn").value) || 85,

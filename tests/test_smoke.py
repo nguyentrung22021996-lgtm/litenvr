@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 
 APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
 SRC = os.path.join(APP_DIR, "main.py")
@@ -171,12 +172,14 @@ class ApiTests(_AppCase):
 
     def test_notify_disk_alert_settings_persist(self):
         r = self.client.post("/api/notify", json={"disk_alert_enabled": True, "disk_warn_percent": 80,
-                                                  "disk_crit_percent": 90}, headers=auth())
+                                                  "disk_crit_percent": 90,
+                                                  "public_url": "http://192.168.5.63:9895/"}, headers=auth())
         self.assertEqual(r.status_code, 200)
         j = self.client.get("/api/notify", headers=auth()).json()
         self.assertTrue(j["disk_alert_enabled"])
         self.assertEqual(j["disk_warn_percent"], 80)
         self.assertEqual(j["disk_crit_percent"], 90)
+        self.assertEqual(j["public_url"], "http://192.168.5.63:9895")
         self.client.post("/api/notify", json={"disk_alert_enabled": False}, headers=auth())
 
     def test_backup_settings_persist(self):
@@ -454,6 +457,16 @@ class BuilderTests(unittest.TestCase):
         self.assertNotIn("camC/2026-01-01_01-00-00.mp4", files)
         self.assertNotIn("camC/2026-01-01_02-00-00.mp4", files)
         m.CONFIG["backup"]["enabled"] = False
+
+    def test_event_link_builds_playback_url(self):
+        m = self.m
+        m.CONFIG["notify"] = {"public_url": "http://192.168.5.63:9895/"}
+        link = m._event_link("cam x", datetime(2026, 10, 18, 7, 5, 9))
+        self.assertIn("http://192.168.5.63:9895/?cam=cam%20x", link)
+        self.assertIn("date=2026-10-18", link)
+        self.assertIn("t=25509", link)
+        m.CONFIG["notify"] = {"public_url": ""}
+        self.assertEqual(m._event_link("c", datetime(2026, 1, 1)), "")
 
     def test_explicit_h264_recording_uses_h264_while_live_copy(self):
         cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="copy"), video_codec="h264")

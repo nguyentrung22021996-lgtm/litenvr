@@ -347,6 +347,7 @@ DEFAULT_CONFIG = {
         "telegram_token": "",
         "telegram_chat_id": "",
         "webhook_url": "",
+        "public_url": "",             # địa chỉ LiteNVR để tạo link xem lại trong tin nhắn
         "with_photo": True,
         "disk_alert_enabled": False,
         "disk_warn_percent": 85,
@@ -2188,6 +2189,7 @@ class NotifySettings(BaseModel):
     telegram_token: str = ""         # Để trống khi lưu = giữ token cũ
     telegram_chat_id: str = ""
     webhook_url: str = ""
+    public_url: str = ""
     with_photo: bool = True
     disk_alert_enabled: bool = False
     disk_warn_percent: float = 85
@@ -2643,6 +2645,16 @@ def _telegram_send(token: str, chat_id: str, text: str, photo_path: str = ""):
     with urllib.request.urlopen(req, timeout=15) as r:
         return r.read(300).decode("utf-8", "replace")
 
+def _event_link(cam_id: str, when: datetime) -> str:
+    """Link mở đúng camera + thời điểm sự kiện (nếu đã cấu hình public_url)."""
+    base = (CONFIG.get("notify", {}).get("public_url") or "").strip().rstrip("/")
+    if not base:
+        return ""
+    sec = when.hour * 3600 + when.minute * 60 + when.second
+    return (f"{base}/?cam={urllib.parse.quote(cam_id)}"
+            f"&date={when.strftime('%Y-%m-%d')}&t={sec}")
+
+
 def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
     """Gửi thông báo Telegram/webhook khi có chuyển động (chạy trong thread riêng).
     Bỏ qua nếu sự kiện trước đó của cùng camera < 3 giây (tránh dội tin)."""
@@ -2658,12 +2670,19 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
         _notify_last[cam_id] = now
 
     cam_name = (CONFIG.get("cameras", {}).get(cam_id) or {}).get("name", cam_id)
-    text = f"🚨 {cam_name}: {label} lúc {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+    when = datetime.now()
+    link = _event_link(cam_id, when)
+    text = f"🚨 {cam_name}: {label} lúc {when.strftime('%H:%M:%S %d/%m/%Y')}"
+    if link:
+        text += f"\n▶️ Xem lại: {link}"
 
     if wh:
         try:
-            data = json.dumps({"cam_id": cam_id, "name": cam_name, "label": label,
-                               "time": datetime.now().isoformat(timespec="seconds")}).encode()
+            payload = {"cam_id": cam_id, "name": cam_name, "label": label,
+                       "time": when.isoformat(timespec="seconds")}
+            if link:
+                payload["link"] = link
+            data = json.dumps(payload).encode()
             req = urllib.request.Request(wh, data=data, method="POST",
                                          headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=10)
@@ -3562,6 +3581,7 @@ def get_notify_settings():
         "telegram_chat_id": nt.get("telegram_chat_id", ""),
         "has_telegram_token": bool((nt.get("telegram_token") or "").strip()),
         "webhook_url": nt.get("webhook_url", ""),
+        "public_url": nt.get("public_url", ""),
         "with_photo": bool(nt.get("with_photo", True)),
         "disk_alert_enabled": bool(nt.get("disk_alert_enabled", False)),
         "disk_warn_percent": float(nt.get("disk_warn_percent", 85) or 85),
@@ -3576,6 +3596,7 @@ def update_notify_settings(settings: NotifySettings):
         nt["telegram_token"] = settings.telegram_token.strip()
     nt["telegram_chat_id"] = settings.telegram_chat_id.strip()
     nt["webhook_url"] = settings.webhook_url.strip()
+    nt["public_url"] = settings.public_url.strip().rstrip("/")
     nt["with_photo"] = settings.with_photo
     nt["disk_alert_enabled"] = settings.disk_alert_enabled
     nt["disk_warn_percent"] = float(settings.disk_warn_percent or 85)
