@@ -123,6 +123,21 @@ class ApiTests(_AppCase):
     def test_config_export_import(self):
         self.assertEqual(self.client.get("/api/config/export", headers=auth()).status_code, 200)
 
+    def test_motion_detect_settings(self):
+        r = self.client.get("/api/motion_detect", headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["enabled"])
+        r = self.client.post("/api/motion_detect", json={"enabled": True, "sensitivity": 0.08,
+                                                         "cooldown_sec": 7, "source": "main"},
+                             headers=auth())
+        self.assertEqual(r.status_code, 200)
+        j = self.client.get("/api/motion_detect", headers=auth()).json()
+        self.assertTrue(j["enabled"])
+        self.assertAlmostEqual(j["sensitivity"], 0.08, places=3)
+        self.assertEqual(j["source"], "main")
+        self.client.post("/api/motion_detect", json={"enabled": False}, headers=auth())
+        self.assertFalse(self.client.get("/api/motion_detect", headers=auth()).json()["enabled"])
+
 
 class BuilderTests(unittest.TestCase):
     @classmethod
@@ -161,6 +176,13 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("min(", vf)
         self.assertIn("720", vf)
         self.assertIn("ih", vf)
+
+    def test_motion_detect_command(self):
+        cmd = self.m.build_motion_detect_cmd("cam", self._cam())
+        joined = " ".join(cmd)
+        self.assertIn("select='gt(scene", joined)
+        self.assertIn("showinfo", joined)
+        self.assertEqual(cmd[cmd.index("-i") + 1], self._cam()["sub_rtsp_url"])
 
     def test_explicit_h264_recording_uses_h264_while_live_copy(self):
         cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="copy"), video_codec="h264")

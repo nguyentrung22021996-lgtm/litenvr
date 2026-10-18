@@ -36,6 +36,14 @@ Trên Web UI, bấm **🛰️ Home Assistant**:
 
 LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; khi entity chuyển sang trạng thái chuyển động (`on`/`detected`/`motion`) thì kích hoạt ghi hình + snapshot cho camera tương ứng (chỉ kích hoạt khi đổi trạng thái, không lặp). Tự kết nối lại khi mất mạng.
 
+## Phát hiện chuyển động nội bộ (không cần ONVIF/HA)
+LiteNVR có thể tự dò chuyển động bằng chính luồng RTSP, không phụ thuộc cảm biến ONVIF hay Home Assistant. Bật trong **⚙️ Lưu trữ** → **Phát hiện chuyển động nội bộ**:
+- **Độ nhạy** (0.01–0.9): càng nhỏ càng nhạy (dễ báo nhầm hơn). Mặc định `0.05`.
+- **Nguồn dò**: **Luồng phụ** (nhẹ CPU hơn, khuyến nghị) hoặc **Luồng chính**.
+- **Khoảng nghỉ** giữa hai lần báo: mặc định `5` giây (tránh dội sự kiện).
+
+Cơ chế: mỗi camera chạy một ffmpeg đọc luồng đã chọn với bộ lọc `select='gt(scene,…)'` và `showinfo`; khi phát hiện đổi cảnh, LiteNVR kích hoạt **ghi hình + snapshot** đúng như sự kiện từ HA/ONVIF (dùng chung `handle_motion`, không nhân đôi). Camera mất kết nối sẽ tự thử lại với backoff. Có thể chỉnh bằng API: `GET/POST /api/motion_detect` (`enabled`, `sensitivity`, `cooldown_sec`, `source`).
+
 ## Xem Live / Bản ghi bị đen hoặc không phát
 Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chrome/Edge/Firefox) không giải mã được.
 - Mặc định LiteNVR dùng **Tự động phát hiện**: tự dò codec camera bằng `ffprobe`; nếu là H.265/HEVC sẽ tự chuyển sang H.264 cho cả Live (HLS) và khi phát bản ghi.

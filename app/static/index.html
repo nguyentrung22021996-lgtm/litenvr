@@ -1320,6 +1320,22 @@
       <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
         <input type="checkbox" id="inpRamBuffer"> Đệm chuyển động trong RAM (nhanh; bỏ chọn để ghi ra đĩa nếu RAM nhỏ)
       </label>
+      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
+        <input type="checkbox" id="inpMotionDetect" onchange="document.getElementById('motionDetBox').style.display = this.checked ? 'block' : 'none'"> Phát hiện chuyển động nội bộ (không cần ONVIF; tốn thêm CPU)
+      </label>
+      <div id="motionDetBox" style="display:none; padding-left:6px; margin-bottom:10px;">
+        <div class="form-row">
+          <label>Độ nhạy (0.01–0.9; nhỏ = nhạy hơn, dễ báo nhầm hơn):</label>
+          <input type="number" id="inpMotionSens" min="0.01" max="0.9" step="0.01">
+        </div>
+        <div class="form-row">
+          <label>Nguồn dò:</label>
+          <select id="inpMotionSource">
+            <option value="sub">Luồng phụ (nhẹ CPU hơn)</option>
+            <option value="main">Luồng chính</option>
+          </select>
+        </div>
+      </div>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="cleanNow()">🧹 Dọn ổ cứng ngay</button>
         <div style="display:flex; gap:8px;">
@@ -2007,6 +2023,13 @@
       document.getElementById("inpMaxPct").value = sysInfo.max_disk_percent;
       document.getElementById("inpPostMotion").value = sysInfo.post_motion_sec;
       document.getElementById("inpRamBuffer").checked = sysInfo.ram_buffer !== false;
+      try {
+        const md = await fetch("/api/motion_detect").then(r => r.json());
+        document.getElementById("inpMotionDetect").checked = !!md.enabled;
+        document.getElementById("inpMotionSens").value = md.sensitivity ?? 0.05;
+        document.getElementById("inpMotionSource").value = md.source === "main" ? "main" : "sub";
+        document.getElementById("motionDetBox").style.display = md.enabled ? "block" : "none";
+      } catch (e) {}
       document.getElementById("storageModal").style.display = "flex";
     }
     function closeStorageModal() { document.getElementById("storageModal").style.display = "none"; }
@@ -2023,6 +2046,15 @@
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
+      });
+      await fetch("/api/motion_detect", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          enabled: document.getElementById("inpMotionDetect").checked,
+          sensitivity: parseFloat(document.getElementById("inpMotionSens").value) || 0.05,
+          source: document.getElementById("inpMotionSource").value
+        })
       });
       closeStorageModal();
       await loadSystem();

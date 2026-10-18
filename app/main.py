@@ -162,6 +162,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=hass_motion_listener, daemon=True).start()
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
+    threading.Thread(target=motion_supervisor, daemon=True).start()
     threading.Thread(target=go2rtc_monitor, daemon=True).start()
     try:
         yield
@@ -171,6 +172,10 @@ async def lifespan(app: FastAPI):
             camera_ids = list(set(worker_tokens) | set(ffmpeg_processes))
         for cam_id in camera_ids:
             await asyncio.to_thread(stop_camera_worker, cam_id)
+        with _motion_lock:
+            motion_ids = list(_motion_tokens)
+        for cam_id in motion_ids:
+            await asyncio.to_thread(stop_motion_detector, cam_id)
         with _snapshot_lock:
             snapshots = list(_snapshot_processes.values())
         for proc in snapshots:
@@ -266,6 +271,12 @@ DEFAULT_CONFIG = {
     "max_disk_percent": 85,    # Tự xóa file cũ nhất nếu ổ cứng đầy quá 85%
     "post_motion_sec": 60,     # Thời gian ghi tiếp sau khi có chuyển động (giây)
     "ram_buffer": True,        # True: đệm motion trong RAM; False: ghi đệm ra đĩa
+    "motion_detect": {         # Dò chuyển động nội bộ bằng ffmpeg (không cần Home Assistant)
+        "enabled": False,
+        "sensitivity": 0.05,   # ngưỡng scene (0.01..0.9, nhỏ = nhạy hơn)
+        "cooldown_sec": 5,     # gộp sự kiện trong khoảng này
+        "source": "sub"        # sub = luồng phụ (nhẹ CPU hơn), main = luồng chính
+    },
     "cameras": {},
     "homeassistant": {
         "enabled": False,
@@ -304,6 +315,9 @@ def _normalize_config(cfg: dict) -> dict:
     nt = cfg.setdefault("notify", {})
     for k, v in DEFAULT_CONFIG["notify"].items():
         nt.setdefault(k, v)
+    md = cfg.setdefault("motion_detect", {})
+    for k, v in DEFAULT_CONFIG["motion_detect"].items():
+        md.setdefault(k, v)
     gd = cfg.setdefault("gdrive", {})
     for k, v in DEFAULT_CONFIG["gdrive"].items():
         gd.setdefault(k, v)
@@ -798,6 +812,10 @@ _snapshot_active: Dict[str, str] = {}
 _snapshot_processes: Dict[str, subprocess.Popen] = {}
 _playback_lock = threading.Lock()
 _playback_processes: Dict[int, tuple] = {}
+_motion_lock = threading.Lock()
+_motion_tokens: Dict[str, threading.Event] = {}
+_motion_procs: Dict[str, subprocess.Popen] = {}
+_motion_last_fire: Dict[str, float] = {}
 # Camera đang có người xem live (timestamp hoạt động gần nhất)
 cam_viewers: Dict[str, float] = {}
 viewer_lock = threading.Lock()
@@ -1984,6 +2002,12 @@ class StorageSettings(BaseModel):
     post_motion_sec: int
     ram_buffer: bool = True          # True: đệm motion trong RAM; False: ghi ra đĩa
 
+class MotionDetectSettings(BaseModel):
+    enabled: bool = False
+    sensitivity: float = 0.05
+    cooldown_sec: int = 5
+    source: str = "sub"              # sub | main
+
 class NotifySettings(BaseModel):
     telegram_enabled: bool = False
     telegram_token: str = ""         # Để trống khi lưu = giữ token cũ
@@ -2173,6 +2197,7 @@ def get_system_info():
         "max_disk_percent": CONFIG.get("max_disk_percent", 85),
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
         "ram_buffer": bool(CONFIG.get("ram_buffer", True)),
+        "motion_detect": bool(_motion_cfg().get("enabled")),
         "live_idle_stop_sec": LIVE_IDLE_STOP_SEC,
         "live_max_height": LIVE_MAX_HEIGHT,
         "go2rtc": {
@@ -2206,6 +2231,28 @@ def update_storage_settings(settings: StorageSettings):
 def manual_clean():
     deleted = run_cleanup_now()
     return {"status": "ok", "deleted_files": deleted}
+
+@app.get("/api/motion_detect")
+def get_motion_detect():
+    cfg = dict(_motion_cfg())
+    cfg["cameras"] = {cid: bool(cam_status.get(cid, {}).get("motion_detect"))
+                      for cid in CONFIG.get("cameras", {})}
+    return cfg
+
+@app.post("/api/motion_detect")
+def set_motion_detect(s: MotionDetectSettings):
+    cfg = CONFIG.setdefault("motion_detect", {})
+    cfg["enabled"] = bool(s.enabled)
+    cfg["sensitivity"] = min(max(float(s.sensitivity), 0.01), 0.9)
+    cfg["cooldown_sec"] = max(0, int(s.cooldown_sec))
+    cfg["source"] = "main" if str(s.source).lower() == "main" else "sub"
+    save_config(CONFIG)
+    for cam_id in list(_motion_tokens.keys()):
+        stop_motion_detector(cam_id)
+    if cfg["enabled"]:
+        for cam_id in CONFIG.get("cameras", {}):
+            start_motion_detector(cam_id)
+    return {"status": "ok", "enabled": cfg["enabled"]}
 
 @app.get("/api/stats")
 def api_stats():
@@ -2259,6 +2306,7 @@ def add_or_update_camera(item: CameraItem):
     if not cam_id:
         raise HTTPException(status_code=400, detail="Mã camera không hợp lệ")
     stop_camera_worker(cam_id)
+    stop_motion_detector(cam_id)
     CONFIG.setdefault("cameras", {})[cam_id] = {
         "name": item.name,
         "brand": item.brand,
@@ -2278,6 +2326,8 @@ def add_or_update_camera(item: CameraItem):
     save_config(CONFIG)
     refresh_go2rtc()
     start_camera_worker(cam_id)
+    if _motion_cfg().get("enabled"):
+        start_motion_detector(cam_id)
     return {"status": "ok", "cameras": CONFIG["cameras"]}
 
 @app.post("/api/cameras/bulk")
@@ -2358,6 +2408,7 @@ def api_client_log(req: ClientLogReq):
 def delete_camera(cam_id: str):
     if cam_id in CONFIG.get("cameras", {}):
         stop_camera_worker(cam_id)
+        stop_motion_detector(cam_id)
         del CONFIG["cameras"][cam_id]
         codec_cache.pop(cam_id, None)
         cam_status.pop(cam_id, None)
@@ -2520,6 +2571,132 @@ def handle_motion(cam_id: str, label: str):
         "record_mode": cam_info.get("record_mode", "continuous"),
         "recording_until": motion_active_until[cam_id]
     }
+
+
+def _motion_cfg() -> dict:
+    return CONFIG.get("motion_detect") or {}
+
+
+def build_motion_detect_cmd(cam_id: str, cam_info: dict):
+    """ffmpeg đọc luồng và chỉ giữ các khung có thay đổi cảnh (scene) rồi in
+    thông tin ra stderr để LiteNVR biết thời điểm có chuyển động."""
+    cfg = _motion_cfg()
+    try:
+        sens = float(cfg.get("sensitivity", 0.05))
+    except Exception:
+        sens = 0.05
+    sens = min(max(sens, 0.01), 0.9)
+    main_url, sub_url = cam_source_urls(cam_id, cam_info)
+    url = sub_url if str(cfg.get("source", "sub")).lower() == "sub" else main_url
+    return [*_ffmpeg_base_args(), *_input_args(url, cam_info), "-i", url,
+            "-vf", f"select='gt(scene\\,{sens})',showinfo", "-an", "-f", "null", "-"]
+
+
+def _maybe_fire_motion(cam_id: str, cfg: dict):
+    now = time.time()
+    try:
+        cool = float(cfg.get("cooldown_sec", 5) or 0)
+    except Exception:
+        cool = 5
+    with _motion_lock:
+        if now - _motion_last_fire.get(cam_id, 0) < cool:
+            return
+        _motion_last_fire[cam_id] = now
+    try:
+        handle_motion(cam_id, "Chuyển động (nội bộ)")
+    except Exception as e:
+        log_event("warn", f"Dò chuyển động lỗi: {mask_secrets(str(e))}", cam_id)
+
+
+def start_motion_detector(cam_id: str):
+    with _motion_lock:
+        if _shutdown.is_set():
+            return
+        old = _motion_tokens.get(cam_id)
+        if old and not old.is_set():
+            return
+        token = threading.Event()
+        _motion_tokens[cam_id] = token
+    threading.Thread(target=_motion_detector_loop, args=(cam_id, token), daemon=True).start()
+
+
+def stop_motion_detector(cam_id: str):
+    with _motion_lock:
+        token = _motion_tokens.pop(cam_id, None)
+        if token:
+            token.set()
+        proc = _motion_procs.pop(cam_id, None)
+    if proc:
+        _terminate_process(proc)
+    cam_status.setdefault(cam_id, {})["motion_detect"] = False
+
+
+def _motion_detector_loop(cam_id: str, token: threading.Event):
+    backoff = 2
+    while not token.is_set() and not _shutdown.is_set():
+        cfg = _motion_cfg()
+        cam_info = CONFIG.get("cameras", {}).get(cam_id)
+        if not cfg.get("enabled") or not cam_info:
+            break
+        cmd = build_motion_detect_cmd(cam_id, cam_info)
+        with _motion_lock:
+            if token.is_set() or _shutdown.is_set() or _motion_tokens.get(cam_id) is not token:
+                break
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.PIPE, text=True, bufsize=1)
+            except Exception as e:
+                proc = None
+                if not _shutdown.is_set():
+                    log_event("warn", f"Không dò được chuyển động: {mask_secrets(str(e))}", cam_id)
+            if proc:
+                _motion_procs[cam_id] = proc
+        if not proc:
+            if token.wait(min(backoff, 30)):
+                break
+            backoff = min(backoff * 2, 60)
+            continue
+        cam_status.setdefault(cam_id, {})["motion_detect"] = True
+        try:
+            for line in proc.stderr:
+                if token.is_set() or _shutdown.is_set():
+                    continue
+                if "pts_time:" in line:
+                    _maybe_fire_motion(cam_id, cfg)
+        except Exception:
+            pass
+        if proc.poll() is None:
+            _terminate_process(proc)
+        with _motion_lock:
+            if _motion_procs.get(cam_id) is proc:
+                _motion_procs.pop(cam_id, None)
+        cam_status.setdefault(cam_id, {})["motion_detect"] = False
+        if token.is_set() or _shutdown.is_set():
+            break
+        if token.wait(min(backoff, 30)):
+            break
+        backoff = min(backoff * 2, 60)
+
+
+def motion_supervisor():
+    """Bật/tắt bộ dò chuyển động nội bộ theo cấu hình và danh sách camera."""
+    while not _shutdown.is_set():
+        try:
+            enabled = bool(_motion_cfg().get("enabled"))
+            cams = CONFIG.get("cameras", {})
+            for cam_id in list(cams.keys()):
+                with _motion_lock:
+                    running = cam_id in _motion_tokens and not _motion_tokens[cam_id].is_set()
+                if enabled and not running:
+                    start_motion_detector(cam_id)
+                elif not enabled and running:
+                    stop_motion_detector(cam_id)
+            for cam_id in list(_motion_tokens.keys()):
+                if cam_id not in cams:
+                    stop_motion_detector(cam_id)
+        except Exception as e:
+            log_event("warn", f"motion_supervisor: {e}")
+        _shutdown.wait(5)
 
 @app.post("/api/motion")
 def trigger_motion(payload: MotionPayload):
