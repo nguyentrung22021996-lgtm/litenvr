@@ -142,6 +142,14 @@ class ApiTests(_AppCase):
         self.client.post("/api/motion_detect", json={"enabled": False}, headers=auth())
         self.assertFalse(self.client.get("/api/motion_detect", headers=auth()).json()["enabled"])
 
+    def test_camera_motion_zones_persist(self):
+        payload = {"cam_id": "zone1", "name": "Z", "rtsp_url": "rtsp://127.0.0.1:1/x",
+                   "motion_zones": [{"name": "Cổng", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}]}
+        self.client.post("/api/cameras", json=payload, headers=auth())
+        stored = self.client.get("/api/cameras", headers=auth()).json()["zone1"]["motion_zones"]
+        self.assertEqual(stored[0]["name"], "Cổng")
+        self.client.delete("/api/cameras/zone1", headers=auth())
+
     def test_events_search(self):
         conn = self.m.db_conn()
         conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
@@ -332,6 +340,24 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("select='gt(scene", joined)
         self.assertIn("showinfo", joined)
         self.assertEqual(cmd[cmd.index("-i") + 1], self._cam()["sub_rtsp_url"])
+
+    def test_motion_detect_zones_split_commands(self):
+        cam = self._cam(motion_zones=[
+            {"name": "Cổng", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4},
+            {"name": "Sân", "x": 0, "y": 0, "w": 1, "h": 1, "sensitivity": 0.2, "enabled": False},
+        ])
+        cmds = self.m.build_motion_detect_cmds("cam", cam)
+        self.assertEqual(len(cmds), 1)
+        label, cmd = cmds[0]
+        self.assertIn("Cổng", label)
+        vf = self._values(cmd, "-vf")[0]
+        self.assertIn("crop=iw*0.3000:ih*0.4000:iw*0.1000:ih*0.2000", vf)
+        self.assertIn("select='gt(scene", vf)
+
+    def test_motion_detect_no_zones_single_command(self):
+        cmds = self.m.build_motion_detect_cmds("cam", self._cam())
+        self.assertEqual(len(cmds), 1)
+        self.assertIn("showinfo", " ".join(cmds[0][1]))
 
     def test_explicit_h264_recording_uses_h264_while_live_copy(self):
         cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="copy"), video_codec="h264")

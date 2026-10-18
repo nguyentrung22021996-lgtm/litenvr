@@ -822,7 +822,7 @@ _playback_lock = threading.Lock()
 _playback_processes: Dict[int, tuple] = {}
 _motion_lock = threading.Lock()
 _motion_tokens: Dict[str, threading.Event] = {}
-_motion_procs: Dict[str, subprocess.Popen] = {}
+_motion_procs: Dict[str, List[subprocess.Popen]] = {}
 _motion_last_fire: Dict[str, float] = {}
 # Camera đang có người xem live (timestamp hoạt động gần nhất)
 cam_viewers: Dict[str, float] = {}
@@ -2096,6 +2096,7 @@ class CameraItem(BaseModel):
     retention_days: float = 0        # Số ngày lưu riêng (0 = dùng mức chung toàn hệ thống)
     schedule_enabled: bool = False   # Bật lịch ghi hình theo giờ
     schedule: List[Dict[str, Any]] = []  # [{days:[0-6], from:"18:00", to:"06:00", mode:"motion"}]
+    motion_zones: List[Dict[str, Any]] = []  # [{name,x,y,w,h,sensitivity,enabled}] toạ độ 0..1
 
 class StorageSettings(BaseModel):
     retention_days: float
@@ -2426,6 +2427,7 @@ def add_or_update_camera(item: CameraItem):
         "retention_days": max(0.0, float(item.retention_days or 0)),
         "schedule_enabled": bool(item.schedule_enabled),
         "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
+        "motion_zones": [z for z in (item.motion_zones or []) if isinstance(z, dict)],
     }
     save_config(CONFIG)
     refresh_go2rtc()
@@ -2456,6 +2458,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "retention_days": max(0.0, float(item.retention_days or 0)),
             "schedule_enabled": bool(item.schedule_enabled),
             "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
+            "motion_zones": [z for z in (item.motion_zones or []) if isinstance(z, dict)],
         }
         start_camera_worker(cam_id)
         added += 1
@@ -2712,7 +2715,56 @@ def build_motion_detect_cmd(cam_id: str, cam_info: dict):
             "-vf", f"select='gt(scene\\,{sens})',showinfo", "-an", "-f", "null", "-"]
 
 
-def _maybe_fire_motion(cam_id: str, cfg: dict):
+def _parse_motion_zones(cam_info: dict) -> List[dict]:
+    """Chuẩn hoá danh sách vùng chuyển động của camera (toạ độ tỉ lệ 0..1)."""
+    out = []
+    for z in (cam_info.get("motion_zones") or []):
+        if not isinstance(z, dict) or z.get("enabled") is False:
+            continue
+        try:
+            x = min(max(float(z.get("x", 0)), 0.0), 1.0)
+            y = min(max(float(z.get("y", 0)), 0.0), 1.0)
+            w = min(max(float(z.get("w", 1)), 0.01), 1.0 - x) or 0.01
+            h = min(max(float(z.get("h", 1)), 0.01), 1.0 - y) or 0.01
+        except (TypeError, ValueError):
+            continue
+        sens = z.get("sensitivity")
+        try:
+            sens = min(max(float(sens), 0.01), 0.9) if sens not in (None, "") else None
+        except (TypeError, ValueError):
+            sens = None
+        out.append({"name": str(z.get("name") or f"Vùng {len(out) + 1}"),
+                    "x": x, "y": y, "w": w, "h": h, "sensitivity": sens})
+    return out
+
+
+def build_motion_detect_cmds(cam_id: str, cam_info: dict) -> List[tuple]:
+    """Danh sách (nhãn, lệnh ffmpeg) để dò chuyển động.
+    Có vùng cấu hình -> mỗi vùng một tiến trình crop riêng (độ nhạy riêng);
+    không có vùng -> một tiến trình quét toàn khung như cũ."""
+    cfg = _motion_cfg()
+    global_sens = cfg.get("sensitivity", 0.05)
+    zones = _parse_motion_zones(cam_info)
+    if not zones:
+        return [("Chuyển động (nội bộ)", build_motion_detect_cmd(cam_id, cam_info))]
+    main_url, sub_url = cam_source_urls(cam_id, cam_info)
+    url = sub_url if str(cfg.get("source", "sub")).lower() == "sub" else main_url
+    cmds = []
+    for z in zones:
+        try:
+            sens = float(z["sensitivity"] if z["sensitivity"] is not None else global_sens)
+        except (TypeError, ValueError):
+            sens = 0.05
+        sens = min(max(sens, 0.01), 0.9)
+        crop = f"crop=iw*{z['w']:.4f}:ih*{z['h']:.4f}:iw*{z['x']:.4f}:ih*{z['y']:.4f}"
+        vf = f"{crop},select='gt(scene\\,{sens})',showinfo"
+        cmds.append((f"Chuyển động ({z['name']})",
+                     [*_ffmpeg_base_args(), *_input_args(url, cam_info), "-i", url,
+                      "-vf", vf, "-an", "-f", "null", "-"]))
+    return cmds
+
+
+def _maybe_fire_motion(cam_id: str, cfg: dict, label: str = "Chuyển động (nội bộ)"):
     now = time.time()
     try:
         cool = float(cfg.get("cooldown_sec", 5) or 0)
@@ -2723,7 +2775,7 @@ def _maybe_fire_motion(cam_id: str, cfg: dict):
             return
         _motion_last_fire[cam_id] = now
     try:
-        handle_motion(cam_id, "Chuyển động (nội bộ)")
+        handle_motion(cam_id, label)
     except Exception as e:
         log_event("warn", f"Dò chuyển động lỗi: {mask_secrets(str(e))}", cam_id)
 
@@ -2745,10 +2797,22 @@ def stop_motion_detector(cam_id: str):
         token = _motion_tokens.pop(cam_id, None)
         if token:
             token.set()
-        proc = _motion_procs.pop(cam_id, None)
-    if proc:
+        procs = _motion_procs.pop(cam_id, None) or []
+    for proc in procs:
         _terminate_process(proc)
     cam_status.setdefault(cam_id, {})["motion_detect"] = False
+
+
+def _read_motion_stream(cam_id: str, label: str, proc: subprocess.Popen,
+                        cfg: dict, token: threading.Event):
+    try:
+        for line in proc.stderr:
+            if token.is_set() or _shutdown.is_set():
+                break
+            if "pts_time:" in line:
+                _maybe_fire_motion(cam_id, cfg, label)
+    except Exception:
+        pass
 
 
 def _motion_detector_loop(cam_id: str, token: threading.Event):
@@ -2758,37 +2822,42 @@ def _motion_detector_loop(cam_id: str, token: threading.Event):
         cam_info = CONFIG.get("cameras", {}).get(cam_id)
         if not cfg.get("enabled") or not cam_info:
             break
-        cmd = build_motion_detect_cmd(cam_id, cam_info)
+        cmds = build_motion_detect_cmds(cam_id, cam_info)
+        started: List[tuple] = []
+        proc_list: List[subprocess.Popen] = []
         with _motion_lock:
             if token.is_set() or _shutdown.is_set() or _motion_tokens.get(cam_id) is not token:
                 break
-            try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.PIPE, text=True, bufsize=1)
-            except Exception as e:
-                proc = None
-                if not _shutdown.is_set():
-                    log_event("warn", f"Không dò được chuyển động: {mask_secrets(str(e))}", cam_id)
-            if proc:
-                _motion_procs[cam_id] = proc
-        if not proc:
+            for label, cmd in cmds:
+                try:
+                    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.PIPE, text=True, bufsize=1)
+                except Exception as e:
+                    p = None
+                    if not _shutdown.is_set():
+                        log_event("warn", f"Không dò được chuyển động: {mask_secrets(str(e))}", cam_id)
+                if p:
+                    started.append((label, p))
+                    proc_list.append(p)
+            if proc_list:
+                _motion_procs[cam_id] = proc_list
+        if not started:
             if token.wait(min(backoff, 30)):
                 break
             backoff = min(backoff * 2, 60)
             continue
         cam_status.setdefault(cam_id, {})["motion_detect"] = True
-        try:
-            for line in proc.stderr:
-                if token.is_set() or _shutdown.is_set():
-                    continue
-                if "pts_time:" in line:
-                    _maybe_fire_motion(cam_id, cfg)
-        except Exception:
-            pass
-        if proc.poll() is None:
-            _terminate_process(proc)
+        threads = [threading.Thread(target=_read_motion_stream, args=(cam_id, label, p, cfg, token),
+                                    daemon=True) for label, p in started]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        for _, p in started:
+            if p.poll() is None:
+                _terminate_process(p)
         with _motion_lock:
-            if _motion_procs.get(cam_id) is proc:
+            if _motion_procs.get(cam_id) is proc_list:
                 _motion_procs.pop(cam_id, None)
         cam_status.setdefault(cam_id, {})["motion_detect"] = False
         if token.is_set() or _shutdown.is_set():

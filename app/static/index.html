@@ -926,6 +926,24 @@
       min-width: 130px;
     }
 
+    .zone-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .zone-row input {
+      width: 62px;
+    }
+
+    .zone-row input.z-name {
+      flex: 1;
+      min-width: 96px;
+      width: auto;
+    }
+
     .sec-tabs {
       display: flex;
       gap: 6px;
@@ -1302,6 +1320,12 @@
       </div>
       <div id="schedRows"></div>
       <button style="margin-bottom:10px;" onclick="addSchedRow()">+ Thêm khung giờ</button>
+
+      <div class="form-row">
+        <label>🎯 Vùng chuyển động (chỉ dò trong các vùng này; toạ độ tỉ lệ 0–1)</label>
+      </div>
+      <div id="zoneRows"></div>
+      <button style="margin-bottom:10px;" onclick="addZoneRow()">+ Thêm vùng</button>
 
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button onclick="closeCamModal()">Đóng</button>
@@ -1887,6 +1911,9 @@
       const rows = document.getElementById("schedRows");
       rows.innerHTML = "";
       (c.schedule || []).forEach(w => addSchedRow(w));
+      const zrows = document.getElementById("zoneRows");
+      zrows.innerHTML = "";
+      (c.motion_zones || []).forEach(z => addZoneRow(z));
     }
 
     function updateStorageHint() {
@@ -1929,6 +1956,40 @@
       });
     }
 
+    function addZoneRow(z) {
+      z = z || {};
+      const num = (v, d) => (v === undefined || v === null || v === "") ? d : v;
+      const div = document.createElement("div");
+      div.className = "zone-row";
+      div.innerHTML = `<input class="z-name" placeholder="Tên vùng (VD: Cổng)" value="${esc(z.name || "")}">
+        <input class="z-x" type="number" min="0" max="1" step="0.01" title="x (0..1)" placeholder="x" value="${num(z.x, 0)}">
+        <input class="z-y" type="number" min="0" max="1" step="0.01" title="y (0..1)" placeholder="y" value="${num(z.y, 0)}">
+        <input class="z-w" type="number" min="0.01" max="1" step="0.01" title="rộng (0..1)" placeholder="w" value="${num(z.w, 1)}">
+        <input class="z-h" type="number" min="0.01" max="1" step="0.01" title="cao (0..1)" placeholder="h" value="${num(z.h, 1)}">
+        <input class="z-sens" type="number" min="0.01" max="0.9" step="0.01" title="Độ nhạy riêng (trống = dùng độ nhạy chung)" placeholder="nhạy" value="${num(z.sensitivity, "")}">
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" class="z-on" style="width:auto;" ${z.enabled === false ? "" : "checked"}> Bật</label>
+        <button title="Xoá vùng" onclick="this.parentNode.remove()">✖</button>`;
+      document.getElementById("zoneRows").appendChild(div);
+    }
+
+    function readZoneRows() {
+      return [...document.querySelectorAll("#zoneRows .zone-row")].map(r => {
+        const val = (sel, d) => {
+          const v = r.querySelector(sel).value.trim();
+          return v === "" ? d : parseFloat(v);
+        };
+        const z = {
+          name: r.querySelector(".z-name").value.trim(),
+          x: val(".z-x", 0), y: val(".z-y", 0),
+          w: val(".z-w", 1), h: val(".z-h", 1),
+          enabled: r.querySelector(".z-on").checked
+        };
+        const s = r.querySelector(".z-sens").value.trim();
+        if (s !== "") z.sensitivity = parseFloat(s);
+        return z;
+      }).filter(z => [z.x, z.y, z.w, z.h].every(n => typeof n === "number" && !isNaN(n)));
+    }
+
     async function saveCamera() {
       const payload = {
         cam_id: document.getElementById("inpCamId").value.trim(),
@@ -1945,7 +2006,8 @@
         room: document.getElementById("inpRoom").value.trim(),
         tags: document.getElementById("inpTags").value.trim(),
         schedule_enabled: document.getElementById("inpSchedEnabled").checked,
-        schedule: readSchedRows()
+        schedule: readSchedRows(),
+        motion_zones: readZoneRows()
       };
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
