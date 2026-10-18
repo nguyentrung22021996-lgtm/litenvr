@@ -105,6 +105,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **Bấm ảnh sự kiện để xem đúng đoạn**: bấm vào ảnh một sự kiện (trên timeline hoặc trong kết quả tìm kiếm) để tự chuyển đúng camera, đúng ngày và **phát tại thời điểm sự kiện** (chờ danh sách đoạn tải xong trước khi phát, không phát sai đoạn).
 - **Tìm kiếm sự kiện**: thanh lọc phía trên danh sách sự kiện cho phép tìm theo **nhãn/camera**, chọn **camera**, và giới hạn **khoảng ngày**. Kết quả gộp toàn hệ thống (không chỉ camera/ngày đang xem); bấm một kết quả để nhảy đúng camera, ngày và phát tại thời điểm sự kiện. Danh sách sự kiện tự cập nhật khi đang xem trực tiếp. API: `GET /api/events?cam_id=&q=&date_from=&date_to=&limit=` (trả kèm `time` `HH:MM:SS` và `sec_of_day`).
 - **Ảnh thu nhỏ khi tua**: khi kéo/đưa chuột lên thanh thời gian, một ảnh thu nhỏ của đoạn bản ghi gần con trỏ hiện ra (tạo bằng ffmpeg và cache trong `/dev/shm`). API: `GET /api/thumb/{cam}/{fname}` (trả JPEG, tự tạo lại khi file gốc mới hơn).
+- **Phát lại nâng cao**: đổi **tốc độ phát** (0.5×/1×/2×/4×), **tua từng khung** (⏪/⏩, mốc ~25 fps) và **lưu ảnh** khung hình đang phát (📷, tải JPEG về máy). Khi quay lại Live, tốc độ tự đặt lại 1×.
 
 ## Tính năng NVR nâng cao
 - **⊞ Lưới nhiều camera**: bấm **⊞ Lưới** để xem 4 camera cùng lúc (bấm tiếp để chuyển 9 ô, bấm lần nữa để tắt). Bấm vào một ô để quay về chế độ 1 camera. Live trong lưới tự khởi động và tự dừng khi bạn thoát lưới (tiết kiệm CPU).

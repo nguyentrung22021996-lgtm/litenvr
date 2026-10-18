@@ -632,6 +632,17 @@
       margin-left: auto;
     }
 
+    .pb-tools {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .pb-tools select {
+      width: auto;
+    }
+
     .ptz-pad {
       display: grid;
       grid-template-columns: repeat(3, 46px);
@@ -1132,6 +1143,18 @@
       <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)" data-perm="ptz">🎮 PTZ</button>
       <button onclick="lockCurrent()" title="Khoá đoạn bản ghi tại con trỏ để không bị xoá tự động" data-perm="lock">🔒 Khoá đoạn</button>
       <button onclick="unlockCurrent()" title="Mở khoá đoạn bản ghi tại con trỏ" data-perm="lock">🔓 Mở khoá</button>
+      <span class="pb-tools" data-perm="playback">
+        <span>Tốc độ:</span>
+        <select id="pbSpeed" onchange="setPlaybackSpeed(this.value)" title="Tốc độ phát lại">
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+        <button onclick="stepFrame(-1)" title="Lùi 1 khung">⏪ Khung</button>
+        <button onclick="stepFrame(1)" title="Tiến 1 khung">Khung ⏩</button>
+        <button onclick="snapshotFrame()" title="Lưu ảnh khung hình đang phát">📷 Lưu ảnh</button>
+      </span>
       <span class="export-wrap" data-perm="export">
         <span>Xuất clip:</span>
         <input type="time" id="expFrom" step="1" aria-label="Từ giờ">
@@ -2331,6 +2354,9 @@
       currentSegStartSec = null;
       liveMode = true;
       stopDriveFetchPoll();
+      video.playbackRate = 1;
+      const spd = document.getElementById("pbSpeed");
+      if (spd) spd.value = "1";
       const scrub = document.getElementById("scrubTime");
       if (scrub) scrub.textContent = "● Đang xem trực tiếp";
       const statusEl = document.getElementById("statusText");
@@ -2643,6 +2669,40 @@
       video.onended = () => {
         if (idx + 1 < segments.length) playSegment(idx + 1, 0);
       };
+    }
+
+    const PLAYBACK_STEP_FPS = 25;
+    function setPlaybackSpeed(v) {
+      const r = parseFloat(v) || 1;
+      video.playbackRate = Math.min(Math.max(r, 0.25), 4);
+    }
+    function stepFrame(dir) {
+      if (!video.duration && video.duration !== 0) return;
+      video.pause();
+      const dt = (dir >= 0 ? 1 : -1) / PLAYBACK_STEP_FPS;
+      const max = isFinite(video.duration) ? video.duration : Infinity;
+      video.currentTime = Math.max(0, Math.min(max, (video.currentTime || 0) + dt));
+    }
+    function snapshotFrame() {
+      const statusEl = document.getElementById("statusText");
+      if (!video.videoWidth) {
+        if (statusEl) statusEl.textContent = "Chưa có khung hình để lưu ảnh.";
+        return;
+      }
+      const c = document.createElement("canvas");
+      c.width = video.videoWidth;
+      c.height = video.videoHeight;
+      c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+      c.toBlob(b => {
+        if (!b) return;
+        const url = URL.createObjectURL(b);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `snap_${currentCam || "camera"}_${Date.now()}.jpg`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        if (statusEl) statusEl.textContent = "💾 Đã lưu ảnh khung hình.";
+      }, "image/jpeg", 0.92);
     }
 
     async function showDiagnostics() {
