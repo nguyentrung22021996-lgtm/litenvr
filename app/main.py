@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import time
 import base64
@@ -23,6 +24,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import anyio
 from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse, JSONResponse
@@ -149,6 +151,7 @@ def stats_sampler():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _shutdown.clear()
     start_go2rtc()
     for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
         if schedule_record_mode(cam) != "off":
@@ -160,8 +163,19 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
     threading.Thread(target=go2rtc_monitor, daemon=True).start()
-    yield
-    stop_go2rtc()
+    try:
+        yield
+    finally:
+        _shutdown.set()
+        with worker_lock:
+            camera_ids = list(set(worker_tokens) | set(ffmpeg_processes))
+        for cam_id in camera_ids:
+            await asyncio.to_thread(stop_camera_worker, cam_id)
+        with _snapshot_lock:
+            snapshots = list(_snapshot_processes.values())
+        for proc in snapshots:
+            await asyncio.to_thread(_terminate_process, proc)
+        stop_go2rtc()
 
 app = FastAPI(title="LiteNVR Pro for ZimaOS", lifespan=lifespan)
 
@@ -776,6 +790,14 @@ init_security()
 ffmpeg_processes: Dict[str, subprocess.Popen] = {}
 worker_tokens: Dict[str, threading.Event] = {}
 worker_lock = threading.Lock()
+_shutdown = threading.Event()
+FFMPEG_THREADS = max(1, min(8, int(os.environ.get("FFMPEG_THREADS", "2") or "2")))
+_snapshot_lock = threading.Lock()
+_snapshot_slots = threading.BoundedSemaphore(2)
+_snapshot_active: Dict[str, str] = {}
+_snapshot_processes: Dict[str, subprocess.Popen] = {}
+_playback_lock = threading.Lock()
+_playback_processes: Dict[int, tuple] = {}
 # Camera đang có người xem live (timestamp hoạt động gần nhất)
 cam_viewers: Dict[str, float] = {}
 viewer_lock = threading.Lock()
@@ -811,16 +833,14 @@ H264_BROWSER_SAFE_PIXFMT = {"yuv420p", "yuvj420p"}
 def detect_video_codec(cam_id: str, cam_info: dict):
     """Dò codec + profile + pix_fmt của luồng RTSP (chỉ cache khi thành công).
     Trả về dict {'codec','profile','pix_fmt'} hoặc {} nếu không dò được."""
-    url = cam_info.get("rtsp_url")
-    feed_url, _ = cam_source_urls(cam_id, cam_info)
-    key = (url, cam_info.get("sub_rtsp_url"), _go2rtc.get("running", False))
+    _, feed_url = cam_source_urls(cam_id, cam_info)
+    key = (feed_url, cam_info.get("rtsp_transport", "tcp"), _go2rtc.get("running", False))
     cached = codec_cache.get(cam_id)
     if cached and cached[0] == key:
         return cached[1]
     cmd = [
         "ffprobe", "-v", "error",
-        "-rtsp_transport", cam_info.get("rtsp_transport", "tcp"),
-        "-timeout", "8000000",
+        *_input_args(feed_url, cam_info),
         "-select_streams", "v:0",
         "-show_entries", "stream=codec_name,profile,pix_fmt,width,height",
         "-of", "default=nw=1",
@@ -854,20 +874,17 @@ def resolve_video_codec(cam_id: str, cam_info: dict):
     requested = cam_info.get("video_codec", "auto")
     if requested in ("copy", "h264"):
         return requested
+    with worker_lock:
+        token = worker_tokens.get(cam_id)
     info = detect_video_codec(cam_id, cam_info)
     codec = info.get("codec_name", "")
-    st = cam_status.setdefault(cam_id, {})
-    st["detected_codec"] = codec
-    st["detected_profile"] = info.get("profile", "")
-    st["detected_pix_fmt"] = info.get("pix_fmt", "")
-    if not codec:
-        # Không dò được (camera bận/đang bị chiếm session, mạng chậm...).
-        # Chọn H.264 để LUÔN phát được; nếu camera vốn H.264 thì ffprobe
-        # sẽ thành công ở lần chạy sau và tự quay về copy.
-        st["detect_failed"] = True
-        return "h264"
-    st["detect_failed"] = False
-    # HEVC, hoặc H.264 ở profile/màu mà trình duyệt không giải mã -> chuyển mã.
+    with worker_lock:
+        if worker_tokens.get(cam_id) is token and (token is None or not token.is_set()):
+            st = cam_status.setdefault(cam_id, {})
+            st["detected_codec"] = codec
+            st["detected_profile"] = info.get("profile", "")
+            st["detected_pix_fmt"] = info.get("pix_fmt", "")
+            st["detect_failed"] = not bool(codec)
     return "copy" if _is_browser_safe_h264(codec, info.get("pix_fmt", "")) else "h264"
 
 # ---------------- ONVIF (tự dò camera & lấy URL RTSP) ----------------
@@ -1199,16 +1216,37 @@ def onvif_ptz_presets(cam_id: str) -> list:
 def _is_rtsp(url: str) -> bool:
     return (url or "").lower().startswith(("rtsp://", "rtsps://"))
 
+def _ffmpeg_base_args() -> List[str]:
+    return ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-filter_threads", str(FFMPEG_THREADS),
+            "-filter_complex_threads", str(FFMPEG_THREADS)]
+
+
 def _input_args(url: str, cam_info: dict) -> List[str]:
-    """Tham số đầu vào ffmpeg tuỳ giao thức. RTSP cần transport/timeout;
-    HTTP(MJPEG)/HLS/RTMP thì để ffmpeg tự nhận định dạng."""
+    args = ["-threads", str(FFMPEG_THREADS)]
     if _is_rtsp(url):
-        return [
+        args += [
             "-rtsp_transport", cam_info.get("rtsp_transport", "tcp"),
             "-rtsp_flags", "prefer_tcp",
             "-timeout", "10000000",
         ]
-    return []
+    return args
+
+
+def _terminate_process(proc, timeout: float = 3):
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=3)
 
 def buffer_root() -> str:
     """Thư mục đệm cho chế độ Motion. Mặc định RAM (/dev/shm) cho nhanh;
@@ -1359,8 +1397,7 @@ def refresh_go2rtc():
     start_go2rtc()
 
 def go2rtc_monitor():
-    while True:
-        time.sleep(10)
+    while not _shutdown.wait(10):
         if not _go2rtc.get("enabled"):
             continue
         proc = _go2rtc.get("proc")
@@ -1393,7 +1430,6 @@ def cam_source_urls(cam_id: str, cam_info: dict):
 
 def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = None, include_live: bool = True):
     main_url, sub_url = cam_source_urls(cam_id, cam_info)
-    transport = cam_info.get("rtsp_transport", "tcp")
     audio_mode = cam_info.get("audio_mode", "aac")  # aac | none | copy
     record_mode = cam_info.get("record_mode", "continuous")  # continuous | motion | off
     explicit = cam_info.get("video_codec", "auto")
@@ -1405,11 +1441,11 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
 
     # H.264 transcode cho LUỒNG LIVE khi camera dùng H.265/HEVC (trình duyệt không phát được HEVC)
     # ultrafast + 2 thread: giảm mạnh CPU/RAM so với veryfast mà vẫn đủ nét cho live.
-    vcodec_args = (
-        ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-         "-threads", "2", "-g", "50", "-sc_threshold", "0", "-pix_fmt", "yuv420p"]
-        if video_codec == "h264" else ["-c:v", "copy"]
-    )
+    h264_args = [
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-threads", str(FFMPEG_THREADS), "-g", "50", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
+    ]
+    vcodec_args = h264_args if video_codec == "h264" else ["-c:v", "copy"]
 
     cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
     cam_buf_dir = os.path.join(buffer_root(), cam_id)
@@ -1417,15 +1453,16 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     for d in [cam_rec_dir, cam_buf_dir, cam_hls_dir]:
         os.makedirs(d, exist_ok=True)
 
+    input_url = sub_url if include_live and record_mode == "off" else main_url
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        *_ffmpeg_base_args(),
         "-fflags", "+genpts+igndts+discardcorrupt",
-        *_input_args(main_url, cam_info),
-        "-i", main_url
+        *_input_args(input_url, cam_info),
+        "-i", input_url,
     ]
 
     # Nếu có luồng phụ riêng cho Live View thì thêm input số 1
-    use_dual_input = (sub_url != main_url)
+    use_dual_input = include_live and record_mode != "off" and sub_url != main_url
     if use_dual_input:
         cmd.extend([
             "-fflags", "+genpts+igndts+discardcorrupt",
@@ -1437,7 +1474,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
     if record_mode in ("continuous", "motion"):
         cmd.extend(["-map", "0:v:0"])
         if record_codec == "h264":
-            cmd.extend(vcodec_args)
+            cmd.extend(h264_args)
             if audio_mode == "none":
                 cmd.extend(["-an"])
             else:
@@ -1466,9 +1503,7 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
         live_input_idx = "1:v:0" if use_dual_input else "0:v:0"
         live_args = list(vcodec_args)
         if video_codec == "h264" and LIVE_MAX_HEIGHT > 0:
-            src_h = int((codec_cache.get(cam_id) or ({}, {}))[1].get("height") or 0)
-            if src_h > LIVE_MAX_HEIGHT:
-                live_args = ["-vf", f"scale=-2:{LIVE_MAX_HEIGHT}"] + live_args
+            live_args = ["-vf", f"scale=-2:'min({LIVE_MAX_HEIGHT},ih)'"] + live_args
         cmd.extend([
             "-map", live_input_idx,
             *live_args, "-an",
@@ -1537,6 +1572,8 @@ def _needs_transcode(cam_id: str) -> bool:
 
 def start_camera_worker(cam_id: str):
     with worker_lock:
+        if _shutdown.is_set():
+            return
         old = worker_tokens.get(cam_id)
         if old and not old.is_set():
             return  # đang chạy rồi
@@ -1550,12 +1587,11 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
     backoff = 2
     st = cam_status.setdefault(cam_id, {})
     st["log"] = st.get("log", deque(maxlen=20))
-    while not token.is_set():
+    while not token.is_set() and not _shutdown.is_set():
         cam_info = CONFIG.get("cameras", {}).get(cam_id)
         if not cam_info:
             break
         sched = schedule_record_mode(cam_info)
-        st["_sched"] = sched
         record_needed = sched != "off"
         viewers = viewers_active(cam_id)
         if not record_needed and not viewers:
@@ -1565,15 +1601,26 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
         # Khi không ai xem: nếu luồng gốc đã browser-safe thì giữ HLS (rẻ),
         # còn nếu phải transcode thì bỏ nhánh HLS để tiết kiệm CPU.
         include_live = viewers or not _needs_transcode(cam_id)
-        st["_live_mode"] = include_live
+        if token.is_set() or _shutdown.is_set():
+            break
         eff_info = dict(cam_info)
         eff_info["record_mode"] = sched if sched != "off" else "off"
         cmd = build_ffmpeg_cmd(cam_id, eff_info, video_codec=resolved, include_live=include_live)
         started = time.time()
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1)
+            with worker_lock:
+                if token.is_set() or _shutdown.is_set() or worker_tokens.get(cam_id) is not token:
+                    break
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.PIPE, text=True, bufsize=1)
+                ffmpeg_processes[cam_id] = proc
+                st["running"] = True
+                st["last_start"] = int(started)
+                st["_sched"] = sched
+                st["_live_mode"] = include_live
         except Exception as e:
+            if token.is_set() or _shutdown.is_set():
+                break
             st["running"] = False
             st["last_error"] = str(e)
             log_event("error", f"ffmpeg không khởi động được: {e}", cam_id)
@@ -1583,9 +1630,6 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             backoff = min(backoff * 2, 60)
             continue
 
-        ffmpeg_processes[cam_id] = proc
-        st["running"] = True
-        st["last_start"] = int(started)
         log_event("info", "Bắt đầu luồng (ffmpeg)", cam_id)
 
         def _hint(line: str) -> str:
@@ -1608,7 +1652,7 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
             try:
                 for line in p.stderr:
                     line = line.strip()
-                    if not line:
+                    if not line or token.is_set():
                         continue
                     status["log"].append(line)
                     status["last_error"] = _hint(line)
@@ -1624,12 +1668,18 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
                 pass
 
         st["rate_limited"] = False
-        threading.Thread(target=_drain, args=(proc, cam_id, st), daemon=True).start()
+        drain = threading.Thread(target=_drain, args=(proc, cam_id, st), daemon=True)
+        drain.start()
         proc.wait()
-        st["running"] = False
-        if ffmpeg_processes.get(cam_id) is proc:
-            ffmpeg_processes.pop(cam_id, None)
-        if token.is_set():
+        drain.join(timeout=2)
+        if not drain.is_alive() and proc.stderr:
+            proc.stderr.close()
+        with worker_lock:
+            if ffmpeg_processes.get(cam_id) is proc:
+                ffmpeg_processes.pop(cam_id, None)
+            if worker_tokens.get(cam_id) is token:
+                st["running"] = False
+        if token.is_set() or _shutdown.is_set():
             break
         # Backoff:
         #  - vừa chạy ổn trong >10s: chờ ngắn rồi thử lại
@@ -1650,16 +1700,25 @@ def _camera_worker_loop(cam_id: str, token: threading.Event):
     with worker_lock:
         if worker_tokens.get(cam_id) is token:
             worker_tokens.pop(cam_id, None)
-    cam_status.setdefault(cam_id, {})["running"] = False
+            st["running"] = False
+
 
 def stop_camera_worker(cam_id: str):
     with worker_lock:
         token = worker_tokens.pop(cam_id, None)
-    if token:
-        token.set()
-    proc = ffmpeg_processes.get(cam_id)
-    if proc and proc.poll() is None:
-        proc.terminate()
+        if token:
+            token.set()
+        proc = ffmpeg_processes.get(cam_id)
+        if proc:
+            _terminate_process(proc)
+            ffmpeg_processes.pop(cam_id, None)
+        cam_status.setdefault(cam_id, {})["running"] = False
+
+
+def _restart_camera_process(cam_id: str, proc):
+    with worker_lock:
+        if ffmpeg_processes.get(cam_id) is proc:
+            _terminate_process(proc)
 
 def ensure_live(cam_id: str):
     """Gọi khi có request xem live: đánh dấu viewer và bật/khôi phục luồng nếu cần."""
@@ -1678,11 +1737,11 @@ def ensure_live(cam_id: str):
         st["_mode_ts"] = now
         proc = ffmpeg_processes.get(cam_id)
         if proc and proc.poll() is None:
-            proc.terminate()
+            threading.Thread(target=_restart_camera_process, args=(cam_id, proc), daemon=True).start()
 
 def live_supervisor():
     """Bật/tắt nhánh live theo số người xem để tiết kiệm CPU/RAM."""
-    while True:
+    while not _shutdown.is_set():
         try:
             now = time.time()
             for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
@@ -1712,7 +1771,7 @@ def live_supervisor():
                         log_event("info", "Đổi nhánh live theo người xem (tiết kiệm CPU)", cam_id)
                         proc = ffmpeg_processes.get(cam_id)
                         if proc and proc.poll() is None:
-                            proc.terminate()
+                            _restart_camera_process(cam_id, proc)
             disk = read_disk()
             thr = float(CONFIG.get("max_disk_percent", 85) or 0)
             if thr and disk["disk_percent"] > thr and now - _disk_warn["t"] > 600:
@@ -1720,7 +1779,7 @@ def live_supervisor():
                 log_event("warn", f"Ổ đĩa đã dùng {disk['disk_percent']}% (ngưỡng {thr}%): sẽ tự xoá video cũ nhất")
         except Exception as e:
             log_event("warn", f"live_supervisor: {e}")
-        time.sleep(5)
+        _shutdown.wait(5)
 
 # Luồng quản lý bộ đệm cho chế độ "Chỉ lưu khi có chuyển động (motion)"
 def motion_buffer_manager():
@@ -1995,15 +2054,21 @@ def _read_int_file(path: str):
     except Exception:
         return None
 
-def _proc_rss_kb(pid) -> int:
+def _proc_memory(pid) -> dict:
+    values = {}
     try:
         with open(f"/proc/{pid}/status") as f:
             for line in f:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1])
-    except Exception:
+                key, _, value = line.partition(":")
+                if key in ("VmRSS", "RssAnon", "VmHWM", "Threads"):
+                    values[key] = int(value.split()[0])
+    except (OSError, ValueError, IndexError):
         pass
-    return 0
+    return values
+
+
+def _proc_rss_kb(pid) -> int:
+    return _proc_memory(pid).get("VmRSS", 0)
 
 def _dir_size_bytes(d: str) -> int:
     total = 0
@@ -2054,6 +2119,18 @@ def _mem_breakdown() -> dict:
         out["cgroup_file_mb"] = round(stat.get("file", 0) / 2**20, 1)
         out["cgroup_shmem_mb"] = round(stat.get("shmem", 0) / 2**20, 1)
     procs, total_child = [], 0
+    with worker_lock:
+        owners = {p.pid: ("camera", cid) for cid, p in ffmpeg_processes.items()}
+    with _snapshot_lock:
+        owners.update({p.pid: ("snapshot", cid) for cid, p in _snapshot_processes.items()})
+    with _playback_lock:
+        owners.update({pid: ("playback", item[1]) for pid, item in _playback_processes.items()})
+    try:
+        with open("/proc/uptime") as f:
+            uptime = float(f.read().split()[0])
+        ticks = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        uptime, ticks = 0.0, 100
     self_pid = os.getpid()
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
@@ -2062,14 +2139,22 @@ def _mem_breakdown() -> dict:
             with open(f"/proc/{pid}/stat") as f:
                 raw = f.read()
             comm = raw.split("(", 1)[1].rsplit(")", 1)[0]
-            ppid = int(raw.rsplit(")", 1)[1].split()[1])
+            fields = raw.rsplit(")", 1)[1].split()
+            ppid = int(fields[1])
+            age_sec = max(0.0, uptime - int(fields[19]) / ticks)
         except Exception:
             continue
         if ppid != self_pid:
             continue
-        rss = _proc_rss_kb(pid)
+        mem = _proc_memory(pid)
+        rss = mem.get("VmRSS", 0)
         total_child += rss
-        procs.append({"pid": int(pid), "name": comm, "rss_mb": round(rss / 1024, 1)})
+        role, cam_id = owners.get(int(pid), ("other", ""))
+        procs.append({"pid": int(pid), "name": comm, "rss_mb": round(rss / 1024, 1),
+                      "anon_mb": round(mem.get("RssAnon", 0) / 1024, 1),
+                      "peak_rss_mb": round(mem.get("VmHWM", 0) / 1024, 1),
+                      "threads": mem.get("Threads", 0), "age_sec": round(age_sec, 1),
+                      "role": role, "cam_id": cam_id})
     procs.sort(key=lambda x: -x["rss_mb"])
     out["app_rss_mb"] = round(_proc_rss_kb(self_pid) / 1024, 1)
     out["children_mb"] = round(total_child / 1024, 1)
@@ -2351,6 +2436,55 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
         except Exception as e:
             log_event("warn", f"Telegram thông báo lỗi: {e}", cam_id)
 
+def _start_snapshot(cam_id: str, cam_info: dict, snap_path: str) -> str:
+    with _snapshot_lock:
+        if _shutdown.is_set():
+            return ""
+        if cam_id in _snapshot_active:
+            return _snapshot_active[cam_id]
+        if not _snapshot_slots.acquire(blocking=False):
+            return ""
+        _snapshot_active[cam_id] = snap_path
+    try:
+        threading.Thread(target=_capture_snapshot, args=(cam_id, dict(cam_info), snap_path), daemon=True).start()
+    except Exception:
+        with _snapshot_lock:
+            _snapshot_active.pop(cam_id, None)
+        _snapshot_slots.release()
+        return ""
+    return snap_path
+
+
+def _capture_snapshot(cam_id: str, cam_info: dict, snap_path: str):
+    proc = None
+    try:
+        _, snap_url = cam_source_urls(cam_id, cam_info)
+        cmd = [*_ffmpeg_base_args(), "-y", *_input_args(snap_url, cam_info),
+               "-i", snap_url, "-frames:v", "1", "-threads", str(FFMPEG_THREADS),
+               "-q:v", "3", snap_path]
+        with _snapshot_lock:
+            if _shutdown.is_set():
+                return
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _snapshot_processes[cam_id] = proc
+        proc.wait(timeout=12)
+        if proc.returncode:
+            log_event("warn", "Không chụp được snapshot", cam_id)
+    except subprocess.TimeoutExpired:
+        log_event("warn", "Chụp snapshot quá thời gian, đã dừng ffmpeg", cam_id)
+    except Exception as e:
+        log_event("warn", f"Không chụp được snapshot: {mask_secrets(str(e))}", cam_id)
+    finally:
+        try:
+            if proc:
+                _terminate_process(proc)
+        finally:
+            with _snapshot_lock:
+                _snapshot_processes.pop(cam_id, None)
+                _snapshot_active.pop(cam_id, None)
+            _snapshot_slots.release()
+
+
 def handle_motion(cam_id: str, label: str):
     """Ghi nhận 1 sự kiện chuyển động: kích hoạt ghi hình + chụp snapshot + lưu event."""
     cam_info = CONFIG.get("cameras", {}).get(cam_id)
@@ -2369,18 +2503,8 @@ def handle_motion(cam_id: str, label: str):
     motion_active_until[cam_id] = time.time() + post_sec
     log_event("info", f"Phát hiện chuyển động: {label}", cam_id)
 
-    # Ưu tiên chụp Snapshot từ luồng phụ để lấy ảnh cực nhanh
-    snap_rtsp, _ = cam_source_urls(cam_id, cam_info)
-    try:
-        subprocess.Popen([
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            *_input_args(snap_rtsp, cam_info),
-            "-i", snap_rtsp,
-            "-frames:v", "1", "-q:v", "3", snap_path
-        ])
-    except Exception as e:
-        print(f"[LiteNVR] Không chụp được snapshot cho {cam_id}: {e}", flush=True)
-        log_event("warn", f"Không chụp được snapshot: {e}", cam_id)
+    snap_path = _start_snapshot(cam_id, cam_info, snap_path)
+    snap_filename = os.path.basename(snap_path) if snap_path else None
 
     conn = db_conn()
     c = conn.cursor()
@@ -3867,11 +3991,12 @@ def export_clip(cam_id: str, date: str, start: float = 0, end: float = 86400, hc
             f.write("file '" + fp.replace("'", "'\\''") + "'\n")
 
     offs = max(0.0, start - segs[0][1])
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+    cmd = [*_ffmpeg_base_args(), "-threads", str(FFMPEG_THREADS),
            "-f", "concat", "-safe", "0", "-i", list_path,
            "-ss", f"{offs:.3f}", "-t", f"{dur:.3f}"]
     if hc:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac"]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-threads", str(FFMPEG_THREADS), "-c:a", "aac"]
     else:
         cmd += ["-c", "copy"]
     cmd += ["-movflags", "+faststart", out_path]
@@ -3961,17 +4086,81 @@ def get_cam_status(cam_id: str, request: Request):
 def _play_transcode_cmd(path: str, ss: float = 0):
     """Lệnh chuyển mã bản ghi HEVC/H.265 sang H.264 cho trình duyệt.
     -ss đặt TRƯỚC -i để tua nhanh (input seek) thay vì phát từ đầu."""
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    cmd = _ffmpeg_base_args()
     if ss and ss > 0:
         cmd += ["-ss", f"{ss:.3f}"]
     cmd += [
-        "-i", path,
+        "-threads", str(FFMPEG_THREADS), "-i", path,
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-threads", str(FFMPEG_THREADS),
         "-c:a", "aac",
         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4", "pipe:1",
     ]
     return cmd
+
+async def _stop_playback_process(proc):
+    async def discard_output():
+        if proc.stdout:
+            while await proc.stdout.read(65536):
+                pass
+
+    drain = asyncio.create_task(discard_output())
+    try:
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await asyncio.wait_for(proc.wait(), timeout=3)
+    finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+        with _playback_lock:
+            _playback_processes.pop(proc.pid, None)
+
+
+class _TranscodedRecordingResponse(StreamingResponse):
+    def __init__(self, cmd, cam_id):
+        self.cmd = cmd
+        self.cam_id = cam_id
+        self.proc: Optional[asyncio.subprocess.Process] = None
+        super().__init__(self._stream(), media_type="video/mp4")
+
+    async def _stream(self):
+        if self.proc is None or self.proc.stdout is None:
+            return
+        while True:
+            chunk = await asyncio.wait_for(self.proc.stdout.read(65536), timeout=30)
+            if not chunk:
+                break
+            yield chunk
+
+    async def __call__(self, scope, receive, send):
+        try:
+            with anyio.CancelScope(shield=True):
+                if _shutdown.is_set():
+                    await Response(status_code=503)(scope, receive, send)
+                    return
+                self.proc = await asyncio.create_subprocess_exec(
+                    *self.cmd, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL, limit=65536,
+                )
+                with _playback_lock:
+                    _playback_processes[self.proc.pid] = (self.proc, self.cam_id)
+            await super().__call__(scope, receive, send)
+        finally:
+            if self.proc:
+                with anyio.CancelScope(shield=True):
+                    await _stop_playback_process(self.proc)
+
 
 @app.get("/api/play/{cam_id}/{fname}")
 def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0):
@@ -3986,29 +4175,7 @@ def play_recording(cam_id: str, fname: str, t: int = 0, ss: float = 0):
     if not t:
         return FileResponse(path, media_type="video/mp4")
 
-    cmd = _play_transcode_cmd(path, ss)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    out = proc.stdout
-    if out is None:
-        proc.terminate()
-        raise HTTPException(status_code=500, detail="Không mở được luồng ffmpeg")
-
-    def _stream():
-        try:
-            while True:
-                chunk = out.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            try:
-                out.close()
-            except Exception:
-                pass
-            if proc.poll() is None:
-                proc.terminate()
-
-    return StreamingResponse(_stream(), media_type="video/mp4")
+    return _TranscodedRecordingResponse(_play_transcode_cmd(path, ss), safe_cam)
 
 # ================= API bảo mật: đăng nhập, tài khoản con, 2FA, nhật ký =================
 class LoginReq(BaseModel):
