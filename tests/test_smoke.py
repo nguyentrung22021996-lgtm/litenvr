@@ -180,6 +180,49 @@ class ApiTests(_AppCase):
         self.assertGreater(len(r.content), 0)
         self.client.delete("/api/cameras/camThumb2", headers=auth())
 
+    def test_camera_retention_api(self):
+        self.client.post("/api/cameras", json={"cam_id": "camRet", "name": "R", "rtsp_url": "rtsp://x",
+                                               "retention_days": 3}, headers=auth())
+        cams = self.client.get("/api/cameras", headers=auth()).json()
+        self.assertEqual(cams["camRet"]["retention_days"], 3)
+        self.client.post("/api/cameras", json={"cam_id": "camRet", "name": "R", "rtsp_url": "rtsp://x",
+                                               "retention_days": -5}, headers=auth())
+        self.assertEqual(self.client.get("/api/cameras", headers=auth()).json()["camRet"]["retention_days"], 0)
+        self.client.delete("/api/cameras/camRet", headers=auth())
+
+    def test_cam_retention_days(self):
+        self.m.CONFIG["retention_days"] = 7
+        self.m.CONFIG.setdefault("cameras", {})["cA"] = {"retention_days": 2}
+        self.m.CONFIG["cameras"]["cB"] = {}
+        self.assertEqual(self.m.cam_retention_days("cA"), 2)
+        self.assertEqual(self.m.cam_retention_days("cB"), 7)
+        self.assertEqual(self.m.cam_retention_days("missing"), 7)
+        self.m.CONFIG["cameras"].pop("cA"); self.m.CONFIG["cameras"].pop("cB")
+
+    def test_per_camera_cleanup(self):
+        cfg = self.m.CONFIG
+        orig = (cfg.get("retention_days"), cfg.get("max_storage_gb"), cfg.get("max_disk_percent"))
+        cfg["retention_days"] = 7
+        cfg["max_storage_gb"] = 0
+        cfg["max_disk_percent"] = 0
+        cfg.setdefault("cameras", {})["camLong"] = {"retention_days": 30}
+        cfg["cameras"]["camTiny"] = {"retention_days": 1}
+        try:
+            old = time.time() - 3 * 86400
+            for cid in ("camLong", "camTiny"):
+                d = os.path.join(self.m.RECORDINGS_DIR, cid)
+                os.makedirs(d, exist_ok=True)
+                p = os.path.join(d, "clip.mp4")
+                with open(p, "w") as f:
+                    f.write("x")
+                os.utime(p, (old, old))
+            self.m.run_cleanup_now()
+            self.assertTrue(os.path.exists(os.path.join(self.m.RECORDINGS_DIR, "camLong", "clip.mp4")))
+            self.assertFalse(os.path.exists(os.path.join(self.m.RECORDINGS_DIR, "camTiny", "clip.mp4")))
+        finally:
+            cfg["retention_days"], cfg["max_storage_gb"], cfg["max_disk_percent"] = orig
+            cfg["cameras"].pop("camLong", None); cfg["cameras"].pop("camTiny", None)
+
 
 class BuilderTests(unittest.TestCase):
     @classmethod
@@ -230,6 +273,14 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(snap["c1"]["state"], "continue")
         self.assertIsNotNone(snap["c1"]["age_sec"])
         self.assertIn("-progress", self.m.build_ffmpeg_cmd("cam", self._cam()))
+
+    def test_hls_low_latency_flags(self):
+        cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="copy", video_codec="copy"), include_live=True)
+        flags = self._values(cmd, "-hls_flags")[0]
+        self.assertIn("independent_segments", flags)
+        self.assertIn("delete_segments", flags)
+        self.assertEqual(self._values(cmd, "-hls_time"), [str(self.m.LIVE_HLS_TIME)])
+        self.assertEqual(self._values(cmd, "-hls_list_size"), [str(self.m.LIVE_HLS_LIST)])
 
     def test_motion_detect_command(self):
         cmd = self.m.build_motion_detect_cmd("cam", self._cam())

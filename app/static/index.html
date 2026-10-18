@@ -1215,6 +1215,10 @@
           </select>
           <small id="storageTargetHint" style="color:#94a3b8;font-size:12px;"></small>
         </div>
+        <div class="form-row">
+          <label>Số ngày lưu riêng cho camera (0 = dùng mức chung):</label>
+          <input type="number" id="inpRetentionDays" min="0" max="3650" step="1" value="0">
+        </div>
       </div>
 
       <div class="grid-2" id="quickGenBox" style="display:none; background:#181f2e; padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); margin-bottom:12px;">
@@ -1865,6 +1869,7 @@
       document.getElementById("inpBrand").value = c.brand || "custom";
       document.getElementById("inpRecordMode").value = c.record_mode || "continuous";
       document.getElementById("inpStorageTarget").value = c.storage_target || "both";
+      document.getElementById("inpRetentionDays").value = c.retention_days || 0;
       updateStorageHint();
       document.getElementById("inpRtsp").value = c.rtsp_url || "";
       document.getElementById("inpSubRtsp").value = c.sub_rtsp_url || "";
@@ -1926,6 +1931,7 @@
         brand: document.getElementById("inpBrand").value,
         record_mode: document.getElementById("inpRecordMode").value,
         storage_target: document.getElementById("inpStorageTarget").value,
+        retention_days: parseFloat(document.getElementById("inpRetentionDays").value) || 0,
         rtsp_url: document.getElementById("inpRtsp").value.trim(),
         sub_rtsp_url: document.getElementById("inpSubRtsp").value.trim(),
         rtsp_transport: document.getElementById("inpTransport").value,

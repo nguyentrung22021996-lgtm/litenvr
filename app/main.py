@@ -827,6 +827,9 @@ LIVE_IDLE_STOP_SEC = int(os.environ.get("LIVE_IDLE_STOP_SEC", "30"))
 # Chiều cao tối đa cho live HLS khi phải chuyển mã (0 = giữ nguyên gốc).
 # Hạ độ phân giải live giúp CPU giảm mạnh với camera 2K/4K (bản ghi vẫn giữ nguyên gốc).
 LIVE_MAX_HEIGHT = int(os.environ.get("LIVE_MAX_HEIGHT", "720") or "0")
+# HLS độ trễ thấp: giảm thời lượng segment và số segment giữ trong playlist.
+LIVE_HLS_TIME = max(1, min(10, int(os.environ.get("LIVE_HLS_TIME", "2") or "2")))
+LIVE_HLS_LIST = max(2, min(20, int(os.environ.get("LIVE_HLS_LIST", "5") or "5")))
 # Theo dõi cảnh báo đầy ổ (tránh spam log)
 _disk_warn = {"t": 0.0}
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
@@ -1535,9 +1538,9 @@ def build_ffmpeg_cmd(cam_id: str, cam_info: dict, video_codec: Optional[str] = N
             "-map", live_input_idx,
             *live_args, "-an",
             "-f", "hls",
-            "-hls_time", "2",
-            "-hls_list_size", "5",
-            "-hls_flags", "delete_segments",
+            "-hls_time", str(LIVE_HLS_TIME),
+            "-hls_list_size", str(LIVE_HLS_LIST),
+            "-hls_flags", "delete_segments+independent_segments",
             os.path.join(cam_hls_dir, "live.m3u8")
         ])
     return cmd
@@ -1936,6 +1939,16 @@ def get_storage_dir_size(force: bool = False):
     return total_size
 
 # Bộ dọn dẹp ổ cứng thông minh (Theo số ngày + Giới hạn GB + Giới hạn % ổ cứng)
+def cam_retention_days(cam_id: str) -> float:
+    """Số ngày lưu riêng của camera (0/rỗng = dùng mức chung)."""
+    c = CONFIG.get("cameras", {}).get(cam_id) or {}
+    try:
+        v = float(c.get("retention_days") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return v if v > 0 else float(CONFIG.get("retention_days", 7))
+
+
 def run_cleanup_now():
     retention_days = float(CONFIG.get("retention_days", 7))
     max_storage_gb = float(CONFIG.get("max_storage_gb", 0))
@@ -1950,19 +1963,23 @@ def run_cleanup_now():
             return False
         return rel in locked
 
-    # 1. Xóa theo số ngày lưu trữ (Retention Days)
-    if retention_days > 0:
-        cutoff = time.time() - (retention_days * 86400)
-        for folder in [RECORDINGS_DIR, SNAPSHOTS_DIR]:
-            for root, _, files in os.walk(folder):
-                for file in files:
-                    filepath = os.path.join(root, file)
-                    try:
-                        if os.path.getmtime(filepath) < cutoff and not _is_locked(filepath):
-                            os.remove(filepath)
-                            deleted_count += 1
-                    except Exception:
-                        pass
+    # 1. Xóa theo số ngày lưu trữ (mỗi camera có thể đặt số ngày riêng)
+    for folder in [RECORDINGS_DIR, SNAPSHOTS_DIR]:
+        for root, _, files in os.walk(folder):
+            rel = os.path.relpath(root, folder)
+            cam_id = "" if rel == "." else rel.split(os.sep)[0]
+            days = cam_retention_days(cam_id) if cam_id else retention_days
+            if days <= 0:
+                continue
+            cutoff = time.time() - (days * 86400)
+            for file in files:
+                filepath = os.path.join(root, file)
+                try:
+                    if os.path.getmtime(filepath) < cutoff and not _is_locked(filepath):
+                        os.remove(filepath)
+                        deleted_count += 1
+                except Exception:
+                    pass
 
     # 2. Xóa cuốn chiếu file cũ nhất nếu vượt quá giới hạn GB hoặc % ổ cứng
     all_media = []
@@ -2072,6 +2089,7 @@ class CameraItem(BaseModel):
     room: str = ""                   # Nhóm/phòng để lọc camera
     tags: str = ""                   # Nhãn tự do, cách nhau dấu phẩy
     onvif_port: int = 80             # Cổng ONVIF/PTZ (nếu khác 80)
+    retention_days: float = 0        # Số ngày lưu riêng (0 = dùng mức chung toàn hệ thống)
     schedule_enabled: bool = False   # Bật lịch ghi hình theo giờ
     schedule: List[Dict[str, Any]] = []  # [{days:[0-6], from:"18:00", to:"06:00", mode:"motion"}]
 
@@ -2401,6 +2419,7 @@ def add_or_update_camera(item: CameraItem):
         "room": item.room,
         "tags": item.tags,
         "onvif_port": int(item.onvif_port or 80),
+        "retention_days": max(0.0, float(item.retention_days or 0)),
         "schedule_enabled": bool(item.schedule_enabled),
         "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
     }
@@ -2430,6 +2449,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "storage_target": item.storage_target if item.storage_target in ("hdd", "drive", "both") else "both",
             "room": item.room, "tags": item.tags,
             "onvif_port": int(item.onvif_port or 80),
+            "retention_days": max(0.0, float(item.retention_days or 0)),
             "schedule_enabled": bool(item.schedule_enabled),
             "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
         }

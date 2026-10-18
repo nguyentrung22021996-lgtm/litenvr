@@ -81,6 +81,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **Chụp snapshot có kiểm soát**: tối đa **2 ffmpeg chụp ảnh** chạy song song toàn hệ thống và **1 mỗi camera** (gộp yêu cầu trùng), tự dừng sau 12 giây nếu treo. Tránh dồn nhiều ffmpeg mở luồng cùng lúc khi có sự kiện chuyển động liên tục.
 - **Preset transcode nhẹ**: `ultrafast` + 2 luồng, `zerolatency`.
 - **Đệm Motion trong RAM**: tắt tuỳ chọn "Đệm chuyển động trong RAM" trong **⚙️ Lưu trữ** để ghi đệm ra đĩa nếu box ít RAM.
+- **HLS độ trễ thấp hơn**: live dùng cờ `independent_segments`; chỉnh độ trễ bằng biến môi trường `LIVE_HLS_TIME` (mặc định 2 giây, kẹp 1–10) và `LIVE_HLS_LIST` (số segment giữ trong playlist, mặc định 5, kẹp 2–20). Đặt `LIVE_HLS_TIME=1` để giảm độ trễ (tốn băng thông/CPU hơn).
 - **Thấy LiteNVR "ăn" ~2GB RAM?** Phần lớn thường là **bộ đệm file (page cache)** của Linux khi ghi/đọc video liên tục — nó hiện trong số RAM của container nhưng **tự nhả khi máy cần**, không phải rò rỉ. Mở **Dashboard** (hoặc `GET /api/system` → mục `memory`) để xem chi tiết: `app_rss_mb` (app), `children_mb` (ffmpeg/go2rtc), `cgroup_file_mb` (cache — bình thường), `cgroup_shmem_mb` (đệm RAM/HLS). Mỗi tiến trình con trong `children` có thêm `role` (camera/snapshot/playback), `cam_id`, `threads`, `age_sec` và `peak_rss_mb` để biết ffmpeg nào đang tốn RAM. Muốn hạ: dùng luồng phụ H.264 cho live, `GO2RTC=off/on` phù hợp, và tắt "Đệm chuyển động trong RAM" nếu cần.
 - Với box yếu hoặc camera giới hạn phiên: dùng **luồng phụ** cho live và/hoặc **restream go2rtc**.
 
@@ -103,6 +104,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 
 ## Tính năng NVR nâng cao
 - **⊞ Lưới nhiều camera**: bấm **⊞ Lưới** để xem 4 camera cùng lúc (bấm tiếp để chuyển 9 ô, bấm lần nữa để tắt). Bấm vào một ô để quay về chế độ 1 camera. Live trong lưới tự khởi động và tự dừng khi bạn thoát lưới (tiết kiệm CPU).
+- **⏳ Thời gian lưu riêng cho từng camera**: trong phần sửa camera, đặt **Số ngày lưu riêng** (0 = dùng mức chung toàn hệ thống). Camera để lâu hơn (VD cổng chính 30 ngày) hoặc ngắn hơn (VD 1 ngày) đều được; bộ dọn ổ cứng áp dụng đúng mức cho từng thư mục camera.
 - **🔒 Khoá bản ghi**: di con trỏ tới đoạn cần giữ rồi bấm **🔒 Khoá đoạn** — file này **không bao giờ bị xoá tự động** (theo ngày lưu, giới hạn GB hay % ổ cứng). Bấm **🔓 Mở khoá** để cho phép xoá lại.
 - **⬇️ Xuất clip**: chọn *Từ giờ → Đến giờ* dưới thanh thời gian rồi bấm **Tải đoạn** để tải một file MP4 gồm toàn bộ các đoạn ghi trong khoảng đó. Nút **⬇️** trên mỗi sự kiện tải nhanh clip quanh sự kiện (mặc định 10s trước + 60s sau). Bật **chuyển H.264** nếu muốn gửi clip cho thiết bị/tài khoản không phát được H.265.
 - **📅 Lịch ghi hình**: trong phần sửa camera, bật **Lịch ghi hình** và thêm các khung giờ (Thứ, Từ, Đến, chế độ 24/7 hay Motion). Ngoài mọi khung giờ, camera **không ghi** (vẫn xem live được). Hỗ trợ khung giờ qua đêm (VD 22:00 → 06:00). Ví dụ: ngày thường chỉ Motion 8h–17h, ban đêm 24/7.
