@@ -753,7 +753,7 @@ def path_permission(request: Request) -> Optional[str]:
         return None
     if method == "GET" and path == "/api/cameras":
         return "live"
-    if path == "/api/motion":
+    if path in ("/api/motion", "/api/ai/detect"):
         return "live"
     if path.startswith("/api/drive/play/"):
         return "playback"  # xem lại bản ghi đã sao lưu lên Drive
@@ -2147,6 +2147,12 @@ class MotionPayload(BaseModel):
     cam_id: str
     label: str = "Chuyển động (HASS)"
 
+class AiDetectPayload(BaseModel):
+    cam_id: str
+    objects: List[str] = []      # person, car, truck, ... (tự dịch sang tiếng Việt)
+    label: str = ""              # ghi đè nhãn nếu muốn
+    snapshot_url: str = ""       # ảnh AI gửi kèm (tùy chọn, http/https)
+
 def _host_load():
     """Tải CPU + RAM của máy chủ (đọc /proc, không cần thư viện ngoài)."""
     load = []
@@ -2657,7 +2663,48 @@ def _capture_snapshot(cam_id: str, cam_info: dict, snap_path: str):
             _snapshot_slots.release()
 
 
-def handle_motion(cam_id: str, label: str):
+AI_LABEL_VI = {
+    "person": "Người", "face": "Khuôn mặt", "car": "Xe", "truck": "Xe tải",
+    "bus": "Xe buýt", "motorcycle": "Xe máy", "bicycle": "Xe đạp",
+    "dog": "Chó", "cat": "Mèo", "bird": "Chim", "animal": "Động vật",
+    "package": "Bưu kiện", "license_plate": "Biển số",
+}
+
+
+def ai_event_label(objects: List[str], custom: str = "") -> str:
+    """Nhãn sự kiện từ danh sách đối tượng AI (person, car, ...) sang tiếng Việt."""
+    if custom.strip():
+        return custom.strip()
+    names, seen = [], set()
+    for o in objects or []:
+        key = str(o).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        names.append(AI_LABEL_VI.get(key, str(o).strip()))
+    if not names:
+        return "AI: đối tượng"
+    return "AI: " + ", ".join(names)
+
+
+def _download_snapshot(url: str, dest: str, max_bytes: int = 8 * 1024 * 1024) -> bool:
+    """Tải ảnh snapshot từ URL (http/https) về dest. Trả True nếu thành công."""
+    if not url.lower().startswith(("http://", "https://")):
+        return False
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "LiteNVR"})
+        with urllib.request.urlopen(req, timeout=8) as r, open(dest, "wb") as f:
+            data = r.read(max_bytes + 1)
+            if len(data) > max_bytes or not data:
+                return False
+            f.write(data)
+        return True
+    except Exception as e:
+        log_event("warn", f"Không tải được ảnh AI: {mask_secrets(str(e))}")
+        return False
+
+
+def handle_motion(cam_id: str, label: str, snap_url: str = ""):
     """Ghi nhận 1 sự kiện chuyển động: kích hoạt ghi hình + chụp snapshot + lưu event."""
     cam_info = CONFIG.get("cameras", {}).get(cam_id)
     if not cam_info:
@@ -2675,7 +2722,8 @@ def handle_motion(cam_id: str, label: str):
     motion_active_until[cam_id] = time.time() + post_sec
     log_event("info", f"Phát hiện chuyển động: {label}", cam_id)
 
-    snap_path = _start_snapshot(cam_id, cam_info, snap_path)
+    if not (snap_url and _download_snapshot(snap_url, snap_path)):
+        snap_path = _start_snapshot(cam_id, cam_info, snap_path)
     if not snap_path:
         snap_path = _latest_snapshot(cam_id)   # hết chỗ chụp: dùng ảnh mới nhất để sự kiện vẫn có ảnh
     snap_filename = os.path.basename(snap_path) if snap_path else None
@@ -2890,6 +2938,16 @@ def motion_supervisor():
 @app.post("/api/motion")
 def trigger_motion(payload: MotionPayload):
     result = handle_motion(payload.cam_id, payload.label)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+    return result
+
+@app.post("/api/ai/detect")
+def trigger_ai_detect(payload: AiDetectPayload):
+    """Nhận sự kiện từ bộ nhận diện AI bên ngoài (Frigate, DeepStack, HA...) và
+    ghi thành sự kiện có nhãn tiếng Việt (Người, Xe...)."""
+    label = ai_event_label(payload.objects, payload.label)
+    result = handle_motion(payload.cam_id, label, payload.snapshot_url)
     if result is None:
         raise HTTPException(status_code=404, detail="Camera không tồn tại")
     return result

@@ -46,6 +46,19 @@ LiteNVR có thể tự dò chuyển động bằng chính luồng RTSP, không p
 
 Cơ chế: mỗi camera chạy một ffmpeg đọc luồng đã chọn với bộ lọc `select='gt(scene,…)'` và `showinfo`; khi phát hiện đổi cảnh, LiteNVR kích hoạt **ghi hình + snapshot** đúng như sự kiện từ HA/ONVIF (dùng chung `handle_motion`, không nhân đôi). Camera mất kết nối sẽ tự thử lại với backoff. Có thể chỉnh bằng API: `GET/POST /api/motion_detect` (`enabled`, `sensitivity`, `cooldown_sec`, `source`).
 
+**Vùng chuyển động**: trong form sửa camera có mục **🎯 Vùng chuyển động** — thêm các vùng (toạ độ tỉ lệ 0–1: `x`, `y`, `w`, `h`) và **độ nhạy riêng** từng vùng. Có vùng thì LiteNVR chỉ dò trong các vùng đó (mỗi vùng một tiến trình ffmpeg `crop` riêng, nhãn sự kiện kèm tên vùng); không có vùng thì quét toàn khung như cũ.
+
+## Nhãn AI (người/xe) từ bộ nhận diện ngoài
+Gửi sự kiện từ bộ nhận diện AI bất kỳ (Frigate, DeepStack, CodeProject.AI, Node-RED…) vào endpoint:
+```
+POST /api/ai/detect
+{"cam_id":"cam_cong","objects":["person","car"],"snapshot_url":"http://detector/snap.jpg"}
+```
+- `objects`: tên đối tượng tiếng Anh (`person`, `car`, `truck`, `motorcycle`, `bicycle`, `dog`, `cat`, `package`…), LiteNVR **tự dịch sang tiếng Việt** (`Người`, `Xe`, `Xe tải`…) và gộp thành nhãn `AI: Người, Xe`.
+- `snapshot_url` (tuỳ chọn): LiteNVR tải ảnh này làm ảnh sự kiện (bỏ qua chụp từ luồng); chỉ nhận `http/https`, tối đa 8 MB. Không có thì tự chụp như sự kiện chuyển động thường.
+- `label` (tuỳ chọn): ghi đè nhãn.
+Sự kiện AI đi đúng luồng cũ: kích hoạt ghi hình, lưu vào danh sách sự kiện (tìm kiếm được theo nhãn/camera/ngày) và gửi thông báo (Telegram/webhook) nếu đã bật. Endpoint dùng chung quyền `live` nên client HTTP Basic (script/HA/Frigate) gọi được.
+
 ## Xem Live / Bản ghi bị đen hoặc không phát
 Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chrome/Edge/Firefox) không giải mã được.
 - Mặc định LiteNVR dùng **Tự động phát hiện**: tự dò codec camera bằng `ffprobe`; nếu là H.265/HEVC sẽ tự chuyển sang H.264 cho cả Live (HLS) và khi phát bản ghi.

@@ -150,6 +150,25 @@ class ApiTests(_AppCase):
         self.assertEqual(stored[0]["name"], "Cổng")
         self.client.delete("/api/cameras/zone1", headers=auth())
 
+    def test_ai_detect_creates_labelled_event(self):
+        payload = {"cam_id": "aicam", "name": "AI", "rtsp_url": "rtsp://127.0.0.1:1/x",
+                   "record_mode": "motion"}
+        self.client.post("/api/cameras", json=payload, headers=auth())
+        r = self.client.post("/api/ai/detect", json={"cam_id": "aicam", "objects": ["person", "car", "car"],
+                                                     "snapshot_url": "ftp://nope/x.jpg"}, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        conn = self.m.db_conn()
+        row = conn.execute("SELECT label FROM events WHERE cam_id='aicam' ORDER BY timestamp DESC").fetchone()
+        self.assertEqual(row[0], "AI: Người, Xe")
+        conn.execute("DELETE FROM events WHERE cam_id='aicam'")
+        conn.commit()
+        self.client.delete("/api/cameras/aicam", headers=auth())
+
+    def test_ai_event_label_mapping(self):
+        self.assertEqual(self.m.ai_event_label(["truck", "unknown_obj"]), "AI: Xe tải, unknown_obj")
+        self.assertEqual(self.m.ai_event_label([], "Tùy chỉnh"), "Tùy chỉnh")
+        self.assertEqual(self.m.ai_event_label([]), "AI: đối tượng")
+
     def test_events_search(self):
         conn = self.m.db_conn()
         conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
