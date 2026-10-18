@@ -39,6 +39,10 @@ NVR_USER = os.environ.get("NVR_USER", "admin")
 NVR_PASS = os.environ.get("NVR_PASS", "admin")
 AUTH_ENABLED = os.environ.get("NVR_AUTH", "on").lower() not in ("off", "0", "false", "no")
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_STATIC_CAND = os.path.join(BASE_DIR, "static")
+STATIC_DIR = _STATIC_CAND if os.path.isdir(_STATIC_CAND) else os.path.abspath("static")
+
 STORAGE_DIR = "/storage"
 CONFIG_PATH = os.path.join(STORAGE_DIR, "config.json")
 RECORDINGS_DIR = os.path.join(STORAGE_DIR, "recordings")
@@ -4905,12 +4909,12 @@ def api_security_status():
 
 @app.get("/login")
 def login_page():
-    return FileResponse("static/login.html")
+    return FileResponse(os.path.join(STATIC_DIR, "login.html"), headers={"Cache-Control": "no-store"})
 
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 app.mount("/snapshots", StaticFiles(directory=SNAPSHOTS_DIR), name="snapshots")
 app.mount("/hls", StaticFiles(directory=HLS_DIR), name="hls")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/health")
 def health():
@@ -4918,4 +4922,4 @@ def health():
 
 @app.get("/")
 def index():
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"), headers={"Cache-Control": "no-store"})

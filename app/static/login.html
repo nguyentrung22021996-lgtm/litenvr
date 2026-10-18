@@ -250,14 +250,27 @@
     const otpBox = document.getElementById("otpBox");
     const otpInput = document.getElementById("otp");
 
-    fetch("/api/me", { credentials: "same-origin" }).then(r => {
-      if (r.ok) location.href = "/";
-    }).catch(() => {});
+    async function isAuthed() {
+      try {
+        const r = await fetch("/api/me", { credentials: "same-origin", cache: "no-store" });
+        return r.ok;
+      } catch (e) { return false; }
+    }
+
+    (async () => {
+      if (await isAuthed()) { location.replace("/"); return; }
+      // Xoá cookie phiên cũ/hỏng để tránh vòng lặp chuyển hướng im lặng
+      try {
+        await fetch("/api/logout", { method: "POST", credentials: "same-origin",
+          headers: { "X-NVR-CSRF": "1" } });
+      } catch (e) {}
+    })();
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       errEl.textContent = "";
       btn.disabled = true;
+      btn.textContent = "Đang đăng nhập…";
       try {
         const r = await fetch("/api/login", {
           method: "POST",
@@ -269,17 +282,25 @@
             otp: otpInput.value.trim()
           })
         });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok) { location.href = "/"; return; }
+        let d = {};
+        try { d = await r.json(); } catch (e) {}
+        if (r.ok) {
+          if (await isAuthed()) { location.replace("/"); return; }
+          errEl.textContent = "Đã xác thực nhưng trình duyệt không lưu được phiên đăng nhập "
+            + "(cookie bị chặn hoặc trang cũ đang được cache). Hãy mở LiteNVR ở tab riêng, "
+            + "cho phép cookie cho trang này rồi tải lại (Ctrl+F5).";
+          return;
+        }
         if (d.otp_required) {
           otpBox.style.display = "block";
           otpInput.focus();
         }
-        errEl.textContent = d.detail || ("Lỗi đăng nhập (" + r.status + ")");
+        errEl.textContent = (typeof d.detail === "string" && d.detail) || ("Lỗi đăng nhập (" + r.status + ")");
       } catch (ex) {
         errEl.textContent = "Không kết nối được máy chủ — kiểm tra mạng rồi thử lại.";
       } finally {
         btn.disabled = false;
+        btn.textContent = "Đăng nhập";
       }
     });
   </script>

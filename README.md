@@ -11,6 +11,8 @@ Web UI có **trang đăng nhập riêng** (`/login`), phiên làm việc bằng 
 
 Mọi client cũ dùng **HTTP Basic Auth** (script, Home Assistant, ffmpeg/VLC, Node-RED) vẫn hoạt động như trước — chỉ giao diện web chuyển sang phiên đăng nhập.
 
+Trang `/` và `/login` trả `Cache-Control: no-store` để trình duyệt không dùng bản cũ. Nếu đăng nhập đúng mật khẩu mà vẫn quay lại trang login: xoá cookie/phiên cũ cho trang này (hoặc Ctrl+F5); LiteNVR cũng tự xoá cookie phiên hỏng khi mở lại `/login` và **báo rõ** nếu trình duyệt chặn cookie (do iframe khác site) thay vì im lặng.
+
 ## Bảo mật & tài khoản con
 Bấm **🔐 Bảo mật** trên thanh công cụ:
 - **Tài khoản của tôi**: đổi mật khẩu, bật **2FA** (quét/nhập mã vào Google Authenticator, Authy… — sau khi bật, mỗi lần đăng nhập cần thêm mã 6 số).

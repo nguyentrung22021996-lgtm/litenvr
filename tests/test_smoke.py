@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,9 @@ def load_app(env=None):
     mod_path = os.path.join(sandbox, "main.py")
     with open(mod_path, "w", encoding="utf-8") as f:
         f.write(src)
+    static_src = os.path.join(APP_DIR, "static")
+    if os.path.isdir(static_src):
+        shutil.copytree(static_src, os.path.join(sandbox, "static"))
     cwd = os.getcwd()
     os.chdir(APP_DIR)
     try:
@@ -156,6 +160,15 @@ class ApiTests(_AppCase):
         j = self.client.get("/api/events?date_from=2026-02-01&date_to=2026-02-28", headers=auth()).json()
         self.assertEqual(j["count"], 1)
         self.assertEqual(j["events"][0]["cam_id"], "camT")
+
+    def test_login_page_cache_headers(self):
+        r = self.client.get("/login")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers.get("cache-control"), "no-store")
+        self.assertIn("Đăng nhập", r.text)
+        r2 = self.client.get("/", headers=auth())
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.headers.get("cache-control"), "no-store")
 
     def test_thumbnail_validation(self):
         self.assertEqual(self.client.get("/api/thumb/nope/x.mp4", headers=auth()).status_code, 404)
