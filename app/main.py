@@ -1984,6 +1984,96 @@ def _host_load():
         info["ram_percent"] = round(((mem_total - mem_avail) / mem_total) * 100, 1)
     return info
 
+def _read_int_file(path: str):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+def _proc_rss_kb(pid) -> int:
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except Exception:
+        pass
+    return 0
+
+def _dir_size_bytes(d: str) -> int:
+    total = 0
+    for root, _, files in os.walk(d):
+        for fn in files:
+            try:
+                total += os.path.getsize(os.path.join(root, fn))
+            except Exception:
+                pass
+    return total
+
+def _mem_breakdown() -> dict:
+    """Chẩn đoán RAM trong container: cgroup (gồm tmpfs/page cache), app, tiến trình con."""
+    out = {}
+    cands = ["/sys/fs/cgroup"]
+    try:
+        for line in open("/proc/self/cgroup").read().strip().splitlines():
+            parts = line.split(":", 2)
+            if len(parts) == 3 and parts[2] and parts[2] != "/":
+                if parts[0] == "":  # cgroup v2
+                    cands.append("/sys/fs/cgroup" + parts[2])
+                elif "memory" in parts[1]:  # cgroup v1
+                    cands.append("/sys/fs/cgroup/memory" + parts[2])
+    except Exception:
+        pass
+    cur = mx = None
+    stat = {}
+    for d in cands:
+        cur = _read_int_file(d + "/memory.current")
+        if cur is None:
+            cur = _read_int_file(d + "/memory.usage_in_bytes")
+        if cur is None:
+            continue
+        mx = _read_int_file(d + "/memory.max")
+        if mx is None:
+            mx = _read_int_file(d + "/memory.limit_in_bytes")
+        try:
+            for line in open(d + "/memory.stat"):
+                k, _, v = line.partition(" ")
+                stat[k] = int(v)
+        except Exception:
+            stat = {}
+        break
+    if cur is not None:
+        out["container_used_mb"] = round(cur / 2**20, 1)
+        out["container_limit_mb"] = round(mx / 2**20, 1) if mx and mx > 0 and mx < 2**60 else 0
+        out["cgroup_anon_mb"] = round(stat.get("anon", 0) / 2**20, 1)
+        out["cgroup_file_mb"] = round(stat.get("file", 0) / 2**20, 1)
+        out["cgroup_shmem_mb"] = round(stat.get("shmem", 0) / 2**20, 1)
+    procs, total_child = [], 0
+    self_pid = os.getpid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                raw = f.read()
+            comm = raw.split("(", 1)[1].rsplit(")", 1)[0]
+            ppid = int(raw.rsplit(")", 1)[1].split()[1])
+        except Exception:
+            continue
+        if ppid != self_pid:
+            continue
+        rss = _proc_rss_kb(pid)
+        total_child += rss
+        procs.append({"pid": int(pid), "name": comm, "rss_mb": round(rss / 1024, 1)})
+    procs.sort(key=lambda x: -x["rss_mb"])
+    out["app_rss_mb"] = round(_proc_rss_kb(self_pid) / 1024, 1)
+    out["children_mb"] = round(total_child / 1024, 1)
+    out["children"] = procs[:12]
+    out["hls_dir_mb"] = round(_dir_size_bytes(HLS_DIR) / 2**20, 1)
+    out["buffer_dir_mb"] = round(_dir_size_bytes(buffer_root()) / 2**20, 1)
+    return out
+
 @app.get("/api/system")
 def get_system_info():
     total, used, free = shutil.disk_usage(STORAGE_DIR)
@@ -2004,6 +2094,7 @@ def get_system_info():
             "restream": GO2RTC_RTSP,
         },
         "host": _host_load(),
+        "memory": _mem_breakdown(),
         "nvr_used_gb": round(nvr_used_bytes / (1024**3), 2),
         "disk_total_gb": round(total / (1024**3), 2),
         "disk_used_gb": round(used / (1024**3), 2),

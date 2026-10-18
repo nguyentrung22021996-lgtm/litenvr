@@ -1655,9 +1655,10 @@
     }
     async function loadStats() {
       try {
-        const [cur, hist] = await Promise.all([
+        const [cur, hist, sys] = await Promise.all([
           fetch("/api/stats").then(r => r.json()),
-          fetch("/api/stats/history").then(r => r.json())
+          fetch("/api/stats/history").then(r => r.json()),
+          fetch("/api/system").then(r => r.json()).catch(() => null)
         ]);
         statsHist.cpu = hist.samples.map(s => s.cpu_percent);
         statsHist.mem = hist.samples.map(s => s.mem_percent);
@@ -1666,8 +1667,13 @@
         document.getElementById("cpuSub").textContent =
           camCpu.length ? camCpu.map(([c, v]) => `${c} ${v}%`).join(" · ") : "toàn hệ thống";
         document.getElementById("ramVal").textContent = cur.mem_percent.toFixed(0) + "%";
-        document.getElementById("ramSub").textContent =
-          `${(cur.mem_used_mb / 1024).toFixed(1)} / ${(cur.mem_total_mb / 1024).toFixed(1)} GB`;
+        let ramSub = `${(cur.mem_used_mb / 1024).toFixed(1)} / ${(cur.mem_total_mb / 1024).toFixed(1)} GB (toàn máy)`;
+        const mm = sys && sys.memory;
+        if (mm && mm.container_used_mb != null) {
+          const tmpfsMb = (mm.buffer_dir_mb || 0) + (mm.hls_dir_mb || 0);
+          ramSub += ` · LiteNVR: ${(mm.container_used_mb / 1024).toFixed(2)} GB (app ${mm.app_rss_mb}MB · ffmpeg ${mm.children_mb}MB · đệm ${tmpfsMb.toFixed(0)}MB)`;
+        }
+        document.getElementById("ramSub").textContent = ramSub;
         setBar("ramBar", cur.mem_percent);
         document.getElementById("diskVal").textContent = cur.disk_free_gb + " GB trống";
         document.getElementById("diskSub").textContent =
