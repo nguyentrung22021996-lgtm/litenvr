@@ -1590,6 +1590,22 @@
         <label>Webhook URL (tùy chọn - nhận POST JSON, dùng cho Node-RED/HASS/n8n):</label>
         <input id="ntWebhook" placeholder="http://...">
       </div>
+      <hr style="border:0; border-top:1px solid var(--border-subtle); margin:14px 0 12px;">
+      <h4 style="margin:0 0 8px;">💽 Cảnh báo sức khoẻ ổ đĩa</h4>
+      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
+        <input type="checkbox" id="ntDiskAlert"> Bật cảnh báo khi ổ đĩa sắp đầy (qua Telegram/webhook)
+      </label>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Ngưỡng cảnh báo (%):</label>
+          <input type="number" id="ntDiskWarn" min="50" max="99" step="1" value="85">
+        </div>
+        <div class="form-row">
+          <label>Ngưỡng nguy hiểm (%):</label>
+          <input type="number" id="ntDiskCrit" min="50" max="99" step="1" value="95">
+        </div>
+      </div>
+      <div id="ntDiskHealth" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
       <div id="ntStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="testNotify()">📨 Gửi thử</button>
@@ -3005,8 +3021,31 @@
       document.getElementById("ntTokenHint").textContent = cfg.has_telegram_token ? "✔ Đã lưu token (để trống khi lưu = giữ nguyên)" : "";
       document.getElementById("ntPhoto").checked = cfg.with_photo !== false;
       document.getElementById("ntWebhook").value = cfg.webhook_url || "";
+      document.getElementById("ntDiskAlert").checked = !!cfg.disk_alert_enabled;
+      document.getElementById("ntDiskWarn").value = cfg.disk_warn_percent || 85;
+      document.getElementById("ntDiskCrit").value = cfg.disk_crit_percent || 95;
       document.getElementById("ntStatus").textContent = "";
+      loadDiskHealth();
       document.getElementById("notifyModal").style.display = "flex";
+    }
+    async function loadDiskHealth() {
+      const el = document.getElementById("ntDiskHealth");
+      if (!el) return;
+      try {
+        const h = await fetch("/api/disk_health").then(r => r.json());
+        const smart = h.smart || {};
+        const parts = [`Đã dùng ${h.percent}% (${h.used_gb}/${h.total_gb} GB, còn ${h.free_gb} GB)`,
+                       `inode ${h.inodes_percent}%`,
+                       h.writable ? "ghi được" : "⚠️ KHÔNG ghi được"];
+        if (smart.available) {
+          parts.push(`SMART: ${smart.health}${smart.temperature_c != null ? ", " + smart.temperature_c + "°C" : ""}`);
+        } else if (smart.note) {
+          parts.push("SMART: " + smart.note);
+        }
+        el.textContent = "💽 " + parts.join(" · ");
+      } catch (e) {
+        el.textContent = "";
+      }
     }
     function closeNotifyModal() { document.getElementById("notifyModal").style.display = "none"; }
     async function saveNotify() {
@@ -3015,7 +3054,10 @@
         telegram_token: document.getElementById("ntToken").value.trim(),
         telegram_chat_id: document.getElementById("ntChatId").value.trim(),
         webhook_url: document.getElementById("ntWebhook").value.trim(),
-        with_photo: document.getElementById("ntPhoto").checked
+        with_photo: document.getElementById("ntPhoto").checked,
+        disk_alert_enabled: document.getElementById("ntDiskAlert").checked,
+        disk_warn_percent: parseFloat(document.getElementById("ntDiskWarn").value) || 85,
+        disk_crit_percent: parseFloat(document.getElementById("ntDiskCrit").value) || 95
       };
       const r = await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const st = document.getElementById("ntStatus");

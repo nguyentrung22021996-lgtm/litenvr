@@ -117,6 +117,55 @@ def read_disk() -> dict:
     except Exception:
         return {"disk_total_gb": 0.0, "disk_used_gb": 0.0, "disk_free_gb": 0.0, "disk_percent": 0.0}
 
+
+def _smart_info(device: str = "") -> dict:
+    """Sức khoẻ SMART qua smartctl nếu có (container thường không có sẵn)."""
+    if shutil.which("smartctl") is None:
+        return {"available": False, "note": "smartctl không khả dụng trong container"}
+    dev = device or os.environ.get("NVR_DISK_DEVICE", "")
+    if not dev:
+        return {"available": False, "note": "chưa cấu hình NVR_DISK_DEVICE"}
+    try:
+        r = subprocess.run(["smartctl", "-H", "-A", dev], capture_output=True, text=True, timeout=8)
+        txt = (r.stdout or "") + (r.stderr or "")
+        health = "PASSED" if "PASSED" in txt else ("FAILED" if "FAILED" in txt else "unknown")
+        temp = None
+        for line in txt.splitlines():
+            if "Temperature_Celsius" in line or "Airflow_Temperature" in line:
+                nums = [x for x in re.findall(r"\d+", line.split("  ")[-1]) if x]
+                if nums:
+                    temp = int(nums[0])
+                    break
+        return {"available": True, "health": health, "temperature_c": temp}
+    except Exception as e:
+        return {"available": False, "note": mask_secrets(str(e))}
+
+
+def disk_health() -> dict:
+    """Sức khoẻ nơi lưu bản ghi: dung lượng, inode, quyền ghi, SMART (nếu có)."""
+    out: Dict[str, Any] = {"path": STORAGE_DIR, "writable": False, "smart": {"available": False}}
+    try:
+        s = os.statvfs(STORAGE_DIR)
+        total = s.f_blocks * s.f_frsize
+        free = s.f_bavail * s.f_frsize
+        used = total - free
+        inodes = s.f_files
+        inodes_used = inodes - s.f_favail
+        out.update({
+            "total_gb": round(total / 1e9, 2),
+            "used_gb": round(used / 1e9, 2),
+            "free_gb": round(free / 1e9, 2),
+            "percent": round(used / total * 100, 1) if total else 0.0,
+            "inodes_total": inodes,
+            "inodes_used": inodes_used,
+            "inodes_percent": round(inodes_used / inodes * 100, 1) if inodes else 0.0,
+            "writable": os.access(STORAGE_DIR, os.W_OK),
+        })
+    except Exception as e:
+        out["error"] = mask_secrets(str(e))
+    out["smart"] = _smart_info()
+    return out
+
 _ff_cpu_prev: Dict[str, tuple] = {}
 def read_cam_cpu() -> Dict[str, float]:
     """%CPU của tiến trình ffmpeg từng camera (đọc /proc/<pid>/stat)."""
@@ -170,6 +219,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=live_supervisor, daemon=True).start()
     threading.Thread(target=motion_supervisor, daemon=True).start()
     threading.Thread(target=stream_health_supervisor, daemon=True).start()
+    threading.Thread(target=disk_alert_supervisor, daemon=True).start()
     threading.Thread(target=go2rtc_monitor, daemon=True).start()
     try:
         yield
@@ -296,7 +346,10 @@ DEFAULT_CONFIG = {
         "telegram_token": "",
         "telegram_chat_id": "",
         "webhook_url": "",
-        "with_photo": True
+        "with_photo": True,
+        "disk_alert_enabled": False,
+        "disk_warn_percent": 85,
+        "disk_crit_percent": 95
     },
     "gdrive": {
         "enabled": False,
@@ -2117,6 +2170,9 @@ class NotifySettings(BaseModel):
     telegram_chat_id: str = ""
     webhook_url: str = ""
     with_photo: bool = True
+    disk_alert_enabled: bool = False
+    disk_warn_percent: float = 85
+    disk_crit_percent: float = 95
 
 class PtzCmd(BaseModel):
     action: str                      # up|down|left|right|upleft|upright|downleft|downright|zoomin|zoomout|home|stop|preset
@@ -2296,6 +2352,10 @@ def _mem_breakdown() -> dict:
     out["buffer_dir_mb"] = round(_dir_size_bytes(buffer_root()) / 2**20, 1)
     return out
 
+@app.get("/api/disk_health")
+def get_disk_health():
+    return disk_health()
+
 @app.get("/api/system")
 def get_system_info():
     total, used, free = shutil.disk_usage(STORAGE_DIR)
@@ -2307,6 +2367,7 @@ def get_system_info():
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
         "ram_buffer": bool(CONFIG.get("ram_buffer", True)),
         "motion_detect": bool(_motion_cfg().get("enabled")),
+        "disk_health": disk_health(),
         "cam_health": health_snapshot(),
         "live_idle_stop_sec": LIVE_IDLE_STOP_SEC,
         "live_max_height": LIVE_MAX_HEIGHT,
@@ -2533,6 +2594,8 @@ def delete_camera(cam_id: str):
 # ---------------- Thông báo chuyển động (Telegram / Webhook) ----------------
 _notify_last: Dict[str, float] = {}
 _notify_lock = threading.Lock()
+_disk_alert_state: Dict[str, Any] = {"level": "", "ts": 0.0}
+_disk_alert_lock = threading.Lock()
 
 def _telegram_api(token: str, method: str) -> str:
     return f"https://api.telegram.org/bot{token}/{method}"
@@ -2600,6 +2663,63 @@ def notify_motion(cam_id: str, label: str, snapshot_path: str = ""):
             _telegram_send(cfg["telegram_token"], str(cfg["telegram_chat_id"]), text, photo)
         except Exception as e:
             log_event("warn", f"Telegram thông báo lỗi: {e}", cam_id)
+
+def send_alert(text: str):
+    """Gửi cảnh báo hệ thống (ổ đĩa...) qua Telegram/webhook đã cấu hình."""
+    cfg = CONFIG.get("notify") or {}
+    wh = (cfg.get("webhook_url") or "").strip()
+    if wh:
+        try:
+            data = json.dumps({"type": "alert", "text": text,
+                               "time": datetime.now().isoformat(timespec="seconds")}).encode()
+            req = urllib.request.Request(wh, data=data, method="POST",
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as e:
+            log_event("warn", f"Webhook cảnh báo lỗi: {e}")
+    if cfg.get("telegram_enabled") and cfg.get("telegram_token") and cfg.get("telegram_chat_id"):
+        try:
+            _telegram_send(cfg["telegram_token"], str(cfg["telegram_chat_id"]), text)
+        except Exception as e:
+            log_event("warn", f"Telegram cảnh báo lỗi: {e}")
+
+
+def disk_alert_level(pct: float, warn: float, crit: float) -> str:
+    """Mức cảnh báo theo % đã dùng: '' | 'warn' | 'crit'."""
+    return "crit" if pct >= crit else ("warn" if pct >= warn else "")
+
+
+def disk_alert_supervisor():
+    """Cảnh báo khi ổ đĩa vượt ngưỡng; báo lại tối đa mỗi 6 giờ khi vẫn vượt."""
+    while not _shutdown.is_set():
+        try:
+            cfg = CONFIG.get("notify") or {}
+            if cfg.get("disk_alert_enabled"):
+                h = disk_health()
+                pct = float(h.get("percent", 0) or 0)
+                try:
+                    warn = float(cfg.get("disk_warn_percent", 85) or 85)
+                    crit = float(cfg.get("disk_crit_percent", 95) or 95)
+                except (TypeError, ValueError):
+                    warn, crit = 85.0, 95.0
+                level = disk_alert_level(pct, warn, crit)
+                with _disk_alert_lock:
+                    prev, last = _disk_alert_state["level"], _disk_alert_state["ts"]
+                if level and (level != prev or time.time() - last > 6 * 3600):
+                    state = "nguy hiểm" if level == "crit" else "sắp đầy"
+                    send_alert(f"⚠️ LiteNVR: ổ đĩa {state} — đã dùng {pct}% "
+                               f"(còn {h.get('free_gb', '?')} GB trống)")
+                    with _disk_alert_lock:
+                        _disk_alert_state["level"] = level
+                        _disk_alert_state["ts"] = time.time()
+                    log_event("warn", f"Ổ đĩa {state}: {pct}%")
+                elif not level:
+                    with _disk_alert_lock:
+                        _disk_alert_state["level"] = ""
+        except Exception as e:
+            log_event("warn", f"disk_alert_supervisor: {mask_secrets(str(e))}")
+        _shutdown.wait(120)
+
 
 def _latest_snapshot(cam_id: str) -> str:
     """Ảnh snapshot mới nhất hiện có của camera (dùng làm ảnh dự phòng cho sự kiện)."""
@@ -3424,6 +3544,9 @@ def get_notify_settings():
         "has_telegram_token": bool((nt.get("telegram_token") or "").strip()),
         "webhook_url": nt.get("webhook_url", ""),
         "with_photo": bool(nt.get("with_photo", True)),
+        "disk_alert_enabled": bool(nt.get("disk_alert_enabled", False)),
+        "disk_warn_percent": float(nt.get("disk_warn_percent", 85) or 85),
+        "disk_crit_percent": float(nt.get("disk_crit_percent", 95) or 95),
     }
 
 @app.post("/api/notify")
@@ -3435,6 +3558,9 @@ def update_notify_settings(settings: NotifySettings):
     nt["telegram_chat_id"] = settings.telegram_chat_id.strip()
     nt["webhook_url"] = settings.webhook_url.strip()
     nt["with_photo"] = settings.with_photo
+    nt["disk_alert_enabled"] = settings.disk_alert_enabled
+    nt["disk_warn_percent"] = float(settings.disk_warn_percent or 85)
+    nt["disk_crit_percent"] = float(settings.disk_crit_percent or 95)
     save_config(CONFIG)
     log_event("info", "Đã lưu cấu hình thông báo")
     return {"status": "ok"}

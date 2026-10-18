@@ -112,6 +112,7 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **CPU** hiển thị % toàn hệ thống và %CPU riêng của từng tiến trình ffmpeg (dưới mỗi camera).
 - **RAM / Bộ nhớ** có thanh màu đổi theo mức (xanh → cam ≥75% → đỏ ≥90%).
 - **Sức khoẻ luồng**: ffmpeg báo tiến độ (`-progress`), LiteNVR hiển thị **fps** từng camera; nếu không có khung mới trong 20 giây thì đánh dấu **⏸ đứng** và tự khởi động lại luồng. Xem qua `GET /api/stats`/`/api/system` (mục `cam_health`: `fps`, `stalled`, `state`, `age_sec`).
+- **Sức khoẻ ổ đĩa**: `GET /api/disk_health` (và trong `/api/system`) trả về dung lượng, **inode**, quyền ghi và **SMART** (nhiệt độ/health nếu có `smartctl` — thường không có trong container, khi đó ghi rõ "không khả dụng"). Trong 🔔 **Thông báo** có thể bật **cảnh báo ổ đĩa sắp đầy**: vượt ngưỡng cảnh báo/nguy hiểm sẽ gửi Telegram/webhook (báo lại tối đa mỗi 6 giờ khi vẫn vượt).
 - Lưới **camera trực quan**: ô camera hiện ảnh chuyển động mới nhất, chế độ (24/7 / Motion / Live / Lịch), bấm để chuyển nhanh.
 - Trên bản ghi liên tục, các **khoảng có chuyển động được tô màu cam** trên thanh thời gian để dễ dò lại đúng đoạn.
 - **Ảnh sự kiện**: mỗi sự kiện chuyển động hiện kèm **ảnh snapshot** (thumbnail trong danh sách). Nếu hai ffmpeg chụp ảnh đang bận, sự kiện vẫn dùng **ảnh mới nhất** của camera làm dự phòng nên không bị thiếu ảnh.

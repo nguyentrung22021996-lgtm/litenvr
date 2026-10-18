@@ -169,6 +169,16 @@ class ApiTests(_AppCase):
         self.assertEqual(self.m.ai_event_label([], "Tùy chỉnh"), "Tùy chỉnh")
         self.assertEqual(self.m.ai_event_label([]), "AI: đối tượng")
 
+    def test_notify_disk_alert_settings_persist(self):
+        r = self.client.post("/api/notify", json={"disk_alert_enabled": True, "disk_warn_percent": 80,
+                                                  "disk_crit_percent": 90}, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        j = self.client.get("/api/notify", headers=auth()).json()
+        self.assertTrue(j["disk_alert_enabled"])
+        self.assertEqual(j["disk_warn_percent"], 80)
+        self.assertEqual(j["disk_crit_percent"], 90)
+        self.client.post("/api/notify", json={"disk_alert_enabled": False}, headers=auth())
+
     def test_events_search(self):
         conn = self.m.db_conn()
         conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
@@ -377,6 +387,15 @@ class BuilderTests(unittest.TestCase):
         cmds = self.m.build_motion_detect_cmds("cam", self._cam())
         self.assertEqual(len(cmds), 1)
         self.assertIn("showinfo", " ".join(cmds[0][1]))
+
+    def test_disk_health_and_alert_level(self):
+        h = self.m.disk_health()
+        self.assertIn("percent", h)
+        self.assertTrue(h["writable"])
+        self.assertIn("smart", h)
+        self.assertEqual(self.m.disk_alert_level(50, 85, 95), "")
+        self.assertEqual(self.m.disk_alert_level(90, 85, 95), "warn")
+        self.assertEqual(self.m.disk_alert_level(99, 85, 95), "crit")
 
     def test_explicit_h264_recording_uses_h264_while_live_copy(self):
         cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="copy"), video_codec="h264")
