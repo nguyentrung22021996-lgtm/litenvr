@@ -179,6 +179,18 @@ class ApiTests(_AppCase):
         self.assertEqual(j["disk_crit_percent"], 90)
         self.client.post("/api/notify", json={"disk_alert_enabled": False}, headers=auth())
 
+    def test_backup_settings_persist(self):
+        r = self.client.post("/api/backup", json={"enabled": True, "kind": "folder",
+                                                  "folder_path": "/mnt/backup", "mode": "move",
+                                                  "cameras": ["cam1"]}, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        j = self.client.get("/api/backup", headers=auth()).json()
+        self.assertTrue(j["enabled"])
+        self.assertEqual(j["folder_path"], "/mnt/backup")
+        self.assertEqual(j["mode"], "move")
+        self.assertEqual(j["cameras"], ["cam1"])
+        self.client.post("/api/backup", json={"enabled": False}, headers=auth())
+
     def test_events_search(self):
         conn = self.m.db_conn()
         conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
@@ -396,6 +408,52 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(self.m.disk_alert_level(50, 85, 95), "")
         self.assertEqual(self.m.disk_alert_level(90, 85, 95), "warn")
         self.assertEqual(self.m.disk_alert_level(99, 85, 95), "crit")
+
+    def test_backup_scan_and_folder_copy(self):
+        m = self.m
+        dest = os.path.join(m.STORAGE_DIR, "backupdest")
+        os.makedirs(dest, exist_ok=True)
+        rec = os.path.join(m.RECORDINGS_DIR, "camB")
+        os.makedirs(rec, exist_ok=True)
+        fname = "2026-01-01_00-00-00.mp4"
+        fpath = os.path.join(rec, fname)
+        with open(fpath, "wb") as f:
+            f.write(b"video")
+        old = time.time() - 3600
+        os.utime(fpath, (old, old))
+        m.CONFIG["backup"] = {"enabled": True, "kind": "folder", "folder_path": dest,
+                              "mode": "copy", "cameras": ["camB"]}
+        files = m.backup_scan()
+        self.assertIn(f"camB/{fname}", files)
+        m._backup_file(f"camB/{fname}")
+        self.assertTrue(os.path.isfile(os.path.join(dest, "camB", fname)))
+        self.assertIn(f"camB/{fname}", m._backup_done())
+        self.assertTrue(os.path.isfile(fpath))
+        m.CONFIG["backup"]["enabled"] = False
+
+    def test_backup_scan_skips_locked_and_recent(self):
+        m = self.m
+        rec = os.path.join(m.RECORDINGS_DIR, "camC")
+        os.makedirs(rec, exist_ok=True)
+        recent = os.path.join(rec, "2026-01-01_01-00-00.mp4")
+        locked = os.path.join(rec, "2026-01-01_02-00-00.mp4")
+        for p in (recent, locked):
+            with open(p, "wb") as f:
+                f.write(b"v")
+        old = time.time() - 3600
+        os.utime(locked, (old, old))
+        m.CONFIG["backup"] = {"enabled": True, "kind": "folder",
+                              "folder_path": os.path.join(m.STORAGE_DIR, "backupdest"),
+                              "cameras": ["camC"]}
+        fonts = m.locked_paths
+        m.locked_paths = lambda: {"camC/2026-01-01_02-00-00.mp4"}
+        try:
+            files = m.backup_scan()
+        finally:
+            m.locked_paths = fonts
+        self.assertNotIn("camC/2026-01-01_01-00-00.mp4", files)
+        self.assertNotIn("camC/2026-01-01_02-00-00.mp4", files)
+        m.CONFIG["backup"]["enabled"] = False
 
     def test_explicit_h264_recording_uses_h264_while_live_copy(self):
         cmd = self.m.build_ffmpeg_cmd("cam", self._cam(record_mode="continuous", video_codec="copy"), video_codec="h264")

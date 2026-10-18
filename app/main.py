@@ -214,6 +214,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=motion_buffer_manager, daemon=True).start()
     threading.Thread(target=cleanup_worker, daemon=True).start()
     threading.Thread(target=drive_worker, daemon=True).start()
+    threading.Thread(target=backup_worker, daemon=True).start()
     threading.Thread(target=hass_motion_listener, daemon=True).start()
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
@@ -363,6 +364,16 @@ DEFAULT_CONFIG = {
         "max_gb": 0,                  # 0 = chỉ dọn khi Drive thật sự gần đầy
         "min_free_mb": 2000,          # Dọn file cũ khi Drive còn trống dưới mức này
         "since_ts": 0                 # Chỉ sao lưu bản ghi mới hơn mốc này (0 = mọi bản ghi)
+    },
+    "backup": {
+        "enabled": False,
+        "kind": "folder",             # folder = SMB/NFS đã mount; ftp = máy chủ FTP
+        "folder_path": "",            # đường dẫn thư mục đích (mount SMB/NFS trong container)
+        "ftp_host": "", "ftp_port": 21, "ftp_user": "", "ftp_pass": "", "ftp_dir": "/",
+        "ftp_tls": False,             # True = FTPS (FTP qua TLS)
+        "mode": "copy",               # copy = giữ ở HDD; move = xoá sau khi sao lưu
+        "cameras": [],                # [] = tất cả camera
+        "since_ts": 0                 # chỉ sao lưu bản ghi mới hơn mốc này
     }
 }
 
@@ -462,6 +473,14 @@ def init_db():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_drive_status ON drive_uploads(status, next_try)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_drive_ts ON drive_uploads(ts)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS backup_done (
+            path TEXT PRIMARY KEY,
+            cam_id TEXT,
+            size INTEGER,
+            ts REAL
+        )
+    """)
     conn.commit()
 
 init_db()
@@ -3588,6 +3607,222 @@ def test_notify():
     if not results:
         raise HTTPException(status_code=400, detail="Chưa bật Telegram và chưa có Webhook URL")
     return {"status": "ok", "results": results}
+
+# ---------------- Sao lưu ra SMB/NFS/FTP ----------------
+class BackupSettings(BaseModel):
+    enabled: bool = False
+    kind: str = "folder"              # folder | ftp
+    folder_path: str = ""
+    ftp_host: str = ""
+    ftp_port: int = 21
+    ftp_user: str = ""
+    ftp_pass: str = ""                # để trống khi lưu = giữ mật khẩu cũ
+    ftp_dir: str = "/"
+    ftp_tls: bool = False
+    mode: str = "copy"                # copy | move
+    cameras: List[str] = []
+    since_ts: float = 0
+
+
+def _backup_cfg() -> dict:
+    return CONFIG.get("backup") or {}
+
+
+def _backup_done() -> set:
+    try:
+        rows = db_conn().execute("SELECT path FROM backup_done").fetchall()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
+def backup_scan() -> List[str]:
+    """Danh sách bản ghi (cam_id/fname) chưa sao lưu, đủ cũ và không bị khoá."""
+    cfg = _backup_cfg()
+    if not cfg.get("enabled"):
+        return []
+    done = _backup_done()
+    locks = locked_paths()
+    cams = cfg.get("cameras") or list(CONFIG.get("cameras", {}).keys())
+    since = float(cfg.get("since_ts", 0) or 0)
+    now = time.time()
+    out: List[str] = []
+    for cam in cams:
+        d = os.path.join(RECORDINGS_DIR, cam)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".mp4"):
+                continue
+            rel = f"{cam}/{fn}"
+            if rel in done or rel in locks:
+                continue
+            try:
+                st = os.stat(os.path.join(d, fn))
+            except OSError:
+                continue
+            if now - st.st_mtime < 30 or (since and st.st_mtime < since):
+                continue
+            out.append(rel)
+    return out
+
+
+def _ftp_connect(cfg: dict):
+    import ftplib
+    c = ftplib.FTP_TLS() if cfg.get("ftp_tls") else ftplib.FTP()
+    c.connect(cfg.get("ftp_host", ""), int(cfg.get("ftp_port") or 21), timeout=15)
+    c.login(cfg.get("ftp_user", ""), cfg.get("ftp_pass", ""))
+    if cfg.get("ftp_tls"):
+        c.prot_p()
+    return c
+
+
+def _backup_file(rel: str, ftp=None):
+    """Sao lưu một bản ghi (cam_id/fname) ra đích; ghi nhận vào backup_done."""
+    cfg = _backup_cfg()
+    src = os.path.join(RECORDINGS_DIR, rel)
+    cam, fn = rel.split("/", 1)
+    kind = cfg.get("kind", "folder")
+    if kind == "folder":
+        root = (cfg.get("folder_path") or "").strip()
+        if not root or not os.path.isdir(root):
+            raise RuntimeError("thư mục đích không tồn tại")
+        dest_dir = os.path.join(root, cam)
+        os.makedirs(dest_dir, exist_ok=True)
+        shutil.copy2(src, os.path.join(dest_dir, fn))
+    elif kind == "ftp":
+        if ftp is None:
+            ftp = _ftp_connect(cfg)
+        base = (cfg.get("ftp_dir") or "/").rstrip("/")
+        try:
+            ftp.mkd(f"{base}/{cam}")
+        except Exception:
+            pass
+        with open(src, "rb") as f:
+            ftp.storbinary(f"STOR {base}/{cam}/{fn}", f)
+    else:
+        raise RuntimeError("kiểu sao lưu không hợp lệ")
+    conn = db_conn()
+    try:
+        size = os.path.getsize(src)
+    except OSError:
+        size = 0
+    conn.execute("INSERT OR REPLACE INTO backup_done (path, cam_id, size, ts) VALUES (?,?,?,?)",
+                 (rel, cam, size, time.time()))
+    conn.commit()
+    if cfg.get("mode") == "move" and kind == "folder":
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+
+
+def backup_worker():
+    while not _shutdown.is_set():
+        try:
+            cfg = _backup_cfg()
+            if cfg.get("enabled") and (cfg.get("folder_path") or cfg.get("ftp_host")):
+                files = backup_scan()
+                ftp = None
+                if cfg.get("kind") == "ftp" and files:
+                    try:
+                        ftp = _ftp_connect(cfg)
+                    except Exception as e:
+                        log_event("warn", f"Backup FTP kết nối lỗi: {mask_secrets(str(e))}")
+                        files = []
+                for rel in files[:50]:
+                    if _shutdown.is_set():
+                        break
+                    try:
+                        _backup_file(rel, ftp)
+                    except Exception as e:
+                        log_event("warn", f"Sao lưu lỗi {rel}: {mask_secrets(str(e))}")
+                        break
+                if ftp:
+                    try:
+                        ftp.quit()
+                    except Exception:
+                        pass
+        except Exception as e:
+            log_event("warn", f"backup_worker: {mask_secrets(str(e))}")
+        _shutdown.wait(60)
+
+
+@app.get("/api/backup")
+def get_backup_settings():
+    b = _backup_cfg()
+    try:
+        done = db_conn().execute("SELECT COUNT(*), COALESCE(SUM(size),0) FROM backup_done").fetchone()
+    except Exception:
+        done = (0, 0)
+    return {
+        "enabled": bool(b.get("enabled")),
+        "kind": b.get("kind", "folder"),
+        "folder_path": b.get("folder_path", ""),
+        "ftp_host": b.get("ftp_host", ""), "ftp_port": int(b.get("ftp_port") or 21),
+        "ftp_user": b.get("ftp_user", ""), "has_ftp_pass": bool((b.get("ftp_pass") or "").strip()),
+        "ftp_dir": b.get("ftp_dir", "/"), "ftp_tls": bool(b.get("ftp_tls")),
+        "mode": b.get("mode", "copy"),
+        "cameras": b.get("cameras", []),
+        "since_ts": float(b.get("since_ts", 0) or 0),
+        "done_count": done[0], "done_bytes": done[1],
+        "pending": len(backup_scan()),
+    }
+
+
+@app.post("/api/backup")
+def update_backup_settings(settings: BackupSettings):
+    b = CONFIG.setdefault("backup", dict(DEFAULT_CONFIG["backup"]))
+    b["enabled"] = settings.enabled
+    b["kind"] = settings.kind if settings.kind in ("folder", "ftp") else "folder"
+    b["folder_path"] = settings.folder_path.strip()
+    b["ftp_host"] = settings.ftp_host.strip()
+    b["ftp_port"] = int(settings.ftp_port or 21)
+    b["ftp_user"] = settings.ftp_user.strip()
+    if settings.ftp_pass.strip():
+        b["ftp_pass"] = settings.ftp_pass.strip()
+    b["ftp_dir"] = settings.ftp_dir.strip() or "/"
+    b["ftp_tls"] = settings.ftp_tls
+    b["mode"] = settings.mode if settings.mode in ("copy", "move") else "copy"
+    b["cameras"] = [str(x) for x in (settings.cameras or []) if str(x)]
+    b["since_ts"] = float(settings.since_ts or 0)
+    save_config(CONFIG)
+    log_event("info", "Đã lưu cấu hình sao lưu SMB/NFS/FTP")
+    return {"status": "ok"}
+
+
+@app.post("/api/backup/test")
+def test_backup_destination():
+    cfg = _backup_cfg()
+    kind = cfg.get("kind", "folder")
+    if kind == "folder":
+        root = (cfg.get("folder_path") or "").strip()
+        if not root:
+            raise HTTPException(status_code=400, detail="Chưa nhập thư mục đích")
+        if not os.path.isdir(root):
+            raise HTTPException(status_code=400, detail="Thư mục đích không tồn tại trong container (đã mount chưa?)")
+        probe = os.path.join(root, ".litenvr_write_test")
+        try:
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.remove(probe)
+        except OSError as e:
+            raise HTTPException(status_code=400, detail=f"Không ghi được vào thư mục đích: {e}")
+        return {"status": "ok", "results": {"folder": "ok"}}
+    if kind == "ftp":
+        if not cfg.get("ftp_host"):
+            raise HTTPException(status_code=400, detail="Chưa nhập máy chủ FTP")
+        try:
+            ftp = _ftp_connect(cfg)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Không kết nối được FTP: {mask_secrets(str(e))}")
+        try:
+            ftp.quit()
+        except Exception:
+            pass
+        return {"status": "ok", "results": {"ftp": "ok"}}
+    raise HTTPException(status_code=400, detail="Kiểu sao lưu không hợp lệ")
+
 
 # ---------------- Sao lưu Google Drive (24/7) ----------------
 # Kiến trúc: quét thư mục bản ghi -> hàng đợi SQLite (drive_uploads) -> luồng nền

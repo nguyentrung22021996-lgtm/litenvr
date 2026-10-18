@@ -1078,6 +1078,7 @@
       <button class="primary" onclick="openCamModal()" data-admin>+ Quản lý Camera</button>
       <button onclick="openStorageModal()" data-admin>⚙️ Lưu trữ</button>
       <button onclick="openDriveModal()" data-admin>☁️ Google Drive <span id="driveBadge" class="log-badge" hidden>0</span></button>
+      <button onclick="openBackupModal()" data-admin>💾 Sao lưu SMB/NFS/FTP</button>
       <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
       <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
       <div class="spacer"></div>
@@ -1612,6 +1613,64 @@
         <div style="display:flex; gap:8px;">
           <button onclick="closeNotifyModal()">Đóng</button>
           <button class="primary" onclick="saveNotify()">Lưu</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Sao lưu SMB/NFS/FTP -->
+  <div class="modal" id="backupModal">
+    <div class="modal-box">
+      <h3 style="margin-top:0">💾 Sao lưu bản ghi ra SMB/NFS/FTP</h3>
+      <label class="log-chk" style="font-size:13px; margin-bottom:12px;">
+        <input type="checkbox" id="bkEnabled"> Bật sao lưu tự động bản ghi ra đích bên ngoài
+      </label>
+      <div class="form-row">
+        <label>Kiểu đích:</label>
+        <select id="bkKind" onchange="bkToggleKind()">
+          <option value="folder">Thư mục SMB/NFS đã mount trong container</option>
+          <option value="ftp">Máy chủ FTP / FTPS</option>
+        </select>
+      </div>
+      <div id="bkFolderBox">
+        <div class="form-row">
+          <label>Đường dẫn thư mục đích (mount SMB/NFS vào container, VD /mnt/backup):</label>
+          <input id="bkFolderPath" placeholder="/mnt/backup">
+        </div>
+      </div>
+      <div id="bkFtpBox" style="display:none;">
+        <div class="grid-2">
+          <div class="form-row"><label>Máy chủ FTP:</label><input id="bkFtpHost" placeholder="ftp.example.com"></div>
+          <div class="form-row"><label>Cổng:</label><input type="number" id="bkFtpPort" min="1" max="65535" value="21"></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row"><label>Tài khoản:</label><input id="bkFtpUser"></div>
+          <div class="form-row"><label>Mật khẩu (trống = giữ cũ):</label><input type="password" id="bkFtpPass"></div>
+        </div>
+        <div class="grid-2">
+          <div class="form-row"><label>Thư mục trên FTP:</label><input id="bkFtpDir" value="/"></div>
+          <div class="form-row"><label>&nbsp;</label><label class="log-chk"><input type="checkbox" id="bkFtpTls"> Dùng FTPS (TLS)</label></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label>Sau khi sao lưu:</label>
+          <select id="bkMode">
+            <option value="copy">Giữ nguyên trên ổ cứng (copy)</option>
+            <option value="move">Xoá khỏi ổ cứng để giải phóng chỗ (move)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Camera (bỏ trống = tất cả):</label>
+          <input id="bkCameras" placeholder="cam_cong, cam_san">
+        </div>
+      </div>
+      <div id="bkStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
+      <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
+        <button class="warn" onclick="testBackup()">🔌 Kiểm tra đích</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeBackupModal()">Đóng</button>
+          <button class="primary" onclick="saveBackup()">Lưu</button>
         </div>
       </div>
     </div>
@@ -3079,6 +3138,72 @@
       }
     }
 
+    // ================= Sao lưu ra SMB/NFS/FTP =================
+    function bkToggleKind() {
+      const k = document.getElementById("bkKind").value;
+      document.getElementById("bkFolderBox").style.display = k === "folder" ? "block" : "none";
+      document.getElementById("bkFtpBox").style.display = k === "ftp" ? "block" : "none";
+    }
+    async function openBackupModal() {
+      const cfg = await fetch("/api/backup").then(r => r.json());
+      document.getElementById("bkEnabled").checked = !!cfg.enabled;
+      document.getElementById("bkKind").value = cfg.kind || "folder";
+      document.getElementById("bkFolderPath").value = cfg.folder_path || "";
+      document.getElementById("bkFtpHost").value = cfg.ftp_host || "";
+      document.getElementById("bkFtpPort").value = cfg.ftp_port || 21;
+      document.getElementById("bkFtpUser").value = cfg.ftp_user || "";
+      document.getElementById("bkFtpPass").value = "";
+      document.getElementById("bkFtpDir").value = cfg.ftp_dir || "/";
+      document.getElementById("bkFtpTls").checked = !!cfg.ftp_tls;
+      document.getElementById("bkMode").value = cfg.mode || "copy";
+      document.getElementById("bkCameras").value = (cfg.cameras || []).join(", ");
+      document.getElementById("bkStatus").textContent =
+        `Đã sao lưu ${cfg.done_count || 0} bản ghi (${drvFmtBytes(cfg.done_bytes || 0)}) · còn chờ ${cfg.pending || 0}`;
+      bkToggleKind();
+      document.getElementById("backupModal").style.display = "flex";
+    }
+    function closeBackupModal() { document.getElementById("backupModal").style.display = "none"; }
+    function readBackupPayload() {
+      const cams = document.getElementById("bkCameras").value.split(",")
+        .map(s => s.trim()).filter(Boolean);
+      return {
+        enabled: document.getElementById("bkEnabled").checked,
+        kind: document.getElementById("bkKind").value,
+        folder_path: document.getElementById("bkFolderPath").value.trim(),
+        ftp_host: document.getElementById("bkFtpHost").value.trim(),
+        ftp_port: parseInt(document.getElementById("bkFtpPort").value, 10) || 21,
+        ftp_user: document.getElementById("bkFtpUser").value.trim(),
+        ftp_pass: document.getElementById("bkFtpPass").value,
+        ftp_dir: document.getElementById("bkFtpDir").value.trim() || "/",
+        ftp_tls: document.getElementById("bkFtpTls").checked,
+        mode: document.getElementById("bkMode").value,
+        cameras: cams
+      };
+    }
+    async function saveBackup() {
+      const r = await fetch("/api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(readBackupPayload()) });
+      const st = document.getElementById("bkStatus");
+      st.style.color = r.ok ? "#10b981" : "#f87171";
+      st.textContent = r.ok ? "✔ Đã lưu cấu hình sao lưu." : "❌ Lưu lỗi.";
+    }
+    async function testBackup() {
+      const st = document.getElementById("bkStatus");
+      st.style.color = "#94a3b8";
+      st.textContent = "⏳ Đang kiểm tra đích...";
+      await fetch("/api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(readBackupPayload()) });
+      try {
+        const r = await fetch("/api/backup/test", { method: "POST" });
+        const d = await r.json();
+        st.style.color = r.ok ? "#10b981" : "#f87171";
+        st.textContent = r.ok ? "✔ Đích OK: " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
+      } catch (e) {
+        st.style.color = "#f87171";
+        st.textContent = "❌ " + e;
+      }
+    }
+
     // ================= Backup / Restore cấu hình =================
     async function importConfigFile(input) {
       const f = input.files[0];
@@ -3212,6 +3337,7 @@
       const closers = {
         camModal: closeCamModal, storageModal: closeStorageModal, logsModal: closeLogsModal,
         hassModal: closeHassModal, notifyModal: closeNotifyModal, secModal: closeSecModal,
+        backupModal: closeBackupModal,
         driveModal: closeDriveModal
       };
       const fn = closers[top.id];

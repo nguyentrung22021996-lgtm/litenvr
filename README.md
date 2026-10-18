@@ -133,6 +133,14 @@ Nguyên nhân phổ biến: camera dùng **H.265/HEVC** — trình duyệt (Chro
 - **📱 Tối ưu điện thoại / máy tính bảng**: giao diện tự gọn thanh công cụ thành nút **☰** trên màn hình nhỏ, modal mở toàn màn hình, nút/ô nhập đủ lớn cho cảm ứng (ô nhập ≥16px, chống iOS tự phóng to), timeline cao hơn để kéo tua dễ hơn.
 
 
+## Sao lưu ra SMB/NFS/FTP
+Bấm **💾 Sao lưu SMB/NFS/FTP** (admin) để tự động chép các đoạn ghi hoàn chỉnh ra ổ/máy chủ ngoài:
+- **Thư mục SMB/NFS**: trước hết **mount** chia sẻ vào container (thêm volume trong `docker-compose`, VD `- /mnt/backup:/mnt/backup` hoặc mount CIFS/NFS trên ZimaOS), rồi nhập đường dẫn đó (VD `/mnt/backup`). LiteNVR chép vào `<thư mục>/<mã camera>/<tên file>`.
+- **FTP/FTPS**: nhập máy chủ, cổng, tài khoản/mật khẩu, thư mục đích; bật **FTPS** nếu server yêu cầu TLS.
+- **Sau khi sao lưu**: `copy` giữ nguyên trên ổ cứng; `move` **xoá bản ghi khỏi ổ cứng** sau khi sao lưu xong (chỉ áp dụng cho đích là thư mục).
+- **Camera**: bỏ trống = tất cả. Bản ghi **đang ghi** (mới hơn 30 giây), bản ghi **đã sao lưu** và bản ghi **đang khoá** sẽ bị bỏ qua; file thành công được ghi nhận để không chép lại.
+- Nút **🔌 Kiểm tra đích** thử ghi file hoặc kết nối FTP. API: `GET/POST /api/backup`, `POST /api/backup/test`.
+
 ## Sao lưu 24/7 lên Google Drive (tự dọn khi đầy)
 Bấm **☁️ Google Drive** (chỉ tài khoản admin) để bật tính năng: mọi đoạn ghi hoàn chỉnh sẽ **tự động tải lên Drive 24/7** vào thư mục `LiteNVR/<tên camera>`. Khi Drive đầy, LiteNVR **tự xoá các file cũ nhất do chính nó tải lên** (xoá vĩnh viễn, không vào thùng rác, để giải phóng dung lượng ngay) rồi tiếp tục tải. File đang được ghi sẽ không bị đụng tới; file lỗi được **thử lại tự động** (5 lần, chờ tăng dần).
 
