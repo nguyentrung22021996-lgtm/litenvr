@@ -214,6 +214,70 @@ class ApiTests(_AppCase):
         j = self.client.get("/api/events?date_from=2026-02-01&date_to=2026-02-28", headers=auth()).json()
         self.assertEqual(j["count"], 1)
         self.assertEqual(j["events"][0]["cam_id"], "camT")
+        self.assertEqual(j["total"], 1)
+        self.assertEqual(j["offset"], 0)
+
+    def test_events_star_and_label_filter(self):
+        conn = self.m.db_conn()
+        conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
+                     "VALUES (?,?,?,?,?,?)", ("camStar", 300, "2026-03-01", "09-00-00", "Xe tải", "x.jpg"))
+        conn.commit()
+        eid = conn.execute("SELECT id FROM events WHERE cam_id='camStar'").fetchone()[0]
+        r = self.client.post(f"/api/events/{eid}/star", json={"starred": True}, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["starred"])
+        only = self.client.get("/api/events?cam_id=camStar&starred=1", headers=auth()).json()
+        self.assertEqual(only["count"], 1)
+        self.assertTrue(only["events"][0]["starred"])
+        none = self.client.get("/api/events?cam_id=camStar&starred=1&label=Không có", headers=auth()).json()
+        self.assertEqual(none["count"], 0)
+        self.assertEqual(self.client.post(f"/api/events/{eid}/star", json={"starred": False},
+                                          headers=auth()).status_code, 200)
+        self.assertEqual(self.client.get("/api/events?cam_id=camStar&starred=1", headers=auth()).json()["count"], 0)
+        self.assertIn("Xe tải", self.client.get("/api/events/labels", headers=auth()).json()["labels"])
+        self.assertEqual(self.client.post("/api/events/99999999/star", json={"starred": True},
+                                          headers=auth()).status_code, 404)
+
+    def test_events_pagination(self):
+        conn = self.m.db_conn()
+        for i in range(5):
+            conn.execute("INSERT INTO events (cam_id, timestamp, date_str, time_str, label, snapshot) "
+                         "VALUES (?,?,?,?,?,?)",
+                         ("camPage", 1000 + i, "2026-04-01", "08:00:0%d" % i, "L%d" % i, ""))
+        conn.commit()
+        page = self.client.get("/api/events?cam_id=camPage&limit=2&offset=0", headers=auth()).json()
+        self.assertEqual(page["count"], 2)
+        self.assertEqual(page["total"], 5)
+        page2 = self.client.get("/api/events?cam_id=camPage&limit=2&offset=2", headers=auth()).json()
+        self.assertEqual(page2["count"], 2)
+        self.assertNotEqual(page["events"][0]["id"], page2["events"][0]["id"])
+
+    def test_camera_max_gb_and_min_free_percent(self):
+        r = self.client.post("/api/cameras", json={"cam_id": "camGB", "name": "GB",
+                                                   "rtsp_url": "rtsp://127.0.0.1:1/x", "max_gb": 5},
+                             headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.m.CONFIG["cameras"]["camGB"]["max_gb"], 5.0)
+        r = self.client.post("/api/storage", json={"retention_days": 7, "max_storage_gb": 0,
+                                                   "max_disk_percent": 85, "post_motion_sec": 60,
+                                                   "ram_buffer": True, "min_free_percent": 4}, headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.m.CONFIG["min_free_percent"], 4.0)
+        sysinfo = self.client.get("/api/system", headers=auth()).json()
+        self.assertEqual(sysinfo["min_free_percent"], 4.0)
+        self.assertIn("recording_paused", sysinfo)
+        self.client.delete("/api/cameras/camGB", headers=auth())
+
+    def test_session_list_and_revoke(self):
+        self.m.create_session("user1", "10.0.0.1")
+        self.m.create_session("user1", "10.0.0.2")
+        j = self.client.get("/api/me/sessions", headers=auth()).json()
+        self.assertGreaterEqual(j["count"], 2)
+        self.assertFalse(any(s["current"] for s in j["sessions"]))
+        r = self.client.post("/api/me/sessions/revoke", headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertGreaterEqual(r.json()["revoked"], 2)
+        self.assertEqual(self.client.get("/api/me/sessions", headers=auth()).json()["count"], 0)
 
     def test_login_page_cache_headers(self):
         r = self.client.get("/login")

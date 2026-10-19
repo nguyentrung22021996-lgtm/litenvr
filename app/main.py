@@ -287,6 +287,7 @@ async def auth_guard(request: Request, call_next):
         return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="LiteNVR"'}, content="Unauthorized")
     request.state.user = user
     request.state.auth_source = source
+    request.state.session_token = request.cookies.get(SESSION_COOKIE, "") if source == "session" else ""
     if source == "session" and request.method in ("POST", "PUT", "DELETE", "PATCH"):
         if request.headers.get("X-NVR-CSRF") != "1":
             origin = request.headers.get("origin", "") or request.headers.get("referer", "")
@@ -327,6 +328,7 @@ DEFAULT_CONFIG = {
     "retention_days": 7,
     "max_storage_gb": 0,       # 0 = Không giới hạn theo GB
     "max_disk_percent": 85,    # Tự xóa file cũ nhất nếu ổ cứng đầy quá 85%
+    "min_free_percent": 3,     # Tạm dừng ghi hình mới khi ổ trống thấp hơn mức này (%)
     "post_motion_sec": 60,     # Thời gian ghi tiếp sau khi có chuyển động (giây)
     "ram_buffer": True,        # True: đệm motion trong RAM; False: ghi đệm ra đĩa
     "motion_detect": {         # Dò chuyển động nội bộ bằng ffmpeg (không cần Home Assistant)
@@ -467,6 +469,10 @@ def init_db():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_cam_date ON events(cam_id, date_str)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_cam_ts ON events(cam_id, timestamp)")
+    cols = {row[1] for row in c.execute("PRAGMA table_info(events)").fetchall()}
+    if "starred" not in cols:
+        c.execute("ALTER TABLE events ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_events_starred ON events(starred, timestamp)")
     c.execute("""
         CREATE TABLE IF NOT EXISTS locks (
             path TEXT PRIMARY KEY,
@@ -927,6 +933,19 @@ LIVE_HLS_TIME = max(1, min(10, int(os.environ.get("LIVE_HLS_TIME", "2") or "2"))
 LIVE_HLS_LIST = max(2, min(20, int(os.environ.get("LIVE_HLS_LIST", "5") or "5")))
 # Theo dõi cảnh báo đầy ổ (tránh spam log)
 _disk_warn = {"t": 0.0}
+_disk_paused = {"low": False}
+
+
+def disk_low() -> bool:
+    """True khi ổ chứa bản ghi trống ít hơn min_free_percent -> tạm dừng ghi hình mới."""
+    try:
+        total, used, _ = shutil.disk_usage(STORAGE_DIR)
+        if not total:
+            return False
+        pct = float(CONFIG.get("min_free_percent", 3) or 0)
+        return pct > 0 and ((total - used) / total) * 100 < pct
+    except Exception:
+        return False
 # Lưu thời điểm kết thúc ghi hình chuyển động của từng camera (Unix timestamp)
 motion_active_until: Dict[str, float] = {}
 # Chẩn đoán trạng thái camera (cho UI/log)
@@ -1940,6 +1959,12 @@ def live_supervisor():
     while not _shutdown.is_set():
         try:
             now = time.time()
+            low = disk_low()
+            if low != _disk_paused["low"]:
+                _disk_paused["low"] = low
+                log_event("warn" if low else "info",
+                          "Ổ đĩa gần đầy: tạm dừng ghi hình mới" if low
+                          else "Ổ đĩa đã hồi phục: tiếp tục ghi hình")
             for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
                 st = cam_status.get(cam_id, {})
                 sched = schedule_record_mode(cam)
@@ -1948,7 +1973,7 @@ def live_supervisor():
                     if st.get("running"):
                         log_event("info", f"Lịch ghi hình đổi sang '{sched}', áp dụng lại luồng", cam_id)
                         stop_camera_worker(cam_id)
-                    if sched != "off":
+                    if sched != "off" and not low:
                         start_camera_worker(cam_id)
                     st["_sched"] = sched
                     continue
@@ -1968,6 +1993,9 @@ def live_supervisor():
                         proc = ffmpeg_processes.get(cam_id)
                         if proc and proc.poll() is None:
                             _restart_camera_process(cam_id, proc)
+                # Hồi phục sau khi ổ đĩa hết đầy: khởi động lại ghi hình cho camera đang cần
+                if not low and sched != "off" and not st.get("running"):
+                    start_camera_worker(cam_id)
             disk = read_disk()
             thr = float(CONFIG.get("max_disk_percent", 85) or 0)
             if thr and disk["disk_percent"] > thr and now - _disk_warn["t"] > 600:
@@ -2108,6 +2136,66 @@ def run_cleanup_now():
         except Exception:
             pass
 
+    # 3. Hạn mức dung lượng riêng cho từng camera (max_gb): xoá file cũ nhất của riêng camera đó
+    for cam_id, cam in list(CONFIG.get("cameras", {}).items()):
+        try:
+            quota = float(cam.get("max_gb") or 0)
+        except (TypeError, ValueError):
+            quota = 0
+        if quota <= 0:
+            continue
+        cam_dir = os.path.join(RECORDINGS_DIR, cam_id)
+        if not os.path.isdir(cam_dir):
+            continue
+        files = []
+        cam_bytes = 0
+        for fname in os.listdir(cam_dir):
+            if not fname.endswith(".mp4"):
+                continue
+            fp = os.path.join(cam_dir, fname)
+            if f"{cam_id}/{fname}" in locked:
+                continue
+            try:
+                size = os.path.getsize(fp)
+                files.append((os.path.getmtime(fp), size, fp))
+                cam_bytes += size
+            except Exception:
+                pass
+        quota_bytes = quota * (1024 ** 3)
+        files.sort(key=lambda x: x[0])
+        for mtime, fsize, fp in files:
+            if cam_bytes <= quota_bytes:
+                break
+            try:
+                os.remove(fp)
+                cam_bytes -= fsize
+                deleted_count += 1
+            except Exception:
+                pass
+
+    # 4. Dọn sự kiện cũ trong CSDL (giữ lại sự kiện đã đánh dấu ★)
+    try:
+        conn = db_conn()
+        now_ts = int(time.time())
+        cams = CONFIG.get("cameras", {})
+        for cid in list(cams.keys()):
+            days = cam_retention_days(cid)
+            if days <= 0:
+                continue
+            conn.execute("DELETE FROM events WHERE cam_id=? AND starred=0 AND timestamp < ?",
+                         (cid, now_ts - int(days * 86400)))
+        if retention_days > 0:
+            cut = now_ts - int(retention_days * 86400)
+            if cams:
+                ph = ",".join("?" * len(cams))
+                conn.execute(f"DELETE FROM events WHERE starred=0 AND cam_id NOT IN ({ph}) AND timestamp < ?",
+                             (list(cams.keys()) + [cut]))
+            else:
+                conn.execute("DELETE FROM events WHERE starred=0 AND timestamp < ?", (cut,))
+        conn.commit()
+    except Exception as e:
+        log_event("warn", f"cleanup events: {e}")
+
     _size_cache["t"] = 0.0
     return deleted_count
 
@@ -2185,6 +2273,7 @@ class CameraItem(BaseModel):
     tags: str = ""                   # Nhãn tự do, cách nhau dấu phẩy
     onvif_port: int = 80             # Cổng ONVIF/PTZ (nếu khác 80)
     retention_days: float = 0        # Số ngày lưu riêng (0 = dùng mức chung toàn hệ thống)
+    max_gb: float = 0                # Hạn mức dung lượng riêng (0 = dùng mức chung toàn hệ thống)
     schedule_enabled: bool = False   # Bật lịch ghi hình theo giờ
     schedule: List[Dict[str, Any]] = []  # [{days:[0-6], from:"18:00", to:"06:00", mode:"motion"}]
     motion_enabled: bool = False         # Bật dò chuyển động nội bộ cho camera này
@@ -2196,6 +2285,10 @@ class StorageSettings(BaseModel):
     max_disk_percent: float
     post_motion_sec: int
     ram_buffer: bool = True          # True: đệm motion trong RAM; False: ghi ra đĩa
+    min_free_percent: float = 3      # Tạm dừng ghi hình khi ổ trống thấp hơn mức này
+
+class EventStar(BaseModel):
+    starred: bool = True
 
 class MotionDetectSettings(BaseModel):
     enabled: bool = False
@@ -2404,6 +2497,8 @@ def get_system_info():
         "retention_days": CONFIG.get("retention_days", 7),
         "max_storage_gb": CONFIG.get("max_storage_gb", 0),
         "max_disk_percent": CONFIG.get("max_disk_percent", 85),
+        "min_free_percent": CONFIG.get("min_free_percent", 3),
+        "recording_paused": bool(_disk_paused["low"] or disk_low()),
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
         "ram_buffer": bool(CONFIG.get("ram_buffer", True)),
         "motion_detect": bool(_motion_cfg().get("enabled")),
@@ -2432,6 +2527,7 @@ def update_storage_settings(settings: StorageSettings):
     CONFIG["retention_days"] = settings.retention_days
     CONFIG["max_storage_gb"] = settings.max_storage_gb
     CONFIG["max_disk_percent"] = settings.max_disk_percent
+    CONFIG["min_free_percent"] = max(0.0, float(settings.min_free_percent or 0))
     CONFIG["post_motion_sec"] = settings.post_motion_sec
     CONFIG["ram_buffer"] = settings.ram_buffer
     save_config(CONFIG)
@@ -2543,6 +2639,7 @@ def add_or_update_camera(item: CameraItem):
         "tags": item.tags,
         "onvif_port": int(item.onvif_port or 80),
         "retention_days": max(0.0, float(item.retention_days or 0)),
+        "max_gb": max(0.0, float(item.max_gb or 0)),
         "schedule_enabled": bool(item.schedule_enabled),
         "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
         **_norm_cam_motion(item),
@@ -2574,6 +2671,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "room": item.room, "tags": item.tags,
             "onvif_port": int(item.onvif_port or 80),
             "retention_days": max(0.0, float(item.retention_days or 0)),
+        "max_gb": max(0.0, float(item.max_gb or 0)),
             "schedule_enabled": bool(item.schedule_enabled),
             "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
             **_norm_cam_motion(item),
@@ -3479,38 +3577,50 @@ def get_thumbnail(cam_id: str, fname: str, request: Request):
 
 @app.get("/api/events")
 def search_events(request: Request, cam_id: str = "", q: str = "",
-                  date_from: str = "", date_to: str = "", limit: int = 200):
-    """Tìm kiếm sự kiện chuyển động toàn hệ thống theo camera, nhãn và khoảng ngày."""
+                  label: str = "", date_from: str = "", date_to: str = "",
+                  starred: int = 0, limit: int = 200, offset: int = 0):
+    """Tìm kiếm sự kiện chuyển động theo camera, nhãn, khoảng ngày và trạng thái đánh dấu."""
     u = getattr(request.state, "user", None) or {}
     allowed = None if (u.get("role") == "admin" or not u.get("cameras")) else set(u["cameras"])
     try:
         limit = max(1, min(int(limit or 200), 1000))
     except Exception:
         limit = 200
-    sql = "SELECT id, cam_id, timestamp, date_str, time_str, label, snapshot FROM events WHERE 1=1"
+    try:
+        offset = max(0, int(offset or 0))
+    except Exception:
+        offset = 0
+    where = " WHERE 1=1"
     params: list = []
     if cam_id:
         assert_cam_access(request, cam_id)
-        sql += " AND cam_id=?"
+        where += " AND cam_id=?"
         params.append(cam_id)
     elif allowed is not None:
         if not allowed:
-            return {"events": [], "count": 0}
-        sql += " AND cam_id IN (%s)" % ",".join("?" * len(allowed))
+            return {"events": [], "count": 0, "total": 0, "offset": offset, "limit": limit}
+        where += " AND cam_id IN (%s)" % ",".join("?" * len(allowed))
         params.extend(sorted(allowed))
     if date_from:
-        sql += " AND date_str>=?"
+        where += " AND date_str>=?"
         params.append(date_from)
     if date_to:
-        sql += " AND date_str<=?"
+        where += " AND date_str<=?"
         params.append(date_to)
+    if label:
+        where += " AND label=?"
+        params.append(label)
     if q:
         like = f"%{q}%"
-        sql += " AND (label LIKE ? OR cam_id LIKE ?)"
+        where += " AND (label LIKE ? OR cam_id LIKE ?)"
         params.extend([like, like])
-    sql += " ORDER BY timestamp DESC LIMIT ?"
-    params.append(limit)
-    rows = db_conn().execute(sql, params).fetchall()
+    if starred:
+        where += " AND starred=1"
+    conn = db_conn()
+    total = conn.execute("SELECT COUNT(*) FROM events" + where, params).fetchone()[0]
+    rows = conn.execute(
+        "SELECT id, cam_id, timestamp, date_str, time_str, label, snapshot, starred FROM events"
+        + where + " ORDER BY timestamp DESC LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
     cams = CONFIG.get("cameras", {})
     out = []
     for r in rows:
@@ -3526,9 +3636,29 @@ def search_events(request: Request, cam_id: str = "", q: str = "",
             "cam_name": (cams.get(cid) or {}).get("name", cid),
             "timestamp": r[2], "date": r[3], "time": t, "label": r[5],
             "sec_of_day": sec_of_day,
+            "starred": bool(r[7]),
             "snapshot": f"snapshots/{r[6]}" if r[6] else "",
         })
-    return {"events": out, "count": len(out)}
+    return {"events": out, "count": len(out), "total": total, "offset": offset, "limit": limit}
+
+@app.get("/api/events/labels")
+def event_labels():
+    """Danh sách nhãn sự kiện đã ghi nhận, dùng cho bộ lọc."""
+    rows = db_conn().execute(
+        "SELECT DISTINCT label FROM events WHERE label IS NOT NULL AND label<>'' ORDER BY label").fetchall()
+    return {"labels": [r[0] for r in rows]}
+
+@app.post("/api/events/{event_id}/star")
+def star_event(event_id: int, body: EventStar, request: Request):
+    """Đánh dấu/bỏ đánh dấu một sự kiện để giữ lại khi dọn dẹp."""
+    conn = db_conn()
+    row = conn.execute("SELECT cam_id FROM events WHERE id=?", (event_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Sự kiện không tồn tại")
+    assert_cam_access(request, row[0])
+    conn.execute("UPDATE events SET starred=? WHERE id=?", (1 if body.starred else 0, event_id))
+    conn.commit()
+    return {"status": "ok", "id": event_id, "starred": bool(body.starred)}
 
 @app.get("/api/locks")
 def list_locks():
@@ -5201,6 +5331,39 @@ def api_change_password(req: PasswordReq, request: Request):
     resp.delete_cookie(SESSION_COOKIE, path="/")
     return resp
 
+
+@app.get("/api/me/sessions")
+def api_my_sessions(request: Request):
+    """Danh sách phiên đăng nhập của tài khoản hiện tại (không lộ token thật)."""
+    u = request.state.user
+    uname = u.get("username") or NVR_USER
+    cur = getattr(request.state, "session_token", "") or ""
+    cur_hash = hashlib.sha256(cur.encode()).hexdigest() if cur else ""
+    rows = db_conn().execute(
+        "SELECT token_hash, created, expires, ip FROM sessions WHERE username=? ORDER BY created DESC",
+        (uname,)).fetchall()
+    out = [{
+        "id": r[0][:12],
+        "current": bool(cur_hash) and secrets.compare_digest(r[0], cur_hash),
+        "created": r[1], "expires": r[2], "ip": r[3] or "",
+    } for r in rows]
+    return {"sessions": out, "count": len(out)}
+
+@app.post("/api/me/sessions/revoke")
+def api_revoke_sessions(request: Request, others_only: bool = True):
+    """Thu hồi phiên: mặc định giữ phiên hiện tại, xoá mọi phiên khác của tài khoản."""
+    u = request.state.user
+    uname = u.get("username") or NVR_USER
+    cur = getattr(request.state, "session_token", "") or ""
+    cur_hash = hashlib.sha256(cur.encode()).hexdigest() if cur else ""
+    conn = db_conn()
+    if others_only and cur_hash:
+        cur_ = conn.execute("DELETE FROM sessions WHERE username=? AND token_hash<>?", (uname, cur_hash))
+    else:
+        cur_ = conn.execute("DELETE FROM sessions WHERE username=?", (uname,))
+    conn.commit()
+    audit("revoke_sessions", uname, client_ip(request), f"others_only={others_only}")
+    return {"status": "ok", "revoked": cur_.rowcount}
 
 @app.post("/api/me/totp/init")
 def api_totp_init(request: Request):

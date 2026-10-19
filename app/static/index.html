@@ -825,6 +825,36 @@
       display: block;
     }
 
+    .evt-star {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: rgba(2, 6, 23, 0.68);
+      color: #facc15;
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+      z-index: 2;
+    }
+
+    .evt-star:hover {
+      border-color: var(--border-hover);
+      background: rgba(2, 6, 23, 0.88);
+    }
+
+    .evt-star[aria-pressed="true"] {
+      border-color: #facc15;
+      background: rgba(202, 138, 4, 0.35);
+    }
+
     .evt-dl {
       position: absolute;
       right: 14px;
@@ -1373,11 +1403,19 @@
   <div id="evtSearchBar" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 14px;">
     <input id="evtSearchQ" placeholder="🔎 Tìm sự kiện (nhãn, camera)…" style="flex:1; min-width:170px;" oninput="debouncedEventSearch()">
     <select id="evtSearchCam"><option value="">Tất cả camera</option></select>
+    <select id="evtSearchLabel" title="Nhãn sự kiện" onchange="runEventSearch()"><option value="">Mọi nhãn</option></select>
     <input type="date" id="evtSearchFrom" title="Từ ngày" onchange="runEventSearch()">
     <input type="date" id="evtSearchTo" title="Đến ngày" onchange="runEventSearch()">
+    <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:#cbd5e1;" title="Chỉ hiện sự kiện đã đánh dấu">
+      <input type="checkbox" id="evtSearchStar" onchange="runEventSearch()" style="width:auto;"> ★ Đã đánh dấu
+    </label>
     <button onclick="clearEventSearch()">✕ Xoá lọc</button>
   </div>
   <div class="events-list" id="searchResults" style="display:none;"></div>
+  <div id="evtSearchMore" style="display:none; padding:4px 14px 12px;">
+    <button onclick="loadMoreEvents()">⬇ Tải thêm</button>
+    <span id="evtSearchCount" style="color:#94a3b8; margin-left:8px; font-size:13px;"></span>
+  </div>
   <div class="events-list" id="eventsList"></div>
 
   <!-- Modal Quản lý Camera -->
@@ -1559,6 +1597,10 @@
       <div class="form-row">
         <label>Ngưỡng đầy ổ cứng tối đa (% - Vượt ngưỡng này sẽ tự xóa video cũ nhất):</label>
         <input type="number" id="inpMaxPct" min="10" max="98" step="1">
+      </div>
+      <div class="form-row">
+        <label>Dung lượng trống tối thiểu (% - Dưới ngưỡng này sẽ tạm dừng ghi hình mới, tự ghi lại khi đủ chỗ):</label>
+        <input type="number" id="inpMinFree" min="0" max="50" step="1">
       </div>
       <div class="form-row">
         <label>Thời gian ghi hình mỗi lần có chuyển động (Giây - Áp dụng chế độ Motion):</label>
@@ -1883,6 +1925,14 @@
           </div>
         </div>
         <div id="tfaMsg" style="font-size:12px;margin-top:6px;"></div>
+
+        <h4 style="margin:18px 0 6px;">Phiên đăng nhập</h4>
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">Các thiết bị/trình duyệt đang đăng nhập tài khoản này.</div>
+        <div id="secSessions"></div>
+        <div style="margin-top:8px;">
+          <button class="warn" onclick="revokeOtherSessions()">🚪 Đăng xuất các phiên khác</button>
+          <span id="sessMsg" style="font-size:12px;margin-left:6px;"></span>
+        </div>
       </div>
 
       <div id="secTabUsers" hidden>
@@ -2063,6 +2113,7 @@
           searchCam.appendChild(o);
         }
       }
+      loadEventLabels();
       if (Object.keys(cameras).length === 0) {
         document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm '+ Quản lý Camera' để thêm." : "Chưa có camera được cấp quyền.";
         if (isAdmin()) openCamModal();
@@ -2385,6 +2436,7 @@
       document.getElementById("inpRetDays").value = sysInfo.retention_days;
       document.getElementById("inpMaxGb").value = sysInfo.max_storage_gb;
       document.getElementById("inpMaxPct").value = sysInfo.max_disk_percent;
+      document.getElementById("inpMinFree").value = sysInfo.min_free_percent != null ? sysInfo.min_free_percent : 3;
       document.getElementById("inpPostMotion").value = sysInfo.post_motion_sec;
       document.getElementById("inpRamBuffer").checked = sysInfo.ram_buffer !== false;
       document.getElementById("storageModal").style.display = "flex";
@@ -2396,6 +2448,7 @@
         retention_days: parseFloat(document.getElementById("inpRetDays").value) || 7,
         max_storage_gb: parseFloat(document.getElementById("inpMaxGb").value) || 0,
         max_disk_percent: parseFloat(document.getElementById("inpMaxPct").value) || 85,
+        min_free_percent: parseFloat(document.getElementById("inpMinFree").value) || 0,
         post_motion_sec: parseInt(document.getElementById("inpPostMotion").value) || 60,
         ram_buffer: document.getElementById("inpRamBuffer").checked
       };
@@ -2670,46 +2723,123 @@
     }
 
     let _evtSearchTimer = null;
+    async function loadEventLabels() {
+      const sel = document.getElementById("evtSearchLabel");
+      if (!sel) return;
+      const cur = sel.value;
+      let labels = [];
+      try { labels = (await fetch("api/events/labels").then(r => r.json())).labels || []; } catch (e) {}
+      sel.innerHTML = '<option value="">Mọi nhãn</option>';
+      labels.forEach(l => {
+        const o = document.createElement("option");
+        o.value = l; o.textContent = l;
+        sel.appendChild(o);
+      });
+      if (cur && labels.includes(cur)) sel.value = cur;
+    }
+
     function debouncedEventSearch() {
       clearTimeout(_evtSearchTimer);
       _evtSearchTimer = setTimeout(runEventSearch, 350);
     }
+    let _evtSearchOffset = 0;
+    const EVT_PAGE = 60;
+    function evtSearchFiltered() {
+      return {
+        q: document.getElementById("evtSearchQ").value.trim(),
+        cam: document.getElementById("evtSearchCam").value,
+        label: document.getElementById("evtSearchLabel").value,
+        star: document.getElementById("evtSearchStar").checked,
+        from: document.getElementById("evtSearchFrom").value,
+        to: document.getElementById("evtSearchTo").value,
+      };
+    }
+    function evtSearchActive(f) {
+      return !!(f.q || f.cam || f.label || f.star || f.from || f.to);
+    }
+    function evtSearchQuery(f, offset) {
+      const params = new URLSearchParams();
+      if (f.cam) params.set("cam_id", f.cam);
+      if (f.q) params.set("q", f.q);
+      if (f.label) params.set("label", f.label);
+      if (f.star) params.set("starred", "1");
+      if (f.from) params.set("date_from", f.from);
+      if (f.to) params.set("date_to", f.to);
+      params.set("limit", EVT_PAGE);
+      params.set("offset", offset);
+      return params;
+    }
+    function searchEventCard(e) {
+      const card = document.createElement("div");
+      card.className = "event-card";
+      card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
+        <button class="evt-star" title="Đánh dấu sự kiện" aria-pressed="${e.starred ? "true" : "false"}">${e.starred ? "★" : "☆"}</button>
+        <div style="margin-top:8px;font-size:13px;"><b>${esc(e.cam_name)}</b><br>${e.date} ${e.time} - ${esc(e.label)}</div>`;
+      const sec = (typeof e.sec_of_day === "number") ? e.sec_of_day
+        : parseInt(e.time.split(":")[0]) * 3600 + parseInt(e.time.split(":")[1]) * 60 + parseInt(e.time.split(":")[2]);
+      card.onclick = () => openEvent(e.cam_id, e.date, sec);
+      const btn = card.querySelector(".evt-star");
+      btn.onclick = async (ev) => {
+        ev.stopPropagation();
+        const next = btn.getAttribute("aria-pressed") !== "true";
+        try {
+          const r = await fetch(`api/events/${e.id}/star`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-NVR-CSRF": "1" },
+            body: JSON.stringify({ starred: next }),
+          });
+          if (!r.ok) return;
+          btn.setAttribute("aria-pressed", next ? "true" : "false");
+          btn.textContent = next ? "★" : "☆";
+        } catch (err) {}
+      };
+      return card;
+    }
+    function updateSearchMore(count, total) {
+      document.getElementById("evtSearchCount").textContent = `Hiện ${count}/${total} sự kiện`;
+      document.getElementById("evtSearchMore").style.display = (count < total) ? "" : "none";
+    }
     async function runEventSearch() {
-      const q = document.getElementById("evtSearchQ").value.trim();
-      const cam = document.getElementById("evtSearchCam").value;
-      const from = document.getElementById("evtSearchFrom").value;
-      const to = document.getElementById("evtSearchTo").value;
+      const f = evtSearchFiltered();
       const box = document.getElementById("searchResults");
       const list = document.getElementById("eventsList");
-      if (!q && !cam && !from && !to) { box.style.display = "none"; list.style.display = ""; return; }
-      const params = new URLSearchParams();
-      if (cam) params.set("cam_id", cam);
-      if (q) params.set("q", q);
-      if (from) params.set("date_from", from);
-      if (to) params.set("date_to", to);
-      let data = { events: [] };
-      try { data = await fetch("api/events?" + params.toString()).then(r => r.json()); } catch (e) {}
-      box.innerHTML = "";
-      (data.events || []).forEach(e => {
-        const card = document.createElement("div");
-        card.className = "event-card";
-        card.style.cursor = "pointer";
-        card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
-          <div style="margin-top:8px;font-size:13px;"><b>${esc(e.cam_name)}</b><br>${e.date} ${e.time} - ${esc(e.label)}</div>`;
-        const sec = (typeof e.sec_of_day === "number") ? e.sec_of_day
-          : parseInt(e.time.split(":")[0]) * 3600 + parseInt(e.time.split(":")[1]) * 60 + parseInt(e.time.split(":")[2]);
-        card.onclick = () => openEvent(e.cam_id, e.date, sec);
-        box.appendChild(card);
-      });
-      if (!(data.events || []).length) {
-        box.innerHTML = '<div style="color:#94a3b8; padding:12px;">Không có sự kiện phù hợp.</div>';
+      if (!evtSearchActive(f)) {
+        box.style.display = "none";
+        document.getElementById("evtSearchMore").style.display = "none";
+        list.style.display = "";
+        return;
       }
+      _evtSearchOffset = 0;
+      let data = { events: [], total: 0 };
+      try { data = await fetch("api/events?" + evtSearchQuery(f, 0).toString()).then(r => r.json()); } catch (e) {}
+      box.innerHTML = "";
+      const events = data.events || [];
+      if (!events.length) {
+        box.innerHTML = '<div style="color:#94a3b8; padding:12px;">Không có sự kiện phù hợp.</div>';
+      } else {
+        events.forEach(e => box.appendChild(searchEventCard(e)));
+      }
+      _evtSearchOffset = events.length;
       box.style.display = "";
       list.style.display = "none";
+      updateSearchMore(_evtSearchOffset, data.total || 0);
+    }
+    async function loadMoreEvents() {
+      const f = evtSearchFiltered();
+      if (!evtSearchActive(f)) return;
+      let data = { events: [], total: 0 };
+      try { data = await fetch("api/events?" + evtSearchQuery(f, _evtSearchOffset).toString()).then(r => r.json()); } catch (e) {}
+      const events = data.events || [];
+      const box = document.getElementById("searchResults");
+      events.forEach(e => box.appendChild(searchEventCard(e)));
+      _evtSearchOffset += events.length;
+      updateSearchMore(_evtSearchOffset, data.total || 0);
     }
     function clearEventSearch() {
       document.getElementById("evtSearchQ").value = "";
       document.getElementById("evtSearchCam").value = "";
+      document.getElementById("evtSearchLabel").value = "";
+      document.getElementById("evtSearchStar").checked = false;
       document.getElementById("evtSearchFrom").value = "";
       document.getElementById("evtSearchTo").value = "";
       runEventSearch();
@@ -3548,9 +3678,46 @@
       document.getElementById("secTabUsers").hidden = name !== "users";
       document.getElementById("secTabAudit").hidden = name !== "audit";
       document.getElementById("secTabStatus").hidden = name !== "status";
+      if (name === "me") loadSessions();
       if (name === "users") loadSecUsers();
       if (name === "audit") loadAudit();
       if (name === "status") loadSecStatus();
+    }
+
+    async function loadSessions() {
+      const box = document.getElementById("secSessions");
+      document.getElementById("sessMsg").textContent = "";
+      box.innerHTML = '<div style="color:#94a3b8;font-size:13px;">Đang tải...</div>';
+      let data = { sessions: [] };
+      try { data = await fetch("api/me/sessions").then(r => r.json()); } catch (e) {}
+      const rows = data.sessions || [];
+      if (!rows.length) {
+        box.innerHTML = '<div style="color:#94a3b8;font-size:13px;">Không có phiên nào.</div>';
+        return;
+      }
+      const fmt = (t) => t ? new Date(t * 1000).toLocaleString("vi-VN") : "";
+      box.innerHTML = "";
+      rows.forEach(s => {
+        const d = document.createElement("div");
+        d.className = "onvif-box";
+        d.style.marginBottom = "6px";
+        d.style.fontSize = "13px";
+        d.innerHTML = `<b>${s.current ? "Thiết bị này" : esc(s.ip || "không rõ IP")}</b>` +
+          `<span style="color:#94a3b8;"> · ${fmt(s.created)} → ${fmt(s.expires)}</span>` +
+          (s.current ? ' <span style="color:var(--accent);">(phiên hiện tại)</span>' : "");
+        box.appendChild(d);
+      });
+    }
+
+    async function revokeOtherSessions() {
+      const msg = document.getElementById("sessMsg");
+      msg.textContent = "Đang xử lý...";
+      try {
+        const r = await fetch("api/me/sessions/revoke", { method: "POST" });
+        const j = await r.json();
+        msg.textContent = (j.status === "ok") ? `Đã thu hồi ${j.revoked} phiên.` : "Không thực hiện được.";
+      } catch (e) { msg.textContent = "Lỗi kết nối."; }
+      loadSessions();
     }
 
     async function loadTfaState() {
