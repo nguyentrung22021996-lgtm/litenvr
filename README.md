@@ -33,9 +33,9 @@ Trên Web UI, bấm **🛰️ Home Assistant**:
 1. Nhập **Địa chỉ HA** (VD `http://homeassistant.local:8123`).
 2. Dán **Long-Lived Access Token** (HA → Hồ sơ người dùng → Security → Create Token). Token được lưu trong `config.json` và chỉ dùng ở phía server.
 3. Bấm **Kiểm tra kết nối** rồi **Lưu**.
-4. Gán cảm biến cho **từng camera** trong **+ Quản lý Camera** → **Sửa** → mục **🛰️ Cảm biến chuyển động Home Assistant**: gõ tên `binary_sensor.*` hoặc bấm **↻ Tải danh sách sensor** để chọn. Danh sách lưu trong `hass_entities` của camera.
+4. Gán cảm biến cho **từng camera** trong **+ Quản lý Camera** → **Sửa** → mục **🛰️ Cảm biến chuyển động Home Assistant**: bấm **↻ Tải danh sách sensor từ HA** để nạp cảm biến kèm trạng thái hiện tại, chọn cảm biến và **điều kiện kích hoạt** (VD `binary_sensor` → kích hoạt khi `on`; `device_tracker` → khi `home`; hoặc "mọi thay đổi trạng thái"). Danh sách lưu trong `hass_entities` của camera dưới dạng `{entity_id, state, label}`.
 
-LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; **mọi thay đổi trạng thái** của cảm biến đã gán đều kích hoạt ghi hình + snapshot cho camera tương ứng (chỉ khi giá trị đổi, không lặp). Sự kiện ghi nhãn `Chuyển động (HA: <entity_id>)`. Tự kết nối lại khi mất mạng.
+LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; chỉ khi cảm biến **chuyển sang** giá trị kích hoạt mới ghi hình + snapshot cho camera tương ứng (cảm biến giữ nguyên trạng thái sẽ không kích hoạt lặp). Sự kiện ghi nhãn tuỳ chọn, mặc định `Chuyển động (HA: <entity_id>)`. Tự kết nối lại khi mất mạng.
 
 ## Phát hiện chuyển động nội bộ (không cần ONVIF/HA)
 LiteNVR có thể tự dò chuyển động bằng chính luồng RTSP, không phụ thuộc cảm biến ONVIF hay Home Assistant. Bật **riêng cho từng camera** trong **+ Quản lý Camera** → **Sửa** → **🎯 Bật dò chuyển động cho camera này**, nên chỉ bật ở những camera cần (lưu trong `motion_enabled` của camera). Độ nhạy, nguồn dò và gộp sự kiện dùng **mặc định chung**.

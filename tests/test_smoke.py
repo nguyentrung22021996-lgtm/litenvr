@@ -146,12 +146,35 @@ class ApiTests(_AppCase):
     def test_camera_motion_settings_persist(self):
         payload = {"cam_id": "mo1", "name": "M", "rtsp_url": "rtsp://127.0.0.1:1/x",
                    "motion_enabled": True,
-                   "hass_entities": ["binary_sensor.cong", "binary_sensor.cong", " binary_sensor.san "]}
+                   "hass_entities": ["binary_sensor.cong", "binary_sensor.cong", " binary_sensor.san ",
+                                     {"entity_id": "device_tracker.dt", "state": "home", "label": "Ai đó về"}]}
         self.client.post("/api/cameras", json=payload, headers=auth())
         stored = self.client.get("/api/cameras", headers=auth()).json()["mo1"]
         self.assertTrue(stored["motion_enabled"])
-        self.assertEqual(stored["hass_entities"], ["binary_sensor.cong", "binary_sensor.san"])
+        self.assertEqual([e["entity_id"] for e in stored["hass_entities"]],
+                         ["binary_sensor.cong", "binary_sensor.san", "device_tracker.dt"])
+        self.assertEqual(stored["hass_entities"][2]["state"], "home")
         self.client.delete("/api/cameras/mo1", headers=auth())
+
+    def test_hass_entity_helpers(self):
+        self.assertEqual(self.m._default_active_state("binary_sensor.x"), "on")
+        self.assertEqual(self.m._default_active_state("device_tracker.x"), "home")
+        self.assertEqual(self.m._default_active_state("sensor.x"), "")
+        self.assertEqual(self.m._hass_state_options("binary_sensor.x"), ["on", "off"])
+        self.assertEqual(self.m._hass_state_options("person.a"), ["home", "not_home"])
+        self.assertEqual(self.m._hass_state_options("sensor.x"), [])
+        self.assertIsNone(self.m._norm_hass_entity(""))
+        self.assertEqual(self.m._norm_hass_entity("binary_sensor.a"),
+                         {"entity_id": "binary_sensor.a", "state": "", "label": ""})
+        saved = self.m.CONFIG.get("cameras")
+        self.m.CONFIG["cameras"] = {"c1": {"hass_entities": [
+            {"entity_id": "binary_sensor.m", "state": "on", "label": "Cổng"}]}}
+        try:
+            rules = self.m._hass_rules({})
+            self.assertEqual(rules["binary_sensor.m"],
+                             {"cam_id": "c1", "state": "on", "label": "Cổng"})
+        finally:
+            self.m.CONFIG["cameras"] = saved
 
     def test_ai_detect_creates_labelled_event(self):
         payload = {"cam_id": "aicam", "name": "AI", "rtsp_url": "rtsp://127.0.0.1:1/x",
@@ -472,8 +495,20 @@ class BuilderTests(unittest.TestCase):
             rules = self.m._hass_rules({"c2": [{"entity_id": "binary_sensor.b", "label": "x"}]})
         finally:
             self.m.CONFIG["cameras"] = saved
-        self.assertEqual(rules["binary_sensor.a"], "c1")
-        self.assertEqual(rules["binary_sensor.b"], "c2")
+        self.assertEqual(rules["binary_sensor.a"]["cam_id"], "c1")
+        self.assertEqual(rules["binary_sensor.b"]["cam_id"], "c2")
+        self.assertEqual(rules["binary_sensor.b"]["label"], "x")
+
+    def test_hass_motion_triggered_only_on_edge(self):
+        f = self.m._hass_motion_triggered
+        self.assertTrue(f({"state": "on"}, "binary_sensor.x", "on", "off"))
+        self.assertFalse(f({"state": "on"}, "binary_sensor.x", "on", "on"))
+        self.assertFalse(f({"state": "on"}, "binary_sensor.x", "off", "on"))
+        self.assertTrue(f({"state": ""}, "binary_sensor.x", "on", "off"))
+        self.assertFalse(f({"state": ""}, "binary_sensor.x", "on", "on"))
+        self.assertTrue(f({}, "device_tracker.x", "home", "not_home"))
+        self.assertFalse(f({}, "device_tracker.x", "not_home", "home"))
+        self.assertFalse(f({"state": "on"}, "binary_sensor.x", "ON", "ON"))
 
     def test_disk_health_and_alert_level(self):
         h = self.m.disk_health()

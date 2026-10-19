@@ -404,12 +404,16 @@ def _normalize_config(cfg: dict) -> dict:
         cam = cfg.get("cameras", {}).get(cam_id)
         if not isinstance(cam, dict):
             continue
-        ids = set(cam.get("hass_entities") or [])
+        merged: Dict[str, dict] = {}
+        for ent in (cam.get("hass_entities") or []):
+            e = _norm_hass_entity(ent)
+            if e:
+                merged[e["entity_id"]] = e
         for ent in (ent_list or []):
-            eid = (ent.get("entity_id") if isinstance(ent, dict) else ent) or ""
-            if str(eid).strip():
-                ids.add(str(eid).strip())
-        cam["hass_entities"] = sorted(ids)
+            e = _norm_hass_entity(ent)
+            if e and e["entity_id"] not in merged:
+                merged[e["entity_id"]] = e
+        cam["hass_entities"] = [merged[k] for k in sorted(merged)]
     gd = cfg.setdefault("gdrive", {})
     for k, v in DEFAULT_CONFIG["gdrive"].items():
         gd.setdefault(k, v)
@@ -420,6 +424,48 @@ def _normalize_config(cfg: dict) -> dict:
         if cam.get("video_codec") in (None, "", "copy"):
             cam["video_codec"] = "auto"
     return cfg
+
+def _norm_hass_entity(ent: Any) -> Optional[dict]:
+    """Chuẩn hoá một cảm biến HA: hỗ trợ dạng chuỗi cũ và dạng {entity_id, state, label}."""
+    if isinstance(ent, dict):
+        eid = str(ent.get("entity_id") or "").strip()
+        active = str(ent.get("state") or ent.get("active_state") or "").strip()
+        label = str(ent.get("label") or "").strip()
+    else:
+        eid = str(ent or "").strip()
+        active = ""
+        label = ""
+    if not eid:
+        return None
+    return {"entity_id": eid, "state": active, "label": label}
+
+def _default_active_state(entity_id: str) -> str:
+    """Trạng thái coi là 'có chuyển động' theo loại entity, dùng khi chưa cấu hình."""
+    domain = (entity_id or "").split(".", 1)[0].lower()
+    if domain in ("device_tracker", "person"):
+        return "home"
+    if domain in ("binary_sensor", "switch", "input_boolean", "light"):
+        return "on"
+    return ""
+
+def _hass_motion_triggered(rule: dict, entity_id: str, new_state: Any, prev_state: Any) -> bool:
+    """True khi trạng thái CHUYỂN sang giá trị kích hoạt (không tính khi đang đã ở mức đó),
+    tránh cảm biến báo liên tục làm ghi hình không ngừng."""
+    state = str(new_state).lower()
+    prev = str(prev_state).lower()
+    active = (rule.get("state") or _default_active_state(entity_id)).lower()
+    if active:
+        return state == active and prev != active
+    return state != prev
+
+def _hass_state_options(entity_id: str) -> list:
+    """Các trạng thái thường dùng của một entity để UI cho chọn điều kiện kích hoạt."""
+    domain = (entity_id or "").split(".", 1)[0].lower()
+    if domain in ("device_tracker", "person"):
+        return ["home", "not_home"]
+    if domain in ("binary_sensor", "switch", "input_boolean", "light"):
+        return ["on", "off"]
+    return []
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
@@ -2277,7 +2323,7 @@ class CameraItem(BaseModel):
     schedule_enabled: bool = False   # Bật lịch ghi hình theo giờ
     schedule: List[Dict[str, Any]] = []  # [{days:[0-6], from:"18:00", to:"06:00", mode:"motion"}]
     motion_enabled: bool = False         # Bật dò chuyển động nội bộ cho camera này
-    hass_entities: List[str] = []        # Cảm biến chuyển động Home Assistant gán cho camera
+    hass_entities: List[Any] = []        # Cảm biến HA: [{entity_id, state(kích hoạt), label}] hoặc chuỗi cũ
 
 class StorageSettings(BaseModel):
     retention_days: float
@@ -2610,13 +2656,13 @@ def get_cameras(request: Request):
 def _norm_cam_motion(item: CameraItem) -> dict:
     """Chuẩn hoá phần chuyển động riêng của một camera: bật/tắt + cảm biến HA."""
     seen = set()
-    eids = []
-    for eid in (item.hass_entities or []):
-        eid = str(eid or "").strip()
-        if eid and eid not in seen:
-            seen.add(eid)
-            eids.append(eid)
-    return {"motion_enabled": bool(item.motion_enabled), "hass_entities": eids}
+    ents = []
+    for ent in (item.hass_entities or []):
+        e = _norm_hass_entity(ent)
+        if e and e["entity_id"] not in seen:
+            seen.add(e["entity_id"])
+            ents.append(e)
+    return {"motion_enabled": bool(item.motion_enabled), "hass_entities": ents}
 
 @app.post("/api/cameras")
 def add_or_update_camera(item: CameraItem):
@@ -2671,7 +2717,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "room": item.room, "tags": item.tags,
             "onvif_port": int(item.onvif_port or 80),
             "retention_days": max(0.0, float(item.retention_days or 0)),
-        "max_gb": max(0.0, float(item.max_gb or 0)),
+            "max_gb": max(0.0, float(item.max_gb or 0)),
             "schedule_enabled": bool(item.schedule_enabled),
             "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
             **_norm_cam_motion(item),
@@ -3207,21 +3253,20 @@ class HassSettings(BaseModel):
     token: str = ""            # Để trống khi lưu = giữ token cũ
     entities: Dict[str, List[HassRule]] = {}
 
-def _hass_rules(entities: Dict[str, Any] = None) -> Dict[str, str]:
-    """Bảng tra entity_id -> cam_id. Gộp cảm biến gán riêng cho camera
+def _hass_rules(entities: Dict[str, Any] = None) -> Dict[str, dict]:
+    """Bảng tra entity_id -> {cam_id, state, label}. Gộp cảm biến gán riêng cho camera
     (`hass_entities`) với cấu hình cũ `homeassistant.entities` (để di trú)."""
-    watch: Dict[str, str] = {}
+    watch: Dict[str, dict] = {}
     for cam_id, ent_list in (entities or {}).items():
         for ent in (ent_list or []):
-            eid = (ent.get("entity_id") if isinstance(ent, dict) else ent) or ""
-            eid = str(eid).strip()
-            if eid:
-                watch[eid] = cam_id
+            e = _norm_hass_entity(ent)
+            if e:
+                watch[e["entity_id"]] = {"cam_id": cam_id, "state": e["state"], "label": e["label"]}
     for cam_id, cam in (CONFIG.get("cameras", {}) or {}).items():
-        for eid in ((cam or {}).get("hass_entities") or []):
-            eid = str(eid or "").strip()
-            if eid:
-                watch[eid] = cam_id
+        for ent in ((cam or {}).get("hass_entities") or []):
+            e = _norm_hass_entity(ent)
+            if e:
+                watch[e["entity_id"]] = {"cam_id": cam_id, "state": e["state"], "label": e["label"]}
     return watch
 
 # Trạng thái kết nối HA để hiển thị lên UI
@@ -3283,10 +3328,11 @@ def hass_motion_listener():
             time.sleep(3)
             continue
 
-        # Bảng tra: entity_id -> (cam_id, label)
+        # Bảng tra: entity_id -> {cam_id, state, label}
         watch = _hass_rules(entities)
 
-        sig = (base_url, token, tuple(sorted(watch.items())))
+        sig = (base_url, token,
+               tuple(sorted((eid, v["cam_id"], v["state"], v["label"]) for eid, v in watch.items())))
         if ws is not None and sig != last_sig:
             close_ws()
 
@@ -3350,13 +3396,15 @@ def hass_motion_listener():
         new_state = data.get("new_state") or {}
         prev_state = (data.get("old_state") or {}).get("state")
         state = str(new_state.get("state", "")).lower()
-        # Bất kỳ thay đổi trạng thái nào của cảm biến đã gán đều tính là chuyển động.
-        if state == str(prev_state).lower():
+        rule = watch.get(entity_id)
+        if not rule:
             continue
-        cam_id = watch.get(entity_id)
-        if not cam_id:
+        # Chỉ tính là chuyển động khi trạng thái CHUYỂN sang giá trị kích hoạt
+        # (tránh cảm biến báo liên tục làm ghi hình không ngừng).
+        if not _hass_motion_triggered(rule, entity_id, state, prev_state):
             continue
-        label = f"Chuyển động (HA: {entity_id})"
+        cam_id = rule["cam_id"]
+        label = rule.get("label") or f"Chuyển động (HA: {entity_id})"
         try:
             handle_motion(cam_id, label)
             hass_state["last_event"] = f"{cam_id} <- {entity_id} ({state})"
@@ -3370,8 +3418,9 @@ def get_hass_settings():
     ha = CONFIG.get("homeassistant", {}) or {}
     watch = _hass_rules()
     rules: Dict[str, List[dict]] = {}
-    for eid, cam_id in watch.items():
-        rules.setdefault(cam_id, []).append({"entity_id": eid})
+    for eid, info in watch.items():
+        rules.setdefault(info["cam_id"], []).append({
+            "entity_id": eid, "state": info.get("state", ""), "label": info.get("label", "")})
     return {
         "enabled": bool(ha.get("enabled")),
         "base_url": ha.get("base_url", ""),
@@ -3412,7 +3461,8 @@ def hass_available_entities(settings: HassSettings):
     for s in states:
         eid = str(s.get("entity_id", ""))
         if not (eid.startswith("binary_sensor.") or eid.startswith("input_boolean.")
-                or eid.startswith("switch.") or eid.startswith("device_tracker.")):
+                or eid.startswith("switch.") or eid.startswith("device_tracker.")
+                or eid.startswith("person.")):
             continue
         attrs = s.get("attributes") or {}
         out.append({
@@ -3420,8 +3470,14 @@ def hass_available_entities(settings: HassSettings):
             "name": attrs.get("friendly_name", eid),
             "device_class": attrs.get("device_class", "") or "",
             "state": s.get("state", ""),
+            "domain": eid.split(".", 1)[0],
+            "state_options": _hass_state_options(eid),
+            "suggested_state": _default_active_state(eid),
         })
-    out.sort(key=lambda x: ((x["device_class"] or "zzz"), x["name"].lower()))
+    motion_first = {"motion", "presence", "occupancy", "movement", "door", "window",
+                    "smoke", "sound", "vibration"}
+    out.sort(key=lambda x: (0 if (x["device_class"] or "").lower() in motion_first else 1,
+                            (x["device_class"] or "zzz"), x["name"].lower()))
     return {"entities": out}
 
 @app.post("/api/hass/test")

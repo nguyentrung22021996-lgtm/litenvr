@@ -1565,15 +1565,14 @@
         </label>
       </div>
       <div class="form-row">
-        <label>🛰️ Cảm biến chuyển động Home Assistant (mọi thay đổi trạng thái đều kích hoạt; cần bật ở 🛰️ Home Assistant):</label>
+        <label>🛰️ Cảm biến chuyển động Home Assistant (chọn cảm biến và điều kiện kích hoạt; cần bật ở 🛰️ Home Assistant):</label>
       </div>
       <div id="camHassRows"></div>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
         <button type="button" onclick="addCamHassRow()">+ Thêm cảm biến</button>
-        <button type="button" class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor</button>
+        <button type="button" class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor từ HA</button>
         <span id="camHassMsg" style="font-size:12px;color:#94a3b8;"></span>
       </div>
-      <datalist id="hassSensorList"></datalist>
 
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button onclick="closeCamModal()">Đóng</button>
@@ -2244,16 +2243,69 @@
       (c.schedule || []).forEach(w => addSchedRow(w));
       const hrows = document.getElementById("camHassRows");
       hrows.innerHTML = "";
-      (c.hass_entities || []).forEach(eid => addCamHassRow(eid));
+      (c.hass_entities || []).forEach(ent => addCamHassRow(ent));
+      ensureHassSensors();
       document.getElementById("inpCamMotionOn").checked = !!c.motion_enabled;
     }
 
-    function addCamHassRow(eid) {
+    let hassSensors = [];
+
+    function hassSensorInfo(eid) {
+      return hassSensors.find(s => s.entity_id === eid) || null;
+    }
+
+    function hassStateOptionsFor(eid) {
+      const info = hassSensorInfo(eid);
+      if (info && (info.state_options || []).length) return info.state_options;
+      const d = (eid || "").split(".")[0];
+      if (d === "device_tracker" || d === "person") return ["home", "not_home"];
+      if (d === "binary_sensor" || d === "switch" || d === "input_boolean" || d === "light") return ["on", "off"];
+      return [];
+    }
+
+    function fillHassEidSelect(sel, eid) {
+      sel.innerHTML = '<option value="">— Chọn cảm biến Home Assistant —</option>';
+      const seen = new Set();
+      hassSensors.forEach(s => {
+        const o = document.createElement("option");
+        o.value = s.entity_id;
+        o.textContent = `${s.name} · ${s.entity_id}` + (s.device_class ? ` [${s.device_class}]` : "") + (s.state ? ` · ${s.state}` : "");
+        sel.appendChild(o); seen.add(s.entity_id);
+      });
+      if (eid && !seen.has(eid)) {
+        const o = document.createElement("option");
+        o.value = eid; o.textContent = eid;
+        sel.appendChild(o);
+      }
+      sel.value = eid || "";
+    }
+
+    function fillHassStateSelect(sel, eid, state) {
+      sel.innerHTML = '<option value="">Mọi thay đổi trạng thái</option>';
+      hassStateOptionsFor(eid).forEach(v => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = "Kích hoạt khi = " + v;
+        sel.appendChild(o);
+      });
+      sel.value = state || "";
+    }
+
+    function addCamHassRow(ent) {
+      const eid = (typeof ent === "string") ? ent : ((ent && ent.entity_id) || "");
+      const state = (ent && typeof ent === "object") ? (ent.state || "") : "";
+      const label = (ent && typeof ent === "object") ? (ent.label || "") : "";
       const div = document.createElement("div");
       div.className = "cam-hass-row";
-      div.style.cssText = "display:flex;gap:6px;margin-bottom:6px;";
-      div.innerHTML = `<input class="ch-eid" list="hassSensorList" placeholder="binary_sensor.ten_cam" value="${esc(eid || "")}" style="flex:1;">
+      div.style.cssText = "display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap;";
+      div.innerHTML = `<select class="ch-eid" style="flex:1;min-width:200px;"></select>
+        <select class="ch-state" title="Điều kiện kích hoạt" style="min-width:170px;"></select>
+        <input class="ch-label" placeholder="Nhãn sự kiện (tuỳ chọn)" value="${esc(label)}" style="width:160px;">
         <button type="button" title="Xoá" onclick="this.parentNode.remove()">✖</button>`;
+      const eidSel = div.querySelector(".ch-eid");
+      const stSel = div.querySelector(".ch-state");
+      fillHassEidSelect(eidSel, eid);
+      fillHassStateSelect(stSel, eid, state);
+      eidSel.onchange = () => fillHassStateSelect(stSel, eidSel.value, "");
       document.getElementById("camHassRows").appendChild(div);
     }
 
@@ -2261,10 +2313,24 @@
       const seen = new Set();
       const out = [];
       document.querySelectorAll("#camHassRows .cam-hass-row").forEach(r => {
-        const v = r.querySelector(".ch-eid").value.trim();
-        if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+        const eid = r.querySelector(".ch-eid").value.trim();
+        const state = r.querySelector(".ch-state").value;
+        const label = r.querySelector(".ch-label").value.trim();
+        if (eid && !seen.has(eid)) { seen.add(eid); out.push({ entity_id: eid, state, label }); }
       });
       return out;
+    }
+
+    function refreshHassEidSelects() {
+      document.querySelectorAll("#camHassRows .cam-hass-row").forEach(r => {
+        const sel = r.querySelector(".ch-eid");
+        fillHassEidSelect(sel, sel.value);
+      });
+    }
+
+    async function ensureHassSensors() {
+      if (hassSensors.length) return;
+      try { await loadHassSensors(true); } catch (e) {}
     }
 
     function updateStorageHint() {
@@ -2486,8 +2552,8 @@
     }
     function closeHassModal() { document.getElementById("hassModal").style.display = "none"; }
 
-    async function loadHassSensors() {
-      const el = document.getElementById("camHassMsg") || document.getElementById("hassStatus");
+    async function loadHassSensors(silent) {
+      const el = silent ? null : (document.getElementById("camHassMsg") || document.getElementById("hassStatus"));
       if (el) el.textContent = "Đang tải danh sách sensor từ Home Assistant...";
       try {
         const res = await fetch("api/hass/entities", {
@@ -2502,15 +2568,9 @@
         });
         const data = await res.json();
         if (!res.ok) { if (el) el.textContent = "❌ " + (data.detail || "Lỗi"); return; }
-        const list = document.getElementById("hassSensorList");
-        list.innerHTML = "";
-        (data.entities || []).forEach(e => {
-          const opt = document.createElement("option");
-          opt.value = e.entity_id;
-          opt.label = e.name + (e.device_class ? ` [${e.device_class}]` : "");
-          list.appendChild(opt);
-        });
-        if (el) el.textContent = `✅ Đã tải ${(data.entities || []).length} sensor. Gõ hoặc chọn trong ô cảm biến.`;
+        hassSensors = data.entities || [];
+        refreshHassEidSelects();
+        if (el) el.textContent = `✅ Đã tải ${hassSensors.length} cảm biến. Chọn cảm biến và điều kiện kích hoạt.`;
       } catch (e) {
         if (el) el.textContent = "❌ " + e;
       }
