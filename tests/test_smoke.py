@@ -128,29 +128,12 @@ class ApiTests(_AppCase):
     def test_config_export_import(self):
         self.assertEqual(self.client.get("/api/config/export", headers=auth()).status_code, 200)
 
-    def test_motion_detect_settings(self):
-        r = self.client.get("/api/motion_detect", headers=auth())
-        self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["enabled"])
-        r = self.client.post("/api/motion_detect", json={"enabled": True, "sensitivity": 0.08,
-                                                         "cooldown_sec": 7, "source": "main"},
-                             headers=auth())
-        self.assertEqual(r.status_code, 200)
-        j = self.client.get("/api/motion_detect", headers=auth()).json()
-        self.assertTrue(j["enabled"])
-        self.assertAlmostEqual(j["sensitivity"], 0.08, places=3)
-        self.assertEqual(j["source"], "main")
-        self.client.post("/api/motion_detect", json={"enabled": False}, headers=auth())
-        self.assertFalse(self.client.get("/api/motion_detect", headers=auth()).json()["enabled"])
-
-    def test_camera_motion_settings_persist(self):
+    def test_camera_hass_entities_persist(self):
         payload = {"cam_id": "mo1", "name": "M", "rtsp_url": "rtsp://127.0.0.1:1/x",
-                   "motion_enabled": True,
                    "hass_entities": ["binary_sensor.cong", "binary_sensor.cong", " binary_sensor.san ",
                                      {"entity_id": "device_tracker.dt", "state": "home", "label": "Ai đó về"}]}
         self.client.post("/api/cameras", json=payload, headers=auth())
         stored = self.client.get("/api/cameras", headers=auth()).json()["mo1"]
-        self.assertTrue(stored["motion_enabled"])
         self.assertEqual([e["entity_id"] for e in stored["hass_entities"]],
                          ["binary_sensor.cong", "binary_sensor.san", "device_tracker.dt"])
         self.assertEqual(stored["hass_entities"][2]["state"], "home")
@@ -467,30 +450,9 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(self._values(cmd, "-hls_time"), [str(self.m.LIVE_HLS_TIME)])
         self.assertEqual(self._values(cmd, "-hls_list_size"), [str(self.m.LIVE_HLS_LIST)])
 
-    def test_motion_detect_command(self):
-        cmd = self.m.build_motion_detect_cmd("cam", self._cam())
-        joined = " ".join(cmd)
-        self.assertIn("select='gt(scene", joined)
-        self.assertIn("showinfo", joined)
-        self.assertEqual(cmd[cmd.index("-i") + 1], self._cam()["sub_rtsp_url"])
-
-    def test_motion_detect_cmd_uses_info_loglevel(self):
-        # showinfo chỉ in ở mức info, nếu để loglevel error thì không bắt được chuyển động
-        cmd = self.m.build_motion_detect_cmd("cam", self._cam())
-        self.assertEqual(self._values(cmd, "-loglevel")[-1], "info")
-
-    def test_motion_cfg_for_per_camera_enabled_only(self):
-        # Độ nhạy/nguồn/cooldown lấy mặc định chung; chỉ bật/tắt theo camera.
-        base = self.m._motion_cfg_for({})
-        self.assertFalse(base["enabled"])
-        cam = self.m._motion_cfg_for({"motion_enabled": True})
-        self.assertTrue(cam["enabled"])
-        self.assertEqual(cam["sensitivity"], base["sensitivity"])
-        self.assertEqual(cam["source"], base["source"])
-
     def test_hass_rules_merges_camera_entities(self):
         saved = self.m.CONFIG.get("cameras")
-        self.m.CONFIG["cameras"] = {"c1": {"motion_enabled": True, "hass_entities": ["binary_sensor.a"]}}
+        self.m.CONFIG["cameras"] = {"c1": {"hass_entities": ["binary_sensor.a"]}}
         try:
             rules = self.m._hass_rules({"c2": [{"entity_id": "binary_sensor.b", "label": "x"}]})
         finally:

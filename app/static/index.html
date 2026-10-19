@@ -1559,12 +1559,6 @@
       <button style="margin-bottom:10px;" onclick="addSchedRow()">+ Thêm khung giờ</button>
 
       <div class="form-row">
-        <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" id="inpCamMotionOn" style="width:auto;">
-          🎯 Bật dò chuyển động cho camera này (không cần ONVIF; tốn thêm CPU)
-        </label>
-      </div>
-      <div class="form-row">
         <label>🛰️ Cảm biến chuyển động Home Assistant (chọn cảm biến và điều kiện kích hoạt; cần bật ở 🛰️ Home Assistant):</label>
       </div>
       <div id="camHassRows"></div>
@@ -1609,7 +1603,7 @@
         <input type="checkbox" id="inpRamBuffer"> Đệm chuyển động trong RAM (nhanh; bỏ chọn để ghi ra đĩa nếu RAM nhỏ)
       </label>
       <div style="font-size:12px;color:var(--text-muted);background:var(--glass-hi);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:10px;">
-        🎯 Dò chuyển động được bật riêng cho từng camera: mở <b>Quản lý Camera</b> → <b>Sửa</b> camera → bật <b>🎯 Bật dò chuyển động</b>.
+        🛰️ Chuyển động lấy từ cảm biến Home Assistant: mở <b>Quản lý Camera</b> → <b>Sửa</b> camera → thêm <b>Cảm biến chuyển động Home Assistant</b>.
       </div>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="cleanNow()">🧹 Dọn ổ cứng ngay</button>
@@ -2245,7 +2239,6 @@
       hrows.innerHTML = "";
       (c.hass_entities || []).forEach(ent => addCamHassRow(ent));
       ensureHassSensors();
-      document.getElementById("inpCamMotionOn").checked = !!c.motion_enabled;
     }
 
     let hassSensors = [];
@@ -2390,7 +2383,6 @@
         tags: document.getElementById("inpTags").value.trim(),
         schedule_enabled: document.getElementById("inpSchedEnabled").checked,
         schedule: readSchedRows(),
-        motion_enabled: document.getElementById("inpCamMotionOn").checked,
         hass_entities: readCamHassRows()
       };
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {

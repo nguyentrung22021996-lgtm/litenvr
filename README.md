@@ -37,11 +37,6 @@ Trên Web UI, bấm **🛰️ Home Assistant**:
 
 LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; chỉ khi cảm biến **chuyển sang** giá trị kích hoạt mới ghi hình + snapshot cho camera tương ứng (cảm biến giữ nguyên trạng thái sẽ không kích hoạt lặp). Sự kiện ghi nhãn tuỳ chọn, mặc định `Chuyển động (HA: <entity_id>)`. Tự kết nối lại khi mất mạng.
 
-## Phát hiện chuyển động nội bộ (không cần ONVIF/HA)
-LiteNVR có thể tự dò chuyển động bằng chính luồng RTSP, không phụ thuộc cảm biến ONVIF hay Home Assistant. Bật **riêng cho từng camera** trong **+ Quản lý Camera** → **Sửa** → **🎯 Bật dò chuyển động cho camera này**, nên chỉ bật ở những camera cần (lưu trong `motion_enabled` của camera). Độ nhạy, nguồn dò và gộp sự kiện dùng **mặc định chung**.
-
-Cơ chế: camera được bật sẽ chạy một ffmpeg đọc luồng với bộ lọc `select='gt(scene,…)'` và `showinfo`; khi phát hiện đổi cảnh, LiteNVR kích hoạt **ghi hình + snapshot** đúng như sự kiện từ HA/ONVIF (dùng chung `handle_motion`, không nhân đôi), nhãn `Chuyển động (nội bộ)`. Camera mất kết nối sẽ tự thử lại với backoff. Mặc định chung chỉnh bằng API `GET/POST /api/motion_detect` (`sensitivity`, `cooldown_sec`, `source`).
-
 ## Nhãn AI (người/xe) từ bộ nhận diện ngoài
 Gửi sự kiện từ bộ nhận diện AI bất kỳ (Frigate, DeepStack, CodeProject.AI, Node-RED…) vào endpoint:
 ```
