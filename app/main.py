@@ -396,6 +396,18 @@ def _normalize_config(cfg: dict) -> dict:
         for cam in cfg.get("cameras", {}).values():
             if isinstance(cam, dict):
                 cam.setdefault("motion_enabled", True)
+    # Di trú: cảm biến chuyển động HA từ cấu hình chung sang từng camera.
+    legacy_entities = ha.get("entities") or {}
+    for cam_id, ent_list in legacy_entities.items():
+        cam = cfg.get("cameras", {}).get(cam_id)
+        if not isinstance(cam, dict):
+            continue
+        ids = set(cam.get("hass_entities") or [])
+        for ent in (ent_list or []):
+            eid = (ent.get("entity_id") if isinstance(ent, dict) else ent) or ""
+            if str(eid).strip():
+                ids.add(str(eid).strip())
+        cam["hass_entities"] = sorted(ids)
     gd = cfg.setdefault("gdrive", {})
     for k, v in DEFAULT_CONFIG["gdrive"].items():
         gd.setdefault(k, v)
@@ -2175,11 +2187,8 @@ class CameraItem(BaseModel):
     retention_days: float = 0        # Số ngày lưu riêng (0 = dùng mức chung toàn hệ thống)
     schedule_enabled: bool = False   # Bật lịch ghi hình theo giờ
     schedule: List[Dict[str, Any]] = []  # [{days:[0-6], from:"18:00", to:"06:00", mode:"motion"}]
-    motion_zones: List[Dict[str, Any]] = []  # [{name,x,y,w,h,sensitivity,enabled}] toạ độ 0..1
-    motion_enabled: bool = False     # Bật dò chuyển động riêng cho camera này
-    motion_sensitivity: Optional[float] = None  # None = dùng độ nhạy chung
-    motion_source: Optional[str] = None         # None = dùng nguồn chung (sub|main)
-    motion_cooldown_sec: Optional[int] = None   # None = dùng cooldown chung
+    motion_enabled: bool = False         # Bật dò chuyển động nội bộ cho camera này
+    hass_entities: List[str] = []        # Cảm biến chuyển động Home Assistant gán cho camera
 
 class StorageSettings(BaseModel):
     retention_days: float
@@ -2503,22 +2512,15 @@ def get_cameras(request: Request):
     return out
 
 def _norm_cam_motion(item: CameraItem) -> dict:
-    """Chuẩn hoá các trường dò chuyển động riêng của một camera."""
-    try:
-        sens = None if item.motion_sensitivity in (None, "") else min(max(float(item.motion_sensitivity), 0.01), 0.9)
-    except (TypeError, ValueError):
-        sens = None
-    src = str(item.motion_source or "").lower()
-    try:
-        cool = None if item.motion_cooldown_sec in (None, "") else max(0, int(item.motion_cooldown_sec))
-    except (TypeError, ValueError):
-        cool = None
-    return {
-        "motion_enabled": bool(item.motion_enabled),
-        "motion_sensitivity": sens,
-        "motion_source": src if src in ("sub", "main") else None,
-        "motion_cooldown_sec": cool,
-    }
+    """Chuẩn hoá phần chuyển động riêng của một camera: bật/tắt + cảm biến HA."""
+    seen = set()
+    eids = []
+    for eid in (item.hass_entities or []):
+        eid = str(eid or "").strip()
+        if eid and eid not in seen:
+            seen.add(eid)
+            eids.append(eid)
+    return {"motion_enabled": bool(item.motion_enabled), "hass_entities": eids}
 
 @app.post("/api/cameras")
 def add_or_update_camera(item: CameraItem):
@@ -2543,7 +2545,6 @@ def add_or_update_camera(item: CameraItem):
         "retention_days": max(0.0, float(item.retention_days or 0)),
         "schedule_enabled": bool(item.schedule_enabled),
         "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
-        "motion_zones": [z for z in (item.motion_zones or []) if isinstance(z, dict)],
         **_norm_cam_motion(item),
     }
     save_config(CONFIG)
@@ -2575,7 +2576,6 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "retention_days": max(0.0, float(item.retention_days or 0)),
             "schedule_enabled": bool(item.schedule_enabled),
             "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
-            "motion_zones": [z for z in (item.motion_zones or []) if isinstance(z, dict)],
             **_norm_cam_motion(item),
         }
         start_camera_worker(cam_id)
@@ -2937,24 +2937,18 @@ def _motion_cfg() -> dict:
 
 
 def _motion_cfg_for(cam_info: dict) -> dict:
-    """Gộp mặc định chung với tuỳ chọn riêng của camera (độ nhạy/nguồn/cooldown).
-    `enabled` lấy theo camera; các trường khác rơi về mặc định chung nếu trống."""
+    """Bật/tắt theo camera; độ nhạy/nguồn/cooldown dùng mặc định chung."""
     base = _motion_cfg()
     cam = cam_info or {}
-
-    def pick(key, default):
-        v = cam.get("motion_" + key)
-        return default if v in (None, "") else v
-
     try:
-        sens = float(pick("sensitivity", base.get("sensitivity", 0.05)))
+        sens = float(base.get("sensitivity", 0.05))
     except (TypeError, ValueError):
         sens = 0.05
     try:
-        cool = float(pick("cooldown_sec", base.get("cooldown_sec", 5)))
+        cool = float(base.get("cooldown_sec", 5))
     except (TypeError, ValueError):
         cool = 5
-    src = str(pick("source", base.get("source", "sub"))).lower()
+    src = str(base.get("source", "sub")).lower()
     return {
         "enabled": bool(cam.get("motion_enabled")),
         "sensitivity": min(max(sens, 0.01), 0.9),
@@ -2973,55 +2967,6 @@ def build_motion_detect_cmd(cam_id: str, cam_info: dict):
     url = sub_url if str(cfg.get("source", "sub")).lower() == "sub" else main_url
     return [*_ffmpeg_base_args(), "-loglevel", "info", *_input_args(url, cam_info), "-i", url,
             "-vf", f"select='gt(scene\\,{sens})',showinfo", "-an", "-f", "null", "-"]
-
-
-def _parse_motion_zones(cam_info: dict) -> List[dict]:
-    """Chuẩn hoá danh sách vùng chuyển động của camera (toạ độ tỉ lệ 0..1)."""
-    out = []
-    for z in (cam_info.get("motion_zones") or []):
-        if not isinstance(z, dict) or z.get("enabled") is False:
-            continue
-        try:
-            x = min(max(float(z.get("x", 0)), 0.0), 1.0)
-            y = min(max(float(z.get("y", 0)), 0.0), 1.0)
-            w = min(max(float(z.get("w", 1)), 0.01), 1.0 - x) or 0.01
-            h = min(max(float(z.get("h", 1)), 0.01), 1.0 - y) or 0.01
-        except (TypeError, ValueError):
-            continue
-        sens = z.get("sensitivity")
-        try:
-            sens = min(max(float(sens), 0.01), 0.9) if sens not in (None, "") else None
-        except (TypeError, ValueError):
-            sens = None
-        out.append({"name": str(z.get("name") or f"Vùng {len(out) + 1}"),
-                    "x": x, "y": y, "w": w, "h": h, "sensitivity": sens})
-    return out
-
-
-def build_motion_detect_cmds(cam_id: str, cam_info: dict) -> List[tuple]:
-    """Danh sách (nhãn, lệnh ffmpeg) để dò chuyển động.
-    Có vùng cấu hình -> mỗi vùng một tiến trình crop riêng (độ nhạy riêng);
-    không có vùng -> một tiến trình quét toàn khung như cũ."""
-    cfg = _motion_cfg_for(cam_info)
-    global_sens = cfg.get("sensitivity", 0.05)
-    zones = _parse_motion_zones(cam_info)
-    if not zones:
-        return [("Chuyển động (nội bộ)", build_motion_detect_cmd(cam_id, cam_info))]
-    main_url, sub_url = cam_source_urls(cam_id, cam_info)
-    url = sub_url if str(cfg.get("source", "sub")).lower() == "sub" else main_url
-    cmds = []
-    for z in zones:
-        try:
-            sens = float(z["sensitivity"] if z["sensitivity"] is not None else global_sens)
-        except (TypeError, ValueError):
-            sens = 0.05
-        sens = min(max(sens, 0.01), 0.9)
-        crop = f"crop=iw*{z['w']:.4f}:ih*{z['h']:.4f}:iw*{z['x']:.4f}:ih*{z['y']:.4f}"
-        vf = f"{crop},select='gt(scene\\,{sens})',showinfo"
-        cmds.append((f"Chuyển động ({z['name']})",
-                     [*_ffmpeg_base_args(), "-loglevel", "info", *_input_args(url, cam_info), "-i", url,
-                      "-vf", vf, "-an", "-f", "null", "-"]))
-    return cmds
 
 
 def _maybe_fire_motion(cam_id: str, cfg: dict, label: str = "Chuyển động (nội bộ)"):
@@ -3082,42 +3027,31 @@ def _motion_detector_loop(cam_id: str, token: threading.Event):
         cfg = _motion_cfg_for(cam_info)
         if not cfg.get("enabled") or not cam_info:
             break
-        cmds = build_motion_detect_cmds(cam_id, cam_info)
-        started: List[tuple] = []
-        proc_list: List[subprocess.Popen] = []
+        cmd = build_motion_detect_cmd(cam_id, cam_info)
+        proc = None
         with _motion_lock:
             if token.is_set() or _shutdown.is_set() or _motion_tokens.get(cam_id) is not token:
                 break
-            for label, cmd in cmds:
-                try:
-                    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.PIPE, text=True, bufsize=1)
-                except Exception as e:
-                    p = None
-                    if not _shutdown.is_set():
-                        log_event("warn", f"Không dò được chuyển động: {mask_secrets(str(e))}", cam_id)
-                if p:
-                    started.append((label, p))
-                    proc_list.append(p)
-            if proc_list:
-                _motion_procs[cam_id] = proc_list
-        if not started:
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.PIPE, text=True, bufsize=1)
+            except Exception as e:
+                proc = None
+                if not _shutdown.is_set():
+                    log_event("warn", f"Không dò được chuyển động: {mask_secrets(str(e))}", cam_id)
+            if proc:
+                _motion_procs[cam_id] = [proc]
+        if not proc:
             if token.wait(min(backoff, 30)):
                 break
             backoff = min(backoff * 2, 60)
             continue
         cam_status.setdefault(cam_id, {})["motion_detect"] = True
-        threads = [threading.Thread(target=_read_motion_stream, args=(cam_id, label, p, cfg, token),
-                                    daemon=True) for label, p in started]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        for _, p in started:
-            if p.poll() is None:
-                _terminate_process(p)
+        _read_motion_stream(cam_id, "Chuyển động (nội bộ)", proc, cfg, token)
+        if proc.poll() is None:
+            _terminate_process(proc)
         with _motion_lock:
-            if _motion_procs.get(cam_id) is proc_list:
+            if _motion_procs.get(cam_id) is not None:
                 _motion_procs.pop(cam_id, None)
         cam_status.setdefault(cam_id, {})["motion_detect"] = False
         if token.is_set() or _shutdown.is_set():
@@ -3175,20 +3109,21 @@ class HassSettings(BaseModel):
     token: str = ""            # Để trống khi lưu = giữ token cũ
     entities: Dict[str, List[HassRule]] = {}
 
-def _hass_rules(entities: Dict[str, Any]) -> Dict[str, tuple]:
-    """Chuẩn hoá cấu hình entity -> bảng tra entity_id -> (cam_id, label).
-    Hỗ trợ cả định dạng cũ (list chuỗi) và mới (list {entity_id, label})."""
-    watch: Dict[str, tuple] = {}
+def _hass_rules(entities: Dict[str, Any] = None) -> Dict[str, str]:
+    """Bảng tra entity_id -> cam_id. Gộp cảm biến gán riêng cho camera
+    (`hass_entities`) với cấu hình cũ `homeassistant.entities` (để di trú)."""
+    watch: Dict[str, str] = {}
     for cam_id, ent_list in (entities or {}).items():
         for ent in (ent_list or []):
-            if isinstance(ent, dict):
-                eid = (ent.get("entity_id") or "").strip()
-                label = (ent.get("label") or "").strip()
-            else:
-                eid = str(ent).strip()
-                label = ""
+            eid = (ent.get("entity_id") if isinstance(ent, dict) else ent) or ""
+            eid = str(eid).strip()
             if eid:
-                watch[eid] = (cam_id, label)
+                watch[eid] = cam_id
+    for cam_id, cam in (CONFIG.get("cameras", {}) or {}).items():
+        for eid in ((cam or {}).get("hass_entities") or []):
+            eid = str(eid or "").strip()
+            if eid:
+                watch[eid] = cam_id
     return watch
 
 # Trạng thái kết nối HA để hiển thị lên UI
@@ -3214,11 +3149,9 @@ def _hass_ws_url(base_url: str):
         base = "ws://" + base
     return base + "/api/websocket"
 
-MOTION_STATES = ("on", "detected", "motion", "true", "active")
-
 def hass_motion_listener():
-    """Kết nối WebSocket tới HA, lắng nghe state_changed của các entity đã map
-    và kích hoạt ghi hình khi cảm biến chuyển sang trạng thái phát hiện."""
+    """Kết nối WebSocket tới HA, lắng nghe state_changed của các entity đã gán và
+    kích hoạt ghi hình khi cảm biến đổi trạng thái (bất kỳ giá trị nào)."""
     try:
         import websocket  # websocket-client
     except Exception as e:
@@ -3319,14 +3252,13 @@ def hass_motion_listener():
         new_state = data.get("new_state") or {}
         prev_state = (data.get("old_state") or {}).get("state")
         state = str(new_state.get("state", "")).lower()
-        # Chỉ kích hoạt khi chuyển TỪ trạng thái khác SANG trạng thái phát hiện
+        # Bất kỳ thay đổi trạng thái nào của cảm biến đã gán đều tính là chuyển động.
         if state == str(prev_state).lower():
             continue
-        rule = watch.get(entity_id)
-        if not rule or state not in MOTION_STATES:
+        cam_id = watch.get(entity_id)
+        if not cam_id:
             continue
-        cam_id, custom_label = rule
-        label = custom_label or f"Chuyển động (HA: {entity_id})"
+        label = f"Chuyển động (HA: {entity_id})"
         try:
             handle_motion(cam_id, label)
             hass_state["last_event"] = f"{cam_id} <- {entity_id} ({state})"
@@ -3338,10 +3270,10 @@ def hass_motion_listener():
 @app.get("/api/hass")
 def get_hass_settings():
     ha = CONFIG.get("homeassistant", {}) or {}
-    watch = _hass_rules(ha.get("entities") or {})
+    watch = _hass_rules()
     rules: Dict[str, List[dict]] = {}
-    for eid, (cam_id, label) in watch.items():
-        rules.setdefault(cam_id, []).append({"entity_id": eid, "label": label})
+    for eid, cam_id in watch.items():
+        rules.setdefault(cam_id, []).append({"entity_id": eid})
     return {
         "enabled": bool(ha.get("enabled")),
         "base_url": ha.get("base_url", ""),
@@ -3357,13 +3289,7 @@ def update_hass_settings(settings: HassSettings):
     ha["base_url"] = settings.base_url.strip()
     if settings.token.strip():
         ha["token"] = settings.token.strip()
-    ha["entities"] = {
-        cam_id: [
-            {"entity_id": r.entity_id.strip(), "label": r.label.strip()}
-            for r in (rules or []) if r.entity_id.strip()
-        ]
-        for cam_id, rules in (settings.entities or {}).items()
-    }
+    # Cảm biến nay gán riêng theo từng camera (xem `hass_entities`), không ghi đè ở đây.
     save_config(CONFIG)
     return {"status": "ok"}
 

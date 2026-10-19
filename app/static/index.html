@@ -1522,35 +1522,20 @@
 
       <div class="form-row">
         <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" id="inpCamMotionOn" style="width:auto;" onchange="document.getElementById('camMotionBox').style.display = this.checked ? 'block' : 'none'">
+          <input type="checkbox" id="inpCamMotionOn" style="width:auto;">
           🎯 Bật dò chuyển động cho camera này (không cần ONVIF; tốn thêm CPU)
         </label>
       </div>
-      <div id="camMotionBox" style="display:none; padding-left:6px;">
-        <div class="grid-2">
-          <div class="form-row">
-            <label>Độ nhạy (0.01–0.9; trống = dùng mặc định):</label>
-            <input type="number" id="inpCamMotionSens" min="0.01" max="0.9" step="0.01" placeholder="mặc định">
-          </div>
-          <div class="form-row">
-            <label>Nguồn dò:</label>
-            <select id="inpCamMotionSource">
-              <option value="">Mặc định chung</option>
-              <option value="sub">Luồng phụ (nhẹ CPU hơn)</option>
-              <option value="main">Luồng chính</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-row">
-          <label>Gộp sự kiện trong (giây; trống = dùng mặc định):</label>
-          <input type="number" id="inpCamMotionCool" min="0" step="1" placeholder="mặc định">
-        </div>
-        <div class="form-row">
-          <label>🎯 Vùng chuyển động (chỉ dò trong các vùng này; toạ độ tỉ lệ 0–1)</label>
-        </div>
-        <div id="zoneRows"></div>
-        <button style="margin-bottom:10px;" onclick="addZoneRow()">+ Thêm vùng</button>
+      <div class="form-row">
+        <label>🛰️ Cảm biến chuyển động Home Assistant (mọi thay đổi trạng thái đều kích hoạt; cần bật ở 🛰️ Home Assistant):</label>
       </div>
+      <div id="camHassRows"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+        <button type="button" onclick="addCamHassRow()">+ Thêm cảm biến</button>
+        <button type="button" class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor</button>
+        <span id="camHassMsg" style="font-size:12px;color:#94a3b8;"></span>
+      </div>
+      <datalist id="hassSensorList"></datalist>
 
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button onclick="closeCamModal()">Đóng</button>
@@ -1711,7 +1696,7 @@
   <!-- Modal Liên kết Home Assistant -->
   <div class="modal" id="hassModal">
     <div class="modal-box">
-      <h3 style="margin-top:0">Liên kết Home Assistant (lấy Motion)</h3>
+      <h3 style="margin-top:0">Liên kết Home Assistant</h3>
       <div class="form-row">
         <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" id="hassEnabled" style="width:auto;">
@@ -1727,21 +1712,7 @@
         <input type="password" id="hassToken" placeholder="Dán token HA...">
       </div>
       <div id="hassStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-        <h4 style="margin:4px 0 6px;">Gán cảm biến &amp; nhãn sự kiện cho từng Camera</h4>
-        <button class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor</button>
-      </div>
-      <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">Gõ tên hoặc chọn từ danh sách. Nhãn sự kiện VD: "Người quen", "Người lạ", tên người...</div>
-      <div id="hassEntityBox"></div>
-
-      <datalist id="hassSensorList"></datalist>
-      <datalist id="hassLabelList">
-        <option value="Người quen"></option>
-        <option value="Người lạ"></option>
-        <option value="Xe cộ"></option>
-        <option value="Chuyển động"></option>
-        <option value="Động vật"></option>
-      </datalist>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">Gán cảm biến chuyển động cho từng camera trong form <b>Sửa camera</b> (mục 🎯 / 🛰️). Mọi thay đổi trạng thái của cảm biến đều kích hoạt ghi hình.</div>
 
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="testHass()">Kiểm tra kết nối</button>
@@ -2220,14 +2191,29 @@
       const rows = document.getElementById("schedRows");
       rows.innerHTML = "";
       (c.schedule || []).forEach(w => addSchedRow(w));
-      const zrows = document.getElementById("zoneRows");
-      zrows.innerHTML = "";
-      (c.motion_zones || []).forEach(z => addZoneRow(z));
+      const hrows = document.getElementById("camHassRows");
+      hrows.innerHTML = "";
+      (c.hass_entities || []).forEach(eid => addCamHassRow(eid));
       document.getElementById("inpCamMotionOn").checked = !!c.motion_enabled;
-      document.getElementById("inpCamMotionSens").value = (c.motion_sensitivity ?? "");
-      document.getElementById("inpCamMotionSource").value = c.motion_source === "main" ? "main" : (c.motion_source === "sub" ? "sub" : "");
-      document.getElementById("inpCamMotionCool").value = (c.motion_cooldown_sec ?? "");
-      document.getElementById("camMotionBox").style.display = c.motion_enabled ? "block" : "none";
+    }
+
+    function addCamHassRow(eid) {
+      const div = document.createElement("div");
+      div.className = "cam-hass-row";
+      div.style.cssText = "display:flex;gap:6px;margin-bottom:6px;";
+      div.innerHTML = `<input class="ch-eid" list="hassSensorList" placeholder="binary_sensor.ten_cam" value="${esc(eid || "")}" style="flex:1;">
+        <button type="button" title="Xoá" onclick="this.parentNode.remove()">✖</button>`;
+      document.getElementById("camHassRows").appendChild(div);
+    }
+
+    function readCamHassRows() {
+      const seen = new Set();
+      const out = [];
+      document.querySelectorAll("#camHassRows .cam-hass-row").forEach(r => {
+        const v = r.querySelector(".ch-eid").value.trim();
+        if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+      });
+      return out;
     }
 
     function updateStorageHint() {
@@ -2270,43 +2256,7 @@
       });
     }
 
-    function addZoneRow(z) {
-      z = z || {};
-      const num = (v, d) => (v === undefined || v === null || v === "") ? d : v;
-      const div = document.createElement("div");
-      div.className = "zone-row";
-      div.innerHTML = `<input class="z-name" placeholder="Tên vùng (VD: Cổng)" value="${esc(z.name || "")}">
-        <input class="z-x" type="number" min="0" max="1" step="0.01" title="x (0..1)" placeholder="x" value="${num(z.x, 0)}">
-        <input class="z-y" type="number" min="0" max="1" step="0.01" title="y (0..1)" placeholder="y" value="${num(z.y, 0)}">
-        <input class="z-w" type="number" min="0.01" max="1" step="0.01" title="rộng (0..1)" placeholder="w" value="${num(z.w, 1)}">
-        <input class="z-h" type="number" min="0.01" max="1" step="0.01" title="cao (0..1)" placeholder="h" value="${num(z.h, 1)}">
-        <input class="z-sens" type="number" min="0.01" max="0.9" step="0.01" title="Độ nhạy riêng (trống = dùng độ nhạy chung)" placeholder="nhạy" value="${num(z.sensitivity, "")}">
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" class="z-on" style="width:auto;" ${z.enabled === false ? "" : "checked"}> Bật</label>
-        <button title="Xoá vùng" onclick="this.parentNode.remove()">✖</button>`;
-      document.getElementById("zoneRows").appendChild(div);
-    }
-
-    function readZoneRows() {
-      return [...document.querySelectorAll("#zoneRows .zone-row")].map(r => {
-        const val = (sel, d) => {
-          const v = r.querySelector(sel).value.trim();
-          return v === "" ? d : parseFloat(v);
-        };
-        const z = {
-          name: r.querySelector(".z-name").value.trim(),
-          x: val(".z-x", 0), y: val(".z-y", 0),
-          w: val(".z-w", 1), h: val(".z-h", 1),
-          enabled: r.querySelector(".z-on").checked
-        };
-        const s = r.querySelector(".z-sens").value.trim();
-        if (s !== "") z.sensitivity = parseFloat(s);
-        return z;
-      }).filter(z => [z.x, z.y, z.w, z.h].every(n => typeof n === "number" && !isNaN(n)));
-    }
-
     async function saveCamera() {
-      const optNum = (id) => { const v = document.getElementById(id).value.trim(); return v === "" ? null : parseFloat(v); };
-      const optInt = (id) => { const v = document.getElementById(id).value.trim(); return v === "" ? null : parseInt(v, 10); };
       const payload = {
         cam_id: document.getElementById("inpCamId").value.trim(),
         name: document.getElementById("inpCamName").value.trim(),
@@ -2323,11 +2273,8 @@
         tags: document.getElementById("inpTags").value.trim(),
         schedule_enabled: document.getElementById("inpSchedEnabled").checked,
         schedule: readSchedRows(),
-        motion_zones: readZoneRows(),
         motion_enabled: document.getElementById("inpCamMotionOn").checked,
-        motion_sensitivity: optNum("inpCamMotionSens"),
-        motion_source: document.getElementById("inpCamMotionSource").value || null,
-        motion_cooldown_sec: optInt("inpCamMotionCool")
+        hass_entities: readCamHassRows()
       };
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
@@ -2477,7 +2424,6 @@
       const tok = document.getElementById("hassToken");
       tok.value = "";
       tok.placeholder = cfg.has_token ? "Đã lưu token (bỏ trống để giữ nguyên)" : "Dán Long-Lived Access Token...";
-      renderHassEntities(cfg.entities || {});
       const st = cfg.status || {};
       const el = document.getElementById("hassStatus");
       if (!cfg.enabled) el.textContent = "Trạng thái: Đang tắt.";
@@ -2487,58 +2433,22 @@
     }
     function closeHassModal() { document.getElementById("hassModal").style.display = "none"; }
 
-    function hassEsc(s) {
-      return String(s == null ? "" : s)
-        .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    }
-
-    function renderHassEntities(entities) {
-      const box = document.getElementById("hassEntityBox");
-      box.innerHTML = "";
-      const ids = Object.keys(cameras);
-      if (!ids.length) { box.innerHTML = '<div style="color:#94a3b8">Chưa có camera. Hãy thêm camera trước.</div>'; return; }
-      ids.forEach(cid => {
-        const wrap = document.createElement("div");
-        wrap.className = "form-row";
-        wrap.style.cssText = "background:#181f2e;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);margin-bottom:8px;";
-        wrap.innerHTML = `<label style="font-weight:600;">${hassEsc(cameras[cid].name)} (${hassEsc(cid)})</label>
-          <div id="hassRules_${cid}"></div>
-          <button type="button" onclick="addHassRule('${cid}')">+ Thêm cảm biến / nhãn</button>`;
-        box.appendChild(wrap);
-        const rules = entities[cid] || [];
-        if (rules.length) rules.forEach(r => addHassRule(cid, r.entity_id, r.label));
-        else addHassRule(cid, "", "");
-      });
-    }
-
-    function addHassRule(cid, entity, label) {
-      const box = document.getElementById("hassRules_" + cid);
-      if (!box) return;
-      const row = document.createElement("div");
-      row.className = "grid-2";
-      row.style.cssText = "grid-template-columns: 2fr 1.4fr auto; margin-bottom:6px;";
-      row.innerHTML = `<input class="hassSensor" list="hassSensorList" placeholder="binary_sensor.ten_cam" value="${hassEsc(entity || "")}">
-                       <input class="hassLabel" list="hassLabelList" placeholder="Nhãn: Người lạ..." value="${hassEsc(label || "")}">
-                       <button type="button" title="Xoá dòng" onclick="this.parentNode.remove()">✕</button>`;
-      box.appendChild(row);
-    }
-
     async function loadHassSensors() {
-      const el = document.getElementById("hassStatus");
-      el.textContent = "Đang tải danh sách sensor từ Home Assistant...";
+      const el = document.getElementById("camHassMsg") || document.getElementById("hassStatus");
+      if (el) el.textContent = "Đang tải danh sách sensor từ Home Assistant...";
       try {
         const res = await fetch("/api/hass/entities", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
             enabled: true,
-            base_url: document.getElementById("hassUrl").value.trim(),
-            token: document.getElementById("hassToken").value.trim(),
+            base_url: (document.getElementById("hassUrl") || {}).value ? document.getElementById("hassUrl").value.trim() : "",
+            token: (document.getElementById("hassToken") || {}).value ? document.getElementById("hassToken").value.trim() : "",
             entities: {}
           })
         });
         const data = await res.json();
-        if (!res.ok) { el.textContent = "❌ " + (data.detail || "Lỗi"); return; }
+        if (!res.ok) { if (el) el.textContent = "❌ " + (data.detail || "Lỗi"); return; }
         const list = document.getElementById("hassSensorList");
         list.innerHTML = "";
         (data.entities || []).forEach(e => {
@@ -2547,25 +2457,13 @@
           opt.label = e.name + (e.device_class ? ` [${e.device_class}]` : "");
           list.appendChild(opt);
         });
-        el.textContent = `✅ Đã tải ${(data.entities || []).length} sensor. Gõ hoặc chọn trong ô cảm biến.`;
+        if (el) el.textContent = `✅ Đã tải ${(data.entities || []).length} sensor. Gõ hoặc chọn trong ô cảm biến.`;
       } catch (e) {
-        el.textContent = "❌ " + e;
+        if (el) el.textContent = "❌ " + e;
       }
     }
 
     async function saveHass() {
-      const entities = {};
-      Object.keys(cameras).forEach(cid => {
-        const box = document.getElementById("hassRules_" + cid);
-        if (!box) return;
-        const list = [];
-        box.querySelectorAll("div").forEach(row => {
-          const s = row.querySelector(".hassSensor");
-          const l = row.querySelector(".hassLabel");
-          if (s && s.value.trim()) list.push({entity_id: s.value.trim(), label: l ? l.value.trim() : ""});
-        });
-        entities[cid] = list;
-      });
       await fetch("/api/hass", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -2573,7 +2471,7 @@
           enabled: document.getElementById("hassEnabled").checked,
           base_url: document.getElementById("hassUrl").value.trim(),
           token: document.getElementById("hassToken").value.trim(),
-          entities
+          entities: {}
         })
       });
       closeHassModal();

@@ -143,24 +143,14 @@ class ApiTests(_AppCase):
         self.client.post("/api/motion_detect", json={"enabled": False}, headers=auth())
         self.assertFalse(self.client.get("/api/motion_detect", headers=auth()).json()["enabled"])
 
-    def test_camera_motion_zones_persist(self):
-        payload = {"cam_id": "zone1", "name": "Z", "rtsp_url": "rtsp://127.0.0.1:1/x",
-                   "motion_zones": [{"name": "Cổng", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}]}
-        self.client.post("/api/cameras", json=payload, headers=auth())
-        stored = self.client.get("/api/cameras", headers=auth()).json()["zone1"]["motion_zones"]
-        self.assertEqual(stored[0]["name"], "Cổng")
-        self.client.delete("/api/cameras/zone1", headers=auth())
-
     def test_camera_motion_settings_persist(self):
         payload = {"cam_id": "mo1", "name": "M", "rtsp_url": "rtsp://127.0.0.1:1/x",
-                   "motion_enabled": True, "motion_sensitivity": 0.2,
-                   "motion_source": "main", "motion_cooldown_sec": 9}
+                   "motion_enabled": True,
+                   "hass_entities": ["binary_sensor.cong", "binary_sensor.cong", " binary_sensor.san "]}
         self.client.post("/api/cameras", json=payload, headers=auth())
         stored = self.client.get("/api/cameras", headers=auth()).json()["mo1"]
         self.assertTrue(stored["motion_enabled"])
-        self.assertAlmostEqual(stored["motion_sensitivity"], 0.2, places=3)
-        self.assertEqual(stored["motion_source"], "main")
-        self.assertEqual(stored["motion_cooldown_sec"], 9)
+        self.assertEqual(stored["hass_entities"], ["binary_sensor.cong", "binary_sensor.san"])
         self.client.delete("/api/cameras/mo1", headers=auth())
 
     def test_ai_detect_creates_labelled_event(self):
@@ -397,41 +387,29 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("showinfo", joined)
         self.assertEqual(cmd[cmd.index("-i") + 1], self._cam()["sub_rtsp_url"])
 
-    def test_motion_detect_zones_split_commands(self):
-        cam = self._cam(motion_zones=[
-            {"name": "Cổng", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4},
-            {"name": "Sân", "x": 0, "y": 0, "w": 1, "h": 1, "sensitivity": 0.2, "enabled": False},
-        ])
-        cmds = self.m.build_motion_detect_cmds("cam", cam)
-        self.assertEqual(len(cmds), 1)
-        label, cmd = cmds[0]
-        self.assertIn("Cổng", label)
-        vf = self._values(cmd, "-vf")[0]
-        self.assertIn("crop=iw*0.3000:ih*0.4000:iw*0.1000:ih*0.2000", vf)
-        self.assertIn("select='gt(scene", vf)
-
-    def test_motion_detect_no_zones_single_command(self):
-        cmds = self.m.build_motion_detect_cmds("cam", self._cam())
-        self.assertEqual(len(cmds), 1)
-        self.assertIn("showinfo", " ".join(cmds[0][1]))
-
     def test_motion_detect_cmd_uses_info_loglevel(self):
         # showinfo chỉ in ở mức info, nếu để loglevel error thì không bắt được chuyển động
         cmd = self.m.build_motion_detect_cmd("cam", self._cam())
         self.assertEqual(self._values(cmd, "-loglevel")[-1], "info")
-        zones = self.m.build_motion_detect_cmds(
-            "cam", self._cam(motion_zones=[{"name": "C", "x": 0, "y": 0, "w": 1, "h": 1}]))
-        self.assertEqual(self._values(zones[0][1], "-loglevel")[-1], "info")
 
-    def test_motion_cfg_for_per_camera_overrides(self):
+    def test_motion_cfg_for_per_camera_enabled_only(self):
+        # Độ nhạy/nguồn/cooldown lấy mặc định chung; chỉ bật/tắt theo camera.
         base = self.m._motion_cfg_for({})
         self.assertFalse(base["enabled"])
-        cam = self.m._motion_cfg_for({"motion_enabled": True, "motion_sensitivity": 0.3,
-                                      "motion_source": "main", "motion_cooldown_sec": 12})
+        cam = self.m._motion_cfg_for({"motion_enabled": True})
         self.assertTrue(cam["enabled"])
-        self.assertAlmostEqual(cam["sensitivity"], 0.3, places=3)
-        self.assertEqual(cam["source"], "main")
-        self.assertEqual(cam["cooldown_sec"], 12)
+        self.assertEqual(cam["sensitivity"], base["sensitivity"])
+        self.assertEqual(cam["source"], base["source"])
+
+    def test_hass_rules_merges_camera_entities(self):
+        saved = self.m.CONFIG.get("cameras")
+        self.m.CONFIG["cameras"] = {"c1": {"motion_enabled": True, "hass_entities": ["binary_sensor.a"]}}
+        try:
+            rules = self.m._hass_rules({"c2": [{"entity_id": "binary_sensor.b", "label": "x"}]})
+        finally:
+            self.m.CONFIG["cameras"] = saved
+        self.assertEqual(rules["binary_sensor.a"], "c1")
+        self.assertEqual(rules["binary_sensor.b"], "c2")
 
     def test_disk_health_and_alert_level(self):
         h = self.m.disk_health()

@@ -32,21 +32,15 @@ Cơ chế chống tấn công tự động:
 Trên Web UI, bấm **🛰️ Home Assistant**:
 1. Nhập **Địa chỉ HA** (VD `http://homeassistant.local:8123`).
 2. Dán **Long-Lived Access Token** (HA → Hồ sơ người dùng → Security → Create Token). Token được lưu trong `config.json` và chỉ dùng ở phía server.
-3. Bấm **↻ Tải danh sách sensor** để LiteNVR lấy toàn bộ `binary_sensor`/`input_boolean`/`switch`/`device_tracker` từ HA. Trong ô cảm biến có thể **gõ tên hoặc chọn** từ danh sách gợi ý.
-4. Mỗi cảm biến gán kèm **Nhãn sự kiện** (VD `Người quen`, `Người lạ`, hoặc tên người). Nhãn này hiển thị trên timeline/event khi cảm biến đó kích hoạt.
-5. Bấm **Kiểm tra kết nối** rồi **Lưu**.
+3. Bấm **Kiểm tra kết nối** rồi **Lưu**.
+4. Gán cảm biến cho **từng camera** trong **+ Quản lý Camera** → **Sửa** → mục **🛰️ Cảm biến chuyển động Home Assistant**: gõ tên `binary_sensor.*` hoặc bấm **↻ Tải danh sách sensor** để chọn. Danh sách lưu trong `hass_entities` của camera.
 
-LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; khi entity chuyển sang trạng thái chuyển động (`on`/`detected`/`motion`) thì kích hoạt ghi hình + snapshot cho camera tương ứng (chỉ kích hoạt khi đổi trạng thái, không lặp). Tự kết nối lại khi mất mạng.
+LiteNVR tự mở WebSocket tới HA (`/api/websocket`), xác thực bằng token, đăng ký `state_changed`; **mọi thay đổi trạng thái** của cảm biến đã gán đều kích hoạt ghi hình + snapshot cho camera tương ứng (chỉ khi giá trị đổi, không lặp). Sự kiện ghi nhãn `Chuyển động (HA: <entity_id>)`. Tự kết nối lại khi mất mạng.
 
 ## Phát hiện chuyển động nội bộ (không cần ONVIF/HA)
-LiteNVR có thể tự dò chuyển động bằng chính luồng RTSP, không phụ thuộc cảm biến ONVIF hay Home Assistant. Bật **riêng cho từng camera** trong **+ Quản lý Camera** → **Sửa** → **🎯 Bật dò chuyển động cho camera này**, nên chỉ bật ở những camera cần:
-- **Độ nhạy** (0.01–0.9): càng nhỏ càng nhạy (dễ báo nhầm hơn). Trống = dùng mặc định chung `0.05`.
-- **Nguồn dò**: **Luồng phụ** (nhẹ CPU hơn, khuyến nghị) hoặc **Luồng chính**. Trống = dùng mặc định chung.
-- **Gộp sự kiện** giữa hai lần báo (giây): mặc định `5` (tránh dội sự kiện). Trống = dùng mặc định chung.
+LiteNVR có thể tự dò chuyển động bằng chính luồng RTSP, không phụ thuộc cảm biến ONVIF hay Home Assistant. Bật **riêng cho từng camera** trong **+ Quản lý Camera** → **Sửa** → **🎯 Bật dò chuyển động cho camera này**, nên chỉ bật ở những camera cần (lưu trong `motion_enabled` của camera). Độ nhạy, nguồn dò và gộp sự kiện dùng **mặc định chung**.
 
-Cơ chế: camera được bật sẽ chạy một ffmpeg đọc luồng đã chọn với bộ lọc `select='gt(scene,…)'` và `showinfo`; khi phát hiện đổi cảnh, LiteNVR kích hoạt **ghi hình + snapshot** đúng như sự kiện từ HA/ONVIF (dùng chung `handle_motion`, không nhân đôi). Camera mất kết nối sẽ tự thử lại với backoff. Mặc định chung (áp cho camera không đặt riêng) chỉnh bằng API `GET/POST /api/motion_detect` (`sensitivity`, `cooldown_sec`, `source`); trạng thái bật/tắt và tuỳ chọn riêng lưu trong `motion_enabled`, `motion_sensitivity`, `motion_source`, `motion_cooldown_sec` của từng camera.
-
-**Vùng chuyển động**: trong form sửa camera có mục **🎯 Vùng chuyển động** — thêm các vùng (toạ độ tỉ lệ 0–1: `x`, `y`, `w`, `h`) và **độ nhạy riêng** từng vùng. Có vùng thì LiteNVR chỉ dò trong các vùng đó (mỗi vùng một tiến trình ffmpeg `crop` riêng, nhãn sự kiện kèm tên vùng); không có vùng thì quét toàn khung như cũ.
+Cơ chế: camera được bật sẽ chạy một ffmpeg đọc luồng với bộ lọc `select='gt(scene,…)'` và `showinfo`; khi phát hiện đổi cảnh, LiteNVR kích hoạt **ghi hình + snapshot** đúng như sự kiện từ HA/ONVIF (dùng chung `handle_motion`, không nhân đôi), nhãn `Chuyển động (nội bộ)`. Camera mất kết nối sẽ tự thử lại với backoff. Mặc định chung chỉnh bằng API `GET/POST /api/motion_detect` (`sensitivity`, `cooldown_sec`, `source`).
 
 ## Nhãn AI (người/xe) từ bộ nhận diện ngoài
 Gửi sự kiện từ bộ nhận diện AI bất kỳ (Frigate, DeepStack, CodeProject.AI, Node-RED…) vào endpoint:
