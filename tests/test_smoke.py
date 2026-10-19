@@ -206,7 +206,7 @@ class ApiTests(_AppCase):
         j = self.client.get("/api/events?cam_id=camS", headers=auth()).json()
         self.assertEqual(j["count"], 1)
         self.assertEqual(j["events"][0]["label"], "Người lạ")
-        self.assertEqual(j["events"][0]["snapshot"], "/snapshots/s.jpg")
+        self.assertEqual(j["events"][0]["snapshot"], "snapshots/s.jpg")
         self.assertEqual(j["events"][0]["time"], "10:00:00")
         self.assertEqual(j["events"][0]["sec_of_day"], 36000)
         self.assertEqual(self.client.get("/api/events?q=Người", headers=auth()).json()["count"], 2)

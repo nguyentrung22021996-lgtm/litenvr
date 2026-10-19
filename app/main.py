@@ -281,7 +281,7 @@ async def auth_guard(request: Request, call_next):
     if user is None:
         accept = request.headers.get("accept", "")
         if path == "/" and "text/html" in accept:
-            return RedirectResponse("/login", status_code=302)
+            return RedirectResponse("login", status_code=302)
         if path.startswith("/api/"):
             return JSONResponse({"detail": "Chưa đăng nhập"}, status_code=401)
         return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="LiteNVR"'}, content="Unauthorized")
@@ -2487,7 +2487,7 @@ def api_latest_snapshots(request: Request):
         """)
         for cam_id, snap in c.fetchall():
             if snap:
-                out[cam_id] = f"/snapshots/{snap}"
+                out[cam_id] = f"snapshots/{snap}"
     except Exception:
         pass
     u = getattr(request.state, "user", None) or {}
@@ -3355,7 +3355,7 @@ def get_timeline(cam_id: str, date: str):
                     start_sec = h * 3600 + m * 60 + s
                     local_names.add(fname)
                     segments.append({
-                        "file": f"/recordings/{cam_id}/{fname}",
+                        "file": f"recordings/{cam_id}/{fname}",
                         "fname": fname,
                         "time": time_part.replace("-", ":"),
                         "start_sec": start_sec,
@@ -3382,7 +3382,7 @@ def get_timeline(cam_id: str, date: str):
         except Exception:
             continue
         segments.append({
-            "file": f"/api/play/{cam_id}/{fname}",
+            "file": f"api/play/{cam_id}/{fname}",
             "fname": fname,
             "time": time_part.replace("-", ":"),
             "start_sec": start_sec,
@@ -3409,7 +3409,7 @@ def get_timeline(cam_id: str, date: str):
             "time": row[2],
             "sec_of_day": h * 3600 + m * 60 + s,
             "label": row[3],
-            "snapshot": f"/snapshots/{row[4]}"
+            "snapshot": f"snapshots/{row[4]}"
         })
     return {
         "segments": segments,
@@ -3526,7 +3526,7 @@ def search_events(request: Request, cam_id: str = "", q: str = "",
             "cam_name": (cams.get(cid) or {}).get("name", cid),
             "timestamp": r[2], "date": r[3], "time": t, "label": r[5],
             "sec_of_day": sec_of_day,
-            "snapshot": f"/snapshots/{r[6]}" if r[6] else "",
+            "snapshot": f"snapshots/{r[6]}" if r[6] else "",
         })
     return {"events": out, "count": len(out)}
 

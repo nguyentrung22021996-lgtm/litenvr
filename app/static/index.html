@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>LiteNVR Pro - ZimaOS Camera NVR</title>
-  <script src="/static/hls.min.js"></script>
+  <script src="static/hls.min.js"></script>
   <style>
     :root {
       --bg-body: #090c12;
@@ -1581,7 +1581,7 @@
       <h4 style="margin:0 0 8px;">💾 Sao lưu / Khôi phục toàn bộ cấu hình</h4>
       <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">Bao gồm camera, lịch ghi hình, Home Assistant, thông báo Telegram/Webhook.</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button onclick="window.location='/api/config/export'">⬇️ Xuất cấu hình (.json)</button>
+        <button onclick="window.location='api/config/export'">⬇️ Xuất cấu hình (.json)</button>
         <button onclick="document.getElementById('restoreFile').click()">⬆️ Nhập cấu hình</button>
         <input type="file" id="restoreFile" accept="application/json,.json" style="display:none;" onchange="importConfigFile(this)">
       </div>
@@ -1947,7 +1947,7 @@
     dateInput.value = new Date().toISOString().split("T")[0];
 
     async function loadSystem() {
-      const res = await fetch("/api/system");
+      const res = await fetch("api/system");
       sysInfo = await res.json();
     }
 
@@ -1984,9 +1984,9 @@
     async function loadStats() {
       try {
         const [cur, hist, sys] = await Promise.all([
-          fetch("/api/stats").then(r => r.json()),
-          fetch("/api/stats/history").then(r => r.json()),
-          fetch("/api/system").then(r => r.json()).catch(() => null)
+          fetch("api/stats").then(r => r.json()),
+          fetch("api/stats/history").then(r => r.json()),
+          fetch("api/system").then(r => r.json()).catch(() => null)
         ]);
         statsHist.cpu = hist.samples.map(s => s.cpu_percent);
         statsHist.mem = hist.samples.map(s => s.mem_percent);
@@ -2043,7 +2043,7 @@
 
     async function init() {
       if (isAdmin()) await loadSystem();
-      const res = await fetch("/api/cameras");
+      const res = await fetch("api/cameras");
       cameras = await res.json();
       if (cameras.detail) cameras = {};
       const sel = document.getElementById("camSelect");
@@ -2116,7 +2116,7 @@
 
     async function refreshSnapshots() {
       try {
-        const snaps = await fetch("/api/latest_snapshots").then(r => r.json());
+        const snaps = await fetch("api/latest_snapshots").then(r => r.json());
         for (const [id, info] of Object.entries(cameras)) info._snapshot = snaps[id] || "";
       } catch (e) {}
     }
@@ -2279,7 +2279,7 @@
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
       }
-      await fetch("/api/cameras", {
+      await fetch("api/cameras", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
@@ -2290,7 +2290,7 @@
 
     async function removeCam(id) {
       if (!confirm(`Xóa camera ${id}?`)) return;
-      await fetch(`/api/cameras/${id}`, {method: "DELETE"});
+      await fetch(`api/cameras/${id}`, {method: "DELETE"});
       await init();
       openCamModal();
     }
@@ -2319,7 +2319,7 @@
           tags: document.getElementById("inpTags").value.trim()
         });
       }
-      const r = await fetch("/api/cameras/bulk", {
+      const r = await fetch("api/cameras/bulk", {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({items})
       });
@@ -2334,7 +2334,7 @@
       box.style.display = "block";
       box.innerHTML = "Đang tìm camera ONVIF trong mạng (3s)...";
       try {
-        const d = await fetch("/api/onvif/discover?timeout=3").then(r => r.json());
+        const d = await fetch("api/onvif/discover?timeout=3").then(r => r.json());
         const devs = d.devices || [];
         if (!devs.length) {
           box.innerHTML = "Không tìm thấy camera ONVIF. Kiểm tra camera đã bật ONVIF và cùng mạng LAN.";
@@ -2364,7 +2364,7 @@
       if (pass === null) return;
       box.innerHTML = `Đang lấy luồng RTSP từ ${esc(host)}...`;
       try {
-        const d = await fetch("/api/onvif/probe", {
+        const d = await fetch("api/onvif/probe", {
           method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify({host, port: parseInt(port) || 80, username: user, password: pass})
         }).then(async r => { if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); });
@@ -2399,7 +2399,7 @@
         post_motion_sec: parseInt(document.getElementById("inpPostMotion").value) || 60,
         ram_buffer: document.getElementById("inpRamBuffer").checked
       };
-      await fetch("/api/storage", {
+      await fetch("api/storage", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
@@ -2409,7 +2409,7 @@
     }
 
     async function cleanNow() {
-      const res = await fetch("/api/storage/clean", {method: "POST"});
+      const res = await fetch("api/storage/clean", {method: "POST"});
       const data = await res.json();
       alert(`Đã dọn dẹp ${data.deleted_files} file video/ảnh quá hạn!`);
       await loadSystem();
@@ -2417,7 +2417,7 @@
     }
 
     async function openHassModal() {
-      const res = await fetch("/api/hass");
+      const res = await fetch("api/hass");
       const cfg = await res.json();
       document.getElementById("hassEnabled").checked = !!cfg.enabled;
       document.getElementById("hassUrl").value = cfg.base_url || "";
@@ -2437,7 +2437,7 @@
       const el = document.getElementById("camHassMsg") || document.getElementById("hassStatus");
       if (el) el.textContent = "Đang tải danh sách sensor từ Home Assistant...";
       try {
-        const res = await fetch("/api/hass/entities", {
+        const res = await fetch("api/hass/entities", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
@@ -2464,7 +2464,7 @@
     }
 
     async function saveHass() {
-      await fetch("/api/hass", {
+      await fetch("api/hass", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
@@ -2481,7 +2481,7 @@
       const el = document.getElementById("hassStatus");
       el.textContent = "Đang kiểm tra kết nối...";
       try {
-        const res = await fetch("/api/hass/test", {
+        const res = await fetch("api/hass/test", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
@@ -2500,7 +2500,7 @@
 
     async function testMotion() {
       if (!currentCam) return;
-      await fetch("/api/motion", {
+      await fetch("api/motion", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({cam_id: currentCam, label: "Kích hoạt thử (Test)"})
@@ -2510,7 +2510,7 @@
 
     function __clientLog(level, message, camId) {
       try {
-        fetch("/api/client_log", {
+        fetch("api/client_log", {
           method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify({level, message, cam_id: camId || currentCam || ""})
         });
@@ -2519,7 +2519,7 @@
 
     function startLiveHeartbeat() {
       if (liveHeartbeatTimer) clearInterval(liveHeartbeatTimer);
-      const beat = () => { if (currentCam) fetch(`/api/live/${currentCam}`, {method: "POST"}).catch(() => {}); };
+      const beat = () => { if (currentCam) fetch(`api/live/${currentCam}`, {method: "POST"}).catch(() => {}); };
       beat();
       liveHeartbeatTimer = setInterval(beat, 5000);
     }
@@ -2540,7 +2540,7 @@
       if (scrub) scrub.textContent = "● Đang xem trực tiếp";
       const statusEl = document.getElementById("statusText");
       statusEl.textContent = "Đang xem trực tiếp (Live)...";
-      const hlsUrl = `/hls/${currentCam}/live.m3u8`;
+      const hlsUrl = `hls/${currentCam}/live.m3u8`;
       startLiveHeartbeat();
       video.onended = null;
       if (typeof Hls !== "undefined" && Hls.isSupported()) {
@@ -2577,7 +2577,7 @@
 
     async function loadTimeline() {
       if (!currentCam) return;
-      const res = await fetch(`/api/timeline/${currentCam}?date=${dateInput.value}`);
+      const res = await fetch(`api/timeline/${currentCam}?date=${dateInput.value}`);
       if (!res.ok) { segments = []; return; }
       const data = await res.json();
       segments = data.segments || [];
@@ -2658,7 +2658,7 @@
         if (seg) {
           if (thumb.dataset.seg !== seg.fname) {
             thumb.dataset.seg = seg.fname;
-            thumb.src = `/api/thumb/${currentCam}/${seg.fname}`;
+            thumb.src = `api/thumb/${currentCam}/${seg.fname}`;
           }
           thumb.style.display = "block";
           thumb.style.left = Math.max(0, Math.min(pct, 86)) + "%";
@@ -2688,7 +2688,7 @@
       if (from) params.set("date_from", from);
       if (to) params.set("date_to", to);
       let data = { events: [] };
-      try { data = await fetch("/api/events?" + params.toString()).then(r => r.json()); } catch (e) {}
+      try { data = await fetch("api/events?" + params.toString()).then(r => r.json()); } catch (e) {}
       box.innerHTML = "";
       (data.events || []).forEach(e => {
         const card = document.createElement("div");
@@ -2787,7 +2787,7 @@
     }
     function pollDriveFetch(cam, fname) {
       stopDriveFetchPoll();
-      const url = `/api/drive/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}`;
+      const url = `api/drive/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}`;
       const tick = async () => {
         let d;
         try { d = await (await fetch(url)).json(); } catch (e) { return; }
@@ -2810,7 +2810,7 @@
       const parts = seg.file.split("/");
       const cam = parts[2] || currentCam;
       const fname = seg.fname || parts[parts.length - 1];
-      const transUrl = `/api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1&ss=${Math.max(0, offset || 0).toFixed(2)}`;
+      const transUrl = `api/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}?t=1&ss=${Math.max(0, offset || 0).toFixed(2)}`;
 
       currentSegStartSec = seg.start_sec;
       document.getElementById("statusText").textContent = seg.drive
@@ -2887,7 +2887,7 @@
     async function showDiagnostics() {
       if (!currentCam) { alert("Chưa chọn camera."); return; }
       try {
-        const r = await fetch(`/api/status/${currentCam}`);
+        const r = await fetch(`api/status/${currentCam}`);
         const d = await r.json();
         const lines = [
           `Camera: ${currentCam}`,
@@ -2907,7 +2907,7 @@
     async function updateLogBadge() {
       if (ME && !isAdmin()) return;
       try {
-        const d = await fetch("/api/logs?limit=50").then(r => r.json());
+        const d = await fetch("api/logs?limit=50").then(r => r.json());
         const errs = (d.events || []).filter(e => e.level === "error").length;
         const camErr = Object.values(d.cameras || {}).filter(c => !c.running || c.last_error).length;
         const n = errs + camErr;
@@ -2931,7 +2931,7 @@
     }
     async function refreshLogs() {
       try {
-        const r = await fetch("/api/logs?limit=200");
+        const r = await fetch("api/logs?limit=200");
         _logsData = await r.json();
         renderLogs();
       } catch (e) {
@@ -3034,7 +3034,7 @@
         };
         gv.appendChild(tile);
         const v = tile.querySelector("video");
-        const url = `/hls/${id}/live.m3u8`;
+        const url = `hls/${id}/live.m3u8`;
         let h = null;
         if (typeof Hls !== "undefined" && Hls.isSupported()) {
           h = new Hls({ liveDurationInfinity: true });
@@ -3047,7 +3047,7 @@
         }
         gridPlayers.push({ hls: h, cam: id });
       }
-      const beat = () => ids.forEach(id => fetch(`/api/live/${id}`, { method: "POST" }).catch(() => {}));
+      const beat = () => ids.forEach(id => fetch(`api/live/${id}`, { method: "POST" }).catch(() => {}));
       beat();
       gridHtTimer = setInterval(beat, 5000);
     }
@@ -3062,7 +3062,7 @@
     async function loadPtzPresets() {
       const sel = document.getElementById("ptzPreset");
       try {
-        const d = await fetch(`/api/ptz/${currentCam}/presets`).then(r => r.json());
+        const d = await fetch(`api/ptz/${currentCam}/presets`).then(r => r.json());
         sel.innerHTML = (d.presets || []).length
           ? d.presets.map(p => `<option value="${esc(p.token)}">${esc(p.name || p.token)}</option>`).join("")
           : `<option value="">(không có preset)</option>`;
@@ -3077,7 +3077,7 @@
       const duration = parseFloat(document.getElementById("ptzDur").value) || 0.5;
       msg.textContent = "⏳ Đang gửi lệnh " + action + "...";
       try {
-        const r = await fetch(`/api/ptz/${currentCam}`, {
+        const r = await fetch(`api/ptz/${currentCam}`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action, speed, duration })
         });
@@ -3097,7 +3097,7 @@
       const msg = document.getElementById("ptzMsg");
       msg.textContent = "⏳ Đang gửi lệnh...";
       try {
-        const r = await fetch(`/api/ptz/${currentCam}`, {
+        const r = await fetch(`api/ptz/${currentCam}`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
@@ -3116,7 +3116,7 @@
     async function lockCurrent() {
       const s = segAtCursor();
       if (!s) return alert("Không có bản ghi tại vị trí con trỏ.");
-      const r = await fetch("/api/locks", {
+      const r = await fetch("api/locks", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cam_id: currentCam, file: s.fname })
       });
@@ -3126,7 +3126,7 @@
     async function unlockCurrent() {
       const s = segAtCursor();
       if (!s) return alert("Không có bản ghi tại vị trí con trỏ.");
-      const r = await fetch(`/api/locks/${encodeURIComponent(currentCam)}/${encodeURIComponent(s.fname)}`, { method: "DELETE" });
+      const r = await fetch(`api/locks/${encodeURIComponent(currentCam)}/${encodeURIComponent(s.fname)}`, { method: "DELETE" });
       if (!r.ok) { const d = await r.json().catch(() => ({})); return alert("Không mở khoá được: " + (d.detail || r.status)); }
       await loadTimeline();
     }
@@ -3150,7 +3150,7 @@
       const statusEl = document.getElementById("statusText");
       statusEl.textContent = "Đang ghép clip... (có thể mất vài giây)";
       try {
-        const url = `/api/export/${encodeURIComponent(currentCam)}?date=${dateInput.value}&start=${Math.floor(fromSec)}&end=${Math.ceil(toSec)}&hc=${hc ? 1 : 0}`;
+        const url = `api/export/${encodeURIComponent(currentCam)}?date=${dateInput.value}&start=${Math.floor(fromSec)}&end=${Math.ceil(toSec)}&hc=${hc ? 1 : 0}`;
         const r = await fetch(url);
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
@@ -3177,7 +3177,7 @@
 
     // ================= Thông báo (Telegram/Webhook) =================
     async function openNotifyModal() {
-      const cfg = await fetch("/api/notify").then(r => r.json());
+      const cfg = await fetch("api/notify").then(r => r.json());
       document.getElementById("ntEnabled").checked = !!cfg.telegram_enabled;
       document.getElementById("ntChatId").value = cfg.telegram_chat_id || "";
       document.getElementById("ntToken").value = "";
@@ -3196,7 +3196,7 @@
       const el = document.getElementById("ntDiskHealth");
       if (!el) return;
       try {
-        const h = await fetch("/api/disk_health").then(r => r.json());
+        const h = await fetch("api/disk_health").then(r => r.json());
         const smart = h.smart || {};
         const parts = [`Đã dùng ${h.percent}% (${h.used_gb}/${h.total_gb} GB, còn ${h.free_gb} GB)`,
                        `inode ${h.inodes_percent}%`,
@@ -3224,7 +3224,7 @@
         disk_warn_percent: parseFloat(document.getElementById("ntDiskWarn").value) || 85,
         disk_crit_percent: parseFloat(document.getElementById("ntDiskCrit").value) || 95
       };
-      const r = await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const r = await fetch("api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const st = document.getElementById("ntStatus");
       st.style.color = r.ok ? "#10b981" : "#f87171";
       st.textContent = r.ok ? "✔ Đã lưu cấu hình thông báo." : "❌ Lưu lỗi.";
@@ -3234,7 +3234,7 @@
       st.style.color = "#94a3b8";
       st.textContent = "⏳ Đang gửi thử...";
       try {
-        const r = await fetch("/api/notify/test", { method: "POST" });
+        const r = await fetch("api/notify/test", { method: "POST" });
         const d = await r.json();
         st.style.color = r.ok ? "#10b981" : "#f87171";
         st.textContent = r.ok ? "✔ " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
@@ -3251,7 +3251,7 @@
       document.getElementById("bkFtpBox").style.display = k === "ftp" ? "block" : "none";
     }
     async function openBackupModal() {
-      const cfg = await fetch("/api/backup").then(r => r.json());
+      const cfg = await fetch("api/backup").then(r => r.json());
       document.getElementById("bkEnabled").checked = !!cfg.enabled;
       document.getElementById("bkKind").value = cfg.kind || "folder";
       document.getElementById("bkFolderPath").value = cfg.folder_path || "";
@@ -3287,7 +3287,7 @@
       };
     }
     async function saveBackup() {
-      const r = await fetch("/api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
+      const r = await fetch("api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(readBackupPayload()) });
       const st = document.getElementById("bkStatus");
       st.style.color = r.ok ? "#10b981" : "#f87171";
@@ -3297,10 +3297,10 @@
       const st = document.getElementById("bkStatus");
       st.style.color = "#94a3b8";
       st.textContent = "⏳ Đang kiểm tra đích...";
-      await fetch("/api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
+      await fetch("api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(readBackupPayload()) });
       try {
-        const r = await fetch("/api/backup/test", { method: "POST" });
+        const r = await fetch("api/backup/test", { method: "POST" });
         const d = await r.json();
         st.style.color = r.ok ? "#10b981" : "#f87171";
         st.textContent = r.ok ? "✔ Đích OK: " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
@@ -3319,7 +3319,7 @@
       msg.textContent = "⏳ Đang khôi phục...";
       try {
         const text = await f.text();
-        const r = await fetch("/api/config/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: text });
+        const r = await fetch("api/config/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: text });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || r.status);
         msg.style.color = "#10b981";
@@ -3345,7 +3345,7 @@
       }
       return _origFetch(url, o).then(r => {
         if (r.status === 401) {
-          location.href = "/login";
+          location.href = "login";
           throw new Error("Phiên đăng nhập đã hết hạn");
         }
         return r;
@@ -3358,8 +3358,8 @@
 
     async function initSecurity() {
       try {
-        const r = await _origFetch("/api/me", { credentials: "same-origin" });
-        if (r.status === 401) { location.href = "/login"; return false; }
+        const r = await _origFetch("api/me", { credentials: "same-origin" });
+        if (r.status === 401) { location.href = "login"; return false; }
         ME = await r.json();
       } catch (e) { ME = null; }
       const chip = document.getElementById("userChip");
@@ -3511,8 +3511,8 @@
 
     async function doLogout() {
       if (!confirm("Đăng xuất khỏi LiteNVR?")) return;
-      try { await fetch("/api/logout", { method: "POST" }); } catch (e) {}
-      location.href = "/login";
+      try { await fetch("api/logout", { method: "POST" }); } catch (e) {}
+      location.href = "login";
     }
 
     // ================= Modal Bảo mật & tài khoản con =================
@@ -3576,7 +3576,7 @@
       }
     }
     async function tfaInit() {
-      const r = await fetch("/api/me/totp/init", { method: "POST" });
+      const r = await fetch("api/me/totp/init", { method: "POST" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { document.getElementById("tfaMsg").textContent = "❌ " + (d.detail || r.status); return; }
       document.getElementById("tfaSecret").textContent = d.secret;
@@ -3585,7 +3585,7 @@
     }
     async function tfaEnable() {
       const code = document.getElementById("tfaCode").value.trim();
-      const r = await fetch("/api/me/totp/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+      const r = await fetch("api/me/totp/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
       const d = await r.json().catch(() => ({}));
       const msg = document.getElementById("tfaMsg");
       if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
@@ -3595,7 +3595,7 @@
     }
     async function tfaDisable() {
       const code = document.getElementById("tfaOffCode").value.trim();
-      const r = await fetch("/api/me/totp/disable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+      const r = await fetch("api/me/totp/disable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
       const d = await r.json().catch(() => ({}));
       const msg = document.getElementById("tfaMsg");
       if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
@@ -3605,19 +3605,19 @@
     }
     async function saveMyPassword() {
       const msg = document.getElementById("pwMsg");
-      const r = await fetch("/api/me/password", {
+      const r = await fetch("api/me/password", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ old_password: document.getElementById("pwOld").value, new_password: document.getElementById("pwNew").value })
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
       msg.style.color = "#10b981"; msg.textContent = "✔ Đổi xong — chuyển về trang đăng nhập...";
-      setTimeout(() => { location.href = "/login"; }, 1200);
+      setTimeout(() => { location.href = "login"; }, 1200);
     }
 
     async function loadSecUsers() {
       try {
-        const d = await fetch("/api/users").then(r => r.json());
+        const d = await fetch("api/users").then(r => r.json());
         SEC_USERS = d.users || [];
         SEC_ALL_CAMS = d.cameras || [];
         renderSecUsers();
@@ -3708,11 +3708,11 @@
       if (SEC_EDIT) {
         const pw = document.getElementById("nuPass").value;
         if (pw) payload.password = pw;
-        r = await fetch("/api/users/" + encodeURIComponent(SEC_EDIT), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        r = await fetch("api/users/" + encodeURIComponent(SEC_EDIT), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       } else {
         payload.username = document.getElementById("nuName").value.trim();
         payload.password = document.getElementById("nuPass").value;
-        r = await fetch("/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        r = await fetch("api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       }
       const d = await r.json().catch(() => ({}));
       msg.style.color = r.ok ? "#10b981" : "#f87171";
@@ -3721,14 +3721,14 @@
     }
     async function delUser(name) {
       if (!confirm("Xoá tài khoản '" + name + "'? Các phiên đang mở sẽ bị đăng xuất ngay.")) return;
-      const r = await fetch("/api/users/" + encodeURIComponent(name), { method: "DELETE" });
+      const r = await fetch("api/users/" + encodeURIComponent(name), { method: "DELETE" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) return alert("Không xoá được: " + (d.detail || r.status));
       loadSecUsers();
     }
     async function tfaOff(name) {
       if (!confirm("Tắt 2FA cho tài khoản '" + name + "'?")) return;
-      const r = await fetch("/api/users/" + encodeURIComponent(name) + "/totp_off", { method: "POST" });
+      const r = await fetch("api/users/" + encodeURIComponent(name) + "/totp_off", { method: "POST" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) return alert("Không tắt được: " + (d.detail || r.status));
       loadSecUsers();
@@ -3737,7 +3737,7 @@
       const el = document.getElementById("auditList");
       el.textContent = "Đang tải...";
       try {
-        const d = await fetch("/api/audit?limit=200").then(r => r.json());
+        const d = await fetch("api/audit?limit=200").then(r => r.json());
         const labels = {
           login_ok: "✅ đăng nhập", login_fail: "❌ sai mật khẩu", login_locked: "⛔ tạm khoá",
           logout: "🚪 đăng xuất", user_create: "➕ tạo tài khoản", user_update: "✏️ sửa tài khoản",
@@ -3752,7 +3752,7 @@
     async function loadSecStatus() {
       const el = document.getElementById("secStatusBox");
       try {
-        const d = await fetch("/api/security/status").then(r => r.json());
+        const d = await fetch("api/security/status").then(r => r.json());
         const warns = (d.warnings || []).map(w => `<div class="sec-warn">⚠️ ${esc(w)}</div>`).join("");
         el.innerHTML = `
           ${d.auth_enabled ? '<div class="sec-ok">✅ Đang bật xác thực đăng nhập</div>' : ""}
@@ -3799,7 +3799,7 @@
 
     async function loadDrive() {
       let d;
-      try { d = await fetch("/api/drive").then(r => r.json()); } catch (e) { return; }
+      try { d = await fetch("api/drive").then(r => r.json()); } catch (e) { return; }
       _drvData = d;
       const line = document.getElementById("drvStatusLine");
       if (d.auth_error) {
@@ -3882,7 +3882,7 @@
       const sec = document.getElementById("drvClientSecret").value.trim();
       if (!cid || !sec) { drvMsg("Nhập đủ Client ID và Client Secret.", true); return; }
       drvMsg("Đang xin mã từ Google...");
-      const r = await fetch("/api/drive/connect", { method: "POST", body: JSON.stringify({ client_id: cid, client_secret: sec }) });
+      const r = await fetch("api/drive/connect", { method: "POST", body: JSON.stringify({ client_id: cid, client_secret: sec }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
       document.getElementById("drvCodeBox").hidden = false;
@@ -3894,7 +3894,7 @@
     }
     async function drivePoll() {
       let d = {};
-      try { d = await fetch("/api/drive/connect/poll").then(r => r.json()); } catch (e) { return; }
+      try { d = await fetch("api/drive/connect/poll").then(r => r.json()); } catch (e) { return; }
       if (d.status === "pending" || d.status === "none") return;
       if (_drvPollTimer) { clearInterval(_drvPollTimer); _drvPollTimer = null; }
       if (d.status === "ok") {
@@ -3913,7 +3913,7 @@
       const sec = document.getElementById("drvClientSecret").value.trim();
       if (!rt) { drvMsg("Dán refresh token (hoặc JSON của rclone) trước đã.", true); return; }
       drvMsg("Đang kiểm tra token...");
-      const r = await fetch("/api/drive/token", { method: "POST", body: JSON.stringify({ client_id: cid, client_secret: sec, refresh_token: rt }) });
+      const r = await fetch("api/drive/token", { method: "POST", body: JSON.stringify({ client_id: cid, client_secret: sec, refresh_token: rt }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
       document.getElementById("drvPasteToken").value = "";
@@ -3923,7 +3923,7 @@
     }
     async function driveTest() {
       drvMsg("Đang kiểm tra...");
-      const r = await fetch("/api/drive/test", { method: "POST" });
+      const r = await fetch("api/drive/test", { method: "POST" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
       drvMsg("✅ Kết nối tốt! " + (d.quota ? ("Drive còn trống " + drvFmtBytes(d.quota.free)) : ""));
@@ -3931,7 +3931,7 @@
     }
     async function driveDisconnect() {
       if (!confirm("Ngắt kết nối Google Drive? File đã tải lên Drive vẫn giữ nguyên. Sao lưu sẽ dừng lại.")) return;
-      await fetch("/api/drive/disconnect", { method: "POST" });
+      await fetch("api/drive/disconnect", { method: "POST" });
       drvMsg("Đã ngắt kết nối.");
       loadDrive();
     }
@@ -3946,7 +3946,7 @@
         max_gb: Math.max(0, parseFloat(document.getElementById("drvMaxGb").value || "0")),
         min_free_mb: Math.max(200, parseInt(document.getElementById("drvMinFree").value || "2000", 10))
       };
-      const r = await fetch("/api/drive", { method: "POST", body: JSON.stringify(body) });
+      const r = await fetch("api/drive", { method: "POST", body: JSON.stringify(body) });
       if (!r.ok) { drvMsg("❌ Không lưu được cài đặt", true); return; }
       drvMsg("✅ Đã lưu cài đặt sao lưu.");
       loadDrive();
@@ -3957,7 +3957,7 @@
       const to = document.getElementById("drvNowTo").value || from;
       if (!from) { drvMsg("Chọn ngày bắt đầu trước.", true); return; }
       drvMsg("Đang quét bản ghi...");
-      const r = await fetch("/api/drive/now", { method: "POST", body: JSON.stringify({ cam_id: cam, date_from: from, date_to: to }) });
+      const r = await fetch("api/drive/now", { method: "POST", body: JSON.stringify({ cam_id: cam, date_from: from, date_to: to }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
       drvMsg("✅ Đã xếp hàng " + d.queued + " đoạn ghi."
@@ -3966,14 +3966,14 @@
     }
     async function driveCleanupNow() {
       drvMsg("Đang dọn Drive...");
-      const r = await fetch("/api/drive/cleanup", { method: "POST" });
+      const r = await fetch("api/drive/cleanup", { method: "POST" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { drvMsg("❌ " + (d.detail || r.status), true); return; }
       drvMsg(d.deleted ? ("🧹 Đã xoá " + d.deleted + " file cũ, giải phóng " + drvFmtBytes(d.freed) + ".") : "Không cần dọn gì (còn đủ chỗ).");
       loadDrive();
     }
     async function driveRetry() {
-      const r = await fetch("/api/drive/retry", { method: "POST" });
+      const r = await fetch("api/drive/retry", { method: "POST" });
       const d = await r.json().catch(() => ({}));
       drvMsg(r.ok ? ("🔁 Đã đưa " + (d.requeued || 0) + " file lỗi về hàng đợi.") : "❌ Lỗi thử lại", !r.ok);
       loadDrive();
@@ -3982,7 +3982,7 @@
     setInterval(async () => {
       if (!isAdmin() || document.getElementById("driveModal").style.display === "flex") return;
       try {
-        const d = await fetch("/api/drive").then(r => r.json());
+        const d = await fetch("api/drive").then(r => r.json());
         const pending = (d.counts.pending || 0) + (d.counts.uploading || 0);
         const badge = document.getElementById("driveBadge");
         const show = (pending > 0 || (d.counts.error || 0) > 0);
