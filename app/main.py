@@ -390,6 +390,12 @@ def _normalize_config(cfg: dict) -> dict:
     md = cfg.setdefault("motion_detect", {})
     for k, v in DEFAULT_CONFIG["motion_detect"].items():
         md.setdefault(k, v)
+    # Di trú: dò chuyển động nay bật/tắt theo từng camera. Camera cũ giữ nguyên
+    # trạng thái nếu trước đây đã bật chung.
+    if md.get("enabled"):
+        for cam in cfg.get("cameras", {}).values():
+            if isinstance(cam, dict):
+                cam.setdefault("motion_enabled", True)
     gd = cfg.setdefault("gdrive", {})
     for k, v in DEFAULT_CONFIG["gdrive"].items():
         gd.setdefault(k, v)
@@ -2170,6 +2176,10 @@ class CameraItem(BaseModel):
     schedule_enabled: bool = False   # Bật lịch ghi hình theo giờ
     schedule: List[Dict[str, Any]] = []  # [{days:[0-6], from:"18:00", to:"06:00", mode:"motion"}]
     motion_zones: List[Dict[str, Any]] = []  # [{name,x,y,w,h,sensitivity,enabled}] toạ độ 0..1
+    motion_enabled: bool = False     # Bật dò chuyển động riêng cho camera này
+    motion_sensitivity: Optional[float] = None  # None = dùng độ nhạy chung
+    motion_source: Optional[str] = None         # None = dùng nguồn chung (sub|main)
+    motion_cooldown_sec: Optional[int] = None   # None = dùng cooldown chung
 
 class StorageSettings(BaseModel):
     retention_days: float
@@ -2441,8 +2451,8 @@ def set_motion_detect(s: MotionDetectSettings):
     save_config(CONFIG)
     for cam_id in list(_motion_tokens.keys()):
         stop_motion_detector(cam_id)
-    if cfg["enabled"]:
-        for cam_id in CONFIG.get("cameras", {}):
+    for cam_id, cam in CONFIG.get("cameras", {}).items():
+        if (cam or {}).get("motion_enabled"):
             start_motion_detector(cam_id)
     return {"status": "ok", "enabled": cfg["enabled"]}
 
@@ -2492,6 +2502,24 @@ def get_cameras(request: Request):
         out[cam_id] = c
     return out
 
+def _norm_cam_motion(item: CameraItem) -> dict:
+    """Chuẩn hoá các trường dò chuyển động riêng của một camera."""
+    try:
+        sens = None if item.motion_sensitivity in (None, "") else min(max(float(item.motion_sensitivity), 0.01), 0.9)
+    except (TypeError, ValueError):
+        sens = None
+    src = str(item.motion_source or "").lower()
+    try:
+        cool = None if item.motion_cooldown_sec in (None, "") else max(0, int(item.motion_cooldown_sec))
+    except (TypeError, ValueError):
+        cool = None
+    return {
+        "motion_enabled": bool(item.motion_enabled),
+        "motion_sensitivity": sens,
+        "motion_source": src if src in ("sub", "main") else None,
+        "motion_cooldown_sec": cool,
+    }
+
 @app.post("/api/cameras")
 def add_or_update_camera(item: CameraItem):
     cam_id = item.cam_id.strip()
@@ -2516,11 +2544,12 @@ def add_or_update_camera(item: CameraItem):
         "schedule_enabled": bool(item.schedule_enabled),
         "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
         "motion_zones": [z for z in (item.motion_zones or []) if isinstance(z, dict)],
+        **_norm_cam_motion(item),
     }
     save_config(CONFIG)
     refresh_go2rtc()
     start_camera_worker(cam_id)
-    if _motion_cfg().get("enabled"):
+    if CONFIG["cameras"][cam_id].get("motion_enabled"):
         start_motion_detector(cam_id)
     return {"status": "ok", "cameras": CONFIG["cameras"]}
 
@@ -2547,6 +2576,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
             "schedule_enabled": bool(item.schedule_enabled),
             "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
             "motion_zones": [z for z in (item.motion_zones or []) if isinstance(z, dict)],
+            **_norm_cam_motion(item),
         }
         start_camera_worker(cam_id)
         added += 1
@@ -2906,18 +2936,42 @@ def _motion_cfg() -> dict:
     return CONFIG.get("motion_detect") or {}
 
 
+def _motion_cfg_for(cam_info: dict) -> dict:
+    """Gộp mặc định chung với tuỳ chọn riêng của camera (độ nhạy/nguồn/cooldown).
+    `enabled` lấy theo camera; các trường khác rơi về mặc định chung nếu trống."""
+    base = _motion_cfg()
+    cam = cam_info or {}
+
+    def pick(key, default):
+        v = cam.get("motion_" + key)
+        return default if v in (None, "") else v
+
+    try:
+        sens = float(pick("sensitivity", base.get("sensitivity", 0.05)))
+    except (TypeError, ValueError):
+        sens = 0.05
+    try:
+        cool = float(pick("cooldown_sec", base.get("cooldown_sec", 5)))
+    except (TypeError, ValueError):
+        cool = 5
+    src = str(pick("source", base.get("source", "sub"))).lower()
+    return {
+        "enabled": bool(cam.get("motion_enabled")),
+        "sensitivity": min(max(sens, 0.01), 0.9),
+        "cooldown_sec": max(0.0, cool),
+        "source": "main" if src == "main" else "sub",
+    }
+
+
 def build_motion_detect_cmd(cam_id: str, cam_info: dict):
     """ffmpeg đọc luồng và chỉ giữ các khung có thay đổi cảnh (scene) rồi in
-    thông tin ra stderr để LiteNVR biết thời điểm có chuyển động."""
-    cfg = _motion_cfg()
-    try:
-        sens = float(cfg.get("sensitivity", 0.05))
-    except Exception:
-        sens = 0.05
-    sens = min(max(sens, 0.01), 0.9)
+    thông tin ra stderr để LiteNVR biết thời điểm có chuyển động.
+    Lưu ý: showinfo ghi ở mức log "info" nên phải hạ loglevel về info."""
+    cfg = _motion_cfg_for(cam_info)
+    sens = cfg["sensitivity"]
     main_url, sub_url = cam_source_urls(cam_id, cam_info)
     url = sub_url if str(cfg.get("source", "sub")).lower() == "sub" else main_url
-    return [*_ffmpeg_base_args(), *_input_args(url, cam_info), "-i", url,
+    return [*_ffmpeg_base_args(), "-loglevel", "info", *_input_args(url, cam_info), "-i", url,
             "-vf", f"select='gt(scene\\,{sens})',showinfo", "-an", "-f", "null", "-"]
 
 
@@ -2948,7 +3002,7 @@ def build_motion_detect_cmds(cam_id: str, cam_info: dict) -> List[tuple]:
     """Danh sách (nhãn, lệnh ffmpeg) để dò chuyển động.
     Có vùng cấu hình -> mỗi vùng một tiến trình crop riêng (độ nhạy riêng);
     không có vùng -> một tiến trình quét toàn khung như cũ."""
-    cfg = _motion_cfg()
+    cfg = _motion_cfg_for(cam_info)
     global_sens = cfg.get("sensitivity", 0.05)
     zones = _parse_motion_zones(cam_info)
     if not zones:
@@ -2965,7 +3019,7 @@ def build_motion_detect_cmds(cam_id: str, cam_info: dict) -> List[tuple]:
         crop = f"crop=iw*{z['w']:.4f}:ih*{z['h']:.4f}:iw*{z['x']:.4f}:ih*{z['y']:.4f}"
         vf = f"{crop},select='gt(scene\\,{sens})',showinfo"
         cmds.append((f"Chuyển động ({z['name']})",
-                     [*_ffmpeg_base_args(), *_input_args(url, cam_info), "-i", url,
+                     [*_ffmpeg_base_args(), "-loglevel", "info", *_input_args(url, cam_info), "-i", url,
                       "-vf", vf, "-an", "-f", "null", "-"]))
     return cmds
 
@@ -3024,8 +3078,8 @@ def _read_motion_stream(cam_id: str, label: str, proc: subprocess.Popen,
 def _motion_detector_loop(cam_id: str, token: threading.Event):
     backoff = 2
     while not token.is_set() and not _shutdown.is_set():
-        cfg = _motion_cfg()
         cam_info = CONFIG.get("cameras", {}).get(cam_id)
+        cfg = _motion_cfg_for(cam_info)
         if not cfg.get("enabled") or not cam_info:
             break
         cmds = build_motion_detect_cmds(cam_id, cam_info)
@@ -3077,9 +3131,9 @@ def motion_supervisor():
     """Bật/tắt bộ dò chuyển động nội bộ theo cấu hình và danh sách camera."""
     while not _shutdown.is_set():
         try:
-            enabled = bool(_motion_cfg().get("enabled"))
             cams = CONFIG.get("cameras", {})
-            for cam_id in list(cams.keys()):
+            for cam_id, cam in list(cams.items()):
+                enabled = bool((cam or {}).get("motion_enabled"))
                 with _motion_lock:
                     running = cam_id in _motion_tokens and not _motion_tokens[cam_id].is_set()
                 if enabled and not running:

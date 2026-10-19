@@ -1521,10 +1521,36 @@
       <button style="margin-bottom:10px;" onclick="addSchedRow()">+ Thêm khung giờ</button>
 
       <div class="form-row">
-        <label>🎯 Vùng chuyển động (chỉ dò trong các vùng này; toạ độ tỉ lệ 0–1)</label>
+        <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
+          <input type="checkbox" id="inpCamMotionOn" style="width:auto;" onchange="document.getElementById('camMotionBox').style.display = this.checked ? 'block' : 'none'">
+          🎯 Bật dò chuyển động cho camera này (không cần ONVIF; tốn thêm CPU)
+        </label>
       </div>
-      <div id="zoneRows"></div>
-      <button style="margin-bottom:10px;" onclick="addZoneRow()">+ Thêm vùng</button>
+      <div id="camMotionBox" style="display:none; padding-left:6px;">
+        <div class="grid-2">
+          <div class="form-row">
+            <label>Độ nhạy (0.01–0.9; trống = dùng mặc định):</label>
+            <input type="number" id="inpCamMotionSens" min="0.01" max="0.9" step="0.01" placeholder="mặc định">
+          </div>
+          <div class="form-row">
+            <label>Nguồn dò:</label>
+            <select id="inpCamMotionSource">
+              <option value="">Mặc định chung</option>
+              <option value="sub">Luồng phụ (nhẹ CPU hơn)</option>
+              <option value="main">Luồng chính</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>Gộp sự kiện trong (giây; trống = dùng mặc định):</label>
+          <input type="number" id="inpCamMotionCool" min="0" step="1" placeholder="mặc định">
+        </div>
+        <div class="form-row">
+          <label>🎯 Vùng chuyển động (chỉ dò trong các vùng này; toạ độ tỉ lệ 0–1)</label>
+        </div>
+        <div id="zoneRows"></div>
+        <button style="margin-bottom:10px;" onclick="addZoneRow()">+ Thêm vùng</button>
+      </div>
 
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
         <button onclick="closeCamModal()">Đóng</button>
@@ -1556,21 +1582,8 @@
       <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
         <input type="checkbox" id="inpRamBuffer"> Đệm chuyển động trong RAM (nhanh; bỏ chọn để ghi ra đĩa nếu RAM nhỏ)
       </label>
-      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
-        <input type="checkbox" id="inpMotionDetect" onchange="document.getElementById('motionDetBox').style.display = this.checked ? 'block' : 'none'"> Phát hiện chuyển động nội bộ (không cần ONVIF; tốn thêm CPU)
-      </label>
-      <div id="motionDetBox" style="display:none; padding-left:6px; margin-bottom:10px;">
-        <div class="form-row">
-          <label>Độ nhạy (0.01–0.9; nhỏ = nhạy hơn, dễ báo nhầm hơn):</label>
-          <input type="number" id="inpMotionSens" min="0.01" max="0.9" step="0.01">
-        </div>
-        <div class="form-row">
-          <label>Nguồn dò:</label>
-          <select id="inpMotionSource">
-            <option value="sub">Luồng phụ (nhẹ CPU hơn)</option>
-            <option value="main">Luồng chính</option>
-          </select>
-        </div>
+      <div style="font-size:12px;color:var(--text-muted);background:var(--glass-hi);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:10px;">
+        🎯 Dò chuyển động được bật riêng cho từng camera: mở <b>Quản lý Camera</b> → <b>Sửa</b> camera → bật <b>🎯 Bật dò chuyển động</b>.
       </div>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="cleanNow()">🧹 Dọn ổ cứng ngay</button>
@@ -2210,6 +2223,11 @@
       const zrows = document.getElementById("zoneRows");
       zrows.innerHTML = "";
       (c.motion_zones || []).forEach(z => addZoneRow(z));
+      document.getElementById("inpCamMotionOn").checked = !!c.motion_enabled;
+      document.getElementById("inpCamMotionSens").value = (c.motion_sensitivity ?? "");
+      document.getElementById("inpCamMotionSource").value = c.motion_source === "main" ? "main" : (c.motion_source === "sub" ? "sub" : "");
+      document.getElementById("inpCamMotionCool").value = (c.motion_cooldown_sec ?? "");
+      document.getElementById("camMotionBox").style.display = c.motion_enabled ? "block" : "none";
     }
 
     function updateStorageHint() {
@@ -2287,6 +2305,8 @@
     }
 
     async function saveCamera() {
+      const optNum = (id) => { const v = document.getElementById(id).value.trim(); return v === "" ? null : parseFloat(v); };
+      const optInt = (id) => { const v = document.getElementById(id).value.trim(); return v === "" ? null : parseInt(v, 10); };
       const payload = {
         cam_id: document.getElementById("inpCamId").value.trim(),
         name: document.getElementById("inpCamName").value.trim(),
@@ -2303,7 +2323,11 @@
         tags: document.getElementById("inpTags").value.trim(),
         schedule_enabled: document.getElementById("inpSchedEnabled").checked,
         schedule: readSchedRows(),
-        motion_zones: readZoneRows()
+        motion_zones: readZoneRows(),
+        motion_enabled: document.getElementById("inpCamMotionOn").checked,
+        motion_sensitivity: optNum("inpCamMotionSens"),
+        motion_source: document.getElementById("inpCamMotionSource").value || null,
+        motion_cooldown_sec: optInt("inpCamMotionCool")
       };
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
@@ -2416,13 +2440,6 @@
       document.getElementById("inpMaxPct").value = sysInfo.max_disk_percent;
       document.getElementById("inpPostMotion").value = sysInfo.post_motion_sec;
       document.getElementById("inpRamBuffer").checked = sysInfo.ram_buffer !== false;
-      try {
-        const md = await fetch("/api/motion_detect").then(r => r.json());
-        document.getElementById("inpMotionDetect").checked = !!md.enabled;
-        document.getElementById("inpMotionSens").value = md.sensitivity ?? 0.05;
-        document.getElementById("inpMotionSource").value = md.source === "main" ? "main" : "sub";
-        document.getElementById("motionDetBox").style.display = md.enabled ? "block" : "none";
-      } catch (e) {}
       document.getElementById("storageModal").style.display = "flex";
     }
     function closeStorageModal() { document.getElementById("storageModal").style.display = "none"; }
@@ -2439,15 +2456,6 @@
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
-      });
-      await fetch("/api/motion_detect", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          enabled: document.getElementById("inpMotionDetect").checked,
-          sensitivity: parseFloat(document.getElementById("inpMotionSens").value) || 0.05,
-          source: document.getElementById("inpMotionSource").value
-        })
       });
       closeStorageModal();
       await loadSystem();

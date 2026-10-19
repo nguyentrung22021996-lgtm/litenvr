@@ -151,6 +151,18 @@ class ApiTests(_AppCase):
         self.assertEqual(stored[0]["name"], "Cổng")
         self.client.delete("/api/cameras/zone1", headers=auth())
 
+    def test_camera_motion_settings_persist(self):
+        payload = {"cam_id": "mo1", "name": "M", "rtsp_url": "rtsp://127.0.0.1:1/x",
+                   "motion_enabled": True, "motion_sensitivity": 0.2,
+                   "motion_source": "main", "motion_cooldown_sec": 9}
+        self.client.post("/api/cameras", json=payload, headers=auth())
+        stored = self.client.get("/api/cameras", headers=auth()).json()["mo1"]
+        self.assertTrue(stored["motion_enabled"])
+        self.assertAlmostEqual(stored["motion_sensitivity"], 0.2, places=3)
+        self.assertEqual(stored["motion_source"], "main")
+        self.assertEqual(stored["motion_cooldown_sec"], 9)
+        self.client.delete("/api/cameras/mo1", headers=auth())
+
     def test_ai_detect_creates_labelled_event(self):
         payload = {"cam_id": "aicam", "name": "AI", "rtsp_url": "rtsp://127.0.0.1:1/x",
                    "record_mode": "motion"}
@@ -402,6 +414,24 @@ class BuilderTests(unittest.TestCase):
         cmds = self.m.build_motion_detect_cmds("cam", self._cam())
         self.assertEqual(len(cmds), 1)
         self.assertIn("showinfo", " ".join(cmds[0][1]))
+
+    def test_motion_detect_cmd_uses_info_loglevel(self):
+        # showinfo chỉ in ở mức info, nếu để loglevel error thì không bắt được chuyển động
+        cmd = self.m.build_motion_detect_cmd("cam", self._cam())
+        self.assertEqual(self._values(cmd, "-loglevel")[-1], "info")
+        zones = self.m.build_motion_detect_cmds(
+            "cam", self._cam(motion_zones=[{"name": "C", "x": 0, "y": 0, "w": 1, "h": 1}]))
+        self.assertEqual(self._values(zones[0][1], "-loglevel")[-1], "info")
+
+    def test_motion_cfg_for_per_camera_overrides(self):
+        base = self.m._motion_cfg_for({})
+        self.assertFalse(base["enabled"])
+        cam = self.m._motion_cfg_for({"motion_enabled": True, "motion_sensitivity": 0.3,
+                                      "motion_source": "main", "motion_cooldown_sec": 12})
+        self.assertTrue(cam["enabled"])
+        self.assertAlmostEqual(cam["sensitivity"], 0.3, places=3)
+        self.assertEqual(cam["source"], "main")
+        self.assertEqual(cam["cooldown_sec"], 12)
 
     def test_disk_health_and_alert_level(self):
         h = self.m.disk_health()
