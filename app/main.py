@@ -4100,50 +4100,81 @@ _drive_fetching: Dict[str, threading.Event] = {}   # "cam/fname" -> Event báo t
 _drive_fetch_prog: Dict[str, dict] = {}            # "cam/fname" -> tiến độ tải
 
 def drive_download_file(file_id: str, dest_path: str, kbps: int, prog: dict) -> int:
-    """Tải 1 file từ Drive về dest_path (ghi qua .part rồi đổi tên). kbps: 0 = không giới hạn."""
+    """Tải 1 file từ Drive về dest_path (ghi qua .part rồi đổi tên). kbps: 0 = không giới hạn.
+    Nếu lần thử trước bị ngắt giữa chừng, lần sau tải tiếp bằng Range thay vì tải lại từ đầu."""
     token = drive_access_token()
     url = (DRIVE_API_BASE + "/files/" + urllib.parse.quote(file_id)
            + "?alt=media&supportsAllDrives=true")
     tmp = dest_path + ".part"
     last_err: Exception = DriveHttpError(500, {"error": "Tải thất bại"})
-    for attempt in range(3):
+    for attempt in range(5):
+        resume_from = 0
         try:
-            req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-            done = 0
-            with urllib.request.urlopen(req, timeout=300) as r, open(tmp, "wb") as f:
-                total = int(r.headers.get("Content-Length") or 0) or int(prog.get("total") or 0)
-                prog["total"], prog["done"] = total, 0
-                while True:
-                    chunk = r.read(262144)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    done += len(chunk)
-                    prog["done"] = done
-                    if kbps > 0:
-                        time.sleep(len(chunk) / max(1, kbps * 125))
+            if os.path.isfile(tmp):
+                resume_from = os.path.getsize(tmp)
+        except OSError:
+            resume_from = 0
+        try:
+            headers = {"Authorization": "Bearer " + token}
+            if resume_from > 0:
+                headers["Range"] = f"bytes={resume_from}-"
+            req = urllib.request.Request(url, headers=headers)
+            # timeout ngắn để phát hiện kết nối Google bị treo rồi tải tiếp, thay vì đứng im
+            with urllib.request.urlopen(req, timeout=45) as r:
+                if resume_from > 0 and getattr(r, "status", 200) != 206:
+                    resume_from = 0  # server bỏ qua Range -> phải tải lại từ đầu
+                if resume_from == 0:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                total = 0
+                cr = r.headers.get("Content-Range") or ""
+                m = re.match(r"bytes \d+-(\d+)/(\d+)", cr)
+                if m:
+                    total = int(m.group(2))
+                if not total:
+                    cl = int(r.headers.get("Content-Length") or 0)
+                    total = (cl + resume_from) if cl else int(prog.get("total") or 0)
+                done = resume_from
+                prog["total"], prog["done"] = total, done
+                with open(tmp, "ab" if resume_from else "wb") as f:
+                    while True:
+                        chunk = r.read(262144)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        prog["done"] = done
+                        if kbps > 0:
+                            time.sleep(len(chunk) / max(1, kbps * 125))
+            if total and done < total:
+                # http.client trả dữ liệu ngắn khi kết nối đứt mà không báo lỗi:
+                # phải kiểm tra đủ dung lượng, nếu không sẽ coi file cụt là hoàn chỉnh.
+                raise DriveHttpError(500, {"error": "Kết nối tới Drive bị ngắt giữa chừng"})
             os.replace(tmp, dest_path)
             return done
         except urllib.error.HTTPError as e:
             last_err = e
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
+            if e.code == 416:  # .part không dùng được nữa -> tải lại từ đầu
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                if attempt < 4:
+                    time.sleep(1)
+                    continue
+                raise DriveHttpError(416, {"error": "Tải bản ghi từ Drive thất bại"})
             if e.code == 401 and attempt == 0:
                 token = drive_access_token(force=True)
                 continue
-            if e.code >= 500 and attempt < 2:
+            if e.code >= 500 and attempt < 4:
                 time.sleep(2 * (attempt + 1))
                 continue
             raise DriveHttpError(e.code, {"error": "Tải bản ghi từ Drive thất bại"})
         except Exception as e:
             last_err = e
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
-            if attempt < 2:
+            if attempt < 4:
                 time.sleep(2 * (attempt + 1))
                 continue
             raise
@@ -4154,7 +4185,8 @@ def _drive_fetch_job(key: str, cam: str, name: str, file_id: str, path: str):
     prog = _drive_fetch_prog.setdefault(key, {})
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        drive_download_file(file_id, path, int(gd_cfg().get("bandwidth_kbps") or 0), prog)
+        # Tải về để xem lại luôn chạy hết tốc độ (giới hạn băng thông chỉ dành cho tải lên)
+        drive_download_file(file_id, path, 0, prog)
         prog["state"] = "done"
     except Exception as e:
         prog["state"] = "error"
@@ -4165,6 +4197,20 @@ def _drive_fetch_job(key: str, cam: str, name: str, file_id: str, path: str):
             ev = _drive_fetching.pop(key, None)
         if ev:
             ev.set()
+
+
+def _start_drive_fetch(cam: str, name: str, drive_id: str, path: str) -> threading.Event:
+    """Bắt đầu tải 1 bản ghi từ Drive (nếu chưa chạy). Trả Event báo khi xong."""
+    key = f"{cam}/{name}"
+    with _drive_fetch_lock:
+        ev = _drive_fetching.get(key)
+        if ev is None:
+            ev = threading.Event()
+            _drive_fetching[key] = ev
+            _drive_fetch_prog[key] = {"state": "downloading", "done": 0, "total": 0, "error": ""}
+            threading.Thread(target=_drive_fetch_job,
+                             args=(key, cam, name, drive_id, path), daemon=True).start()
+    return ev
 
 
 def ensure_local_recording(cam_id: str, fname: str, timeout: float = 1800) -> Optional[str]:
@@ -4184,14 +4230,7 @@ def ensure_local_recording(cam_id: str, fname: str, timeout: float = 1800) -> Op
     if not row or not row[0]:
         return None
     key = f"{cam}/{name}"
-    with _drive_fetch_lock:
-        ev = _drive_fetching.get(key)
-        if ev is None:
-            ev = threading.Event()
-            _drive_fetching[key] = ev
-            _drive_fetch_prog[key] = {"state": "downloading", "done": 0, "total": 0, "error": ""}
-            threading.Thread(target=_drive_fetch_job,
-                             args=(key, cam, name, row[0], path), daemon=True).start()
+    ev = _start_drive_fetch(cam, name, row[0], path)
     if not ev.wait(timeout):
         raise HTTPException(status_code=504, detail="Tải bản ghi từ Drive quá lâu, vui lòng thử lại")
     if os.path.isfile(path):
@@ -4722,28 +4761,35 @@ def drive_upload_now(body: DriveNow):
 
 
 @app.get("/api/drive/play/{cam_id}/{fname}")
-def drive_play_status(cam_id: str, fname: str):
-    """Tiến độ tải bản ghi từ Drive về ổ cứng (để UI hiện % khi xem lại)."""
+def drive_play_status(cam_id: str, fname: str, retry: int = 0):
+    """Tiến độ tải bản ghi từ Drive về ổ cứng (để UI hiện % khi xem lại).
+    Tự bắt đầu tải nếu chưa chạy, nhờ vậy UI không bị kẹt khi request video bị ngắt."""
     cam = os.path.basename(cam_id)
     name = os.path.basename(fname)
     path = os.path.join(RECORDINGS_DIR, cam, name)
     if os.path.isfile(path):
         return {"state": "local", "done": 1, "total": 1}
-    pr = _drive_fetch_prog.get(f"{cam}/{name}") or {}
-    if pr.get("state") == "error":
+    key = f"{cam}/{name}"
+    pr = _drive_fetch_prog.get(key) or {}
+    if pr.get("state") == "error" and not retry:
         return {"state": "error", "error": pr.get("error", ""),
                 "done": int(pr.get("done") or 0), "total": int(pr.get("total") or 0)}
-    if pr.get("state") in ("downloading", "done"):
-        return {"state": pr["state"], "done": int(pr.get("done") or 0),
-                "total": int(pr.get("total") or 0)}
     row = None
     try:
         row = db_conn().execute(
             "SELECT drive_id FROM drive_uploads WHERE path=? AND status='done'",
-            (f"{cam}/{name}",)).fetchone()
+            (key,)).fetchone()
     except Exception:
         pass
-    return {"state": "drive" if row else "none", "done": 0, "total": 0}
+    if not row:
+        return {"state": "none", "done": 0, "total": 0}
+    if not row[0]:
+        return {"state": "drive", "done": 0, "total": 0}
+    _start_drive_fetch(cam, name, row[0], path)  # chạy hoặc tham gia tiến trình đang tải
+    pr = _drive_fetch_prog.get(key) or {}
+    return {"state": pr.get("state") or "downloading",
+            "error": pr.get("error", ""),
+            "done": int(pr.get("done") or 0), "total": int(pr.get("total") or 0)}
 
 
 @app.post("/api/drive/cleanup")

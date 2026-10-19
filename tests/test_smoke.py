@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import threading
 import time
 import unittest
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
 SRC = os.path.join(APP_DIR, "main.py")
@@ -596,6 +598,134 @@ class LifecycleTests(unittest.TestCase):
                 m._snapshot_slots.release()
         finally:
             subprocess.Popen = real
+
+
+class _FakeDriveHandler(BaseHTTPRequestHandler):
+    """Google Drive giả: /token + /files/<id>?alt=media, hỗ trợ Range và tự ngắt giữa chừng 1 lần."""
+    DATA = bytes((i * 7) % 251 for i in range(30000))
+    drop_after = 10000
+    hits = []
+    dropped = False
+
+    def log_message(self, format, *args):
+        pass
+
+    def do_POST(self):
+        if self.path.endswith("/token"):
+            body = b'{"access_token":"tok1","expires_in":3600}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
+
+    def do_GET(self):
+        if "/files/" not in self.path:
+            self.send_error(404)
+            return
+        start = 0
+        m = re.match(r"bytes=(\d+)-", self.headers.get("Range") or "")
+        if m:
+            start = int(m.group(1))
+        type(self).hits.append(start)
+        data = self.DATA[start:]
+        body_len = len(data)
+        self.send_response(206 if start else 200)
+        self.send_header("Content-Type", "video/mp4")
+        if start:
+            self.send_header("Content-Range", f"bytes {start}-{len(self.DATA) - 1}/{len(self.DATA)}")
+        self.send_header("Content-Length", str(body_len))
+        self.end_headers()
+        if not start and not type(self).dropped:
+            type(self).dropped = True
+            self.wfile.write(data[:self.drop_after])
+            self.wfile.flush()
+            self.close_connection = True  # ngắt kết nối giữa chừng
+            return
+        self.wfile.write(data)
+        self.wfile.flush()
+
+
+class DrivePlaybackTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._env_backup = {k: os.environ.get(k) for k in ("NVR_DRIVE_API_BASE", "NVR_DRIVE_OAUTH_BASE")}
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), _FakeDriveHandler)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{cls.srv.server_address[1]}"
+        cls.sandbox, cls.m = load_app({"NVR_DRIVE_API_BASE": base + "/drive/v3",
+                                       "NVR_DRIVE_OAUTH_BASE": base})
+        from fastapi.testclient import TestClient
+        cls.client = TestClient(cls.m.app)
+        cls.client.__enter__()
+        cls.m.gd_cfg().update({"client_id": "cid", "client_secret": "sec", "refresh_token": "rt"})
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        for k, v in cls._env_backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def setUp(self):
+        _FakeDriveHandler.hits = []
+        _FakeDriveHandler.dropped = False
+        name = f"2026-10-19_{self._testMethodName[:12]}.mp4"
+        self.cam, self.name = "cam9", name
+        self.rel = f"{self.cam}/{self.name}"
+        self.path = os.path.join(self.m.RECORDINGS_DIR, self.cam, self.name)
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        for p in (self.path, self.path + ".part"):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        conn = self.m.db_conn()
+        conn.execute("DELETE FROM drive_uploads WHERE path=?", (self.rel,))
+        conn.execute("INSERT INTO drive_uploads(path, cam_id, name, status, drive_id) VALUES(?,?,?,?,?)",
+                     (self.rel, self.cam, self.name, "done", "fid1"))
+        conn.commit()
+        self.m._drive_fetch_prog.pop(self.rel, None)
+
+    def test_drive_download_resumes_after_connection_drop(self):
+        prog = {"state": "downloading", "done": 0, "total": 0}
+        n = self.m.drive_download_file("fid1", self.path, 0, prog)
+        self.assertEqual(n, len(_FakeDriveHandler.DATA))
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), _FakeDriveHandler.DATA)
+        self.assertEqual(_FakeDriveHandler.hits, [0, 10000])
+        self.assertEqual(prog["done"], len(_FakeDriveHandler.DATA))
+        self.assertFalse(os.path.exists(self.path + ".part"))
+
+    def test_play_status_starts_fetch_without_video_request(self):
+        r = self.client.get(f"/api/drive/play/{self.cam}/{self.name}", headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(r.json()["state"], ("downloading", "done", "local"))
+        deadline = time.time() + 5
+        while time.time() < deadline and not os.path.isfile(self.path):
+            time.sleep(0.02)
+        self.assertTrue(os.path.isfile(self.path))
+        self.assertEqual(self.client.get(f"/api/drive/play/{self.cam}/{self.name}",
+                                         headers=auth()).json()["state"], "local")
+
+    def test_play_status_error_visible_until_retry(self):
+        self.m._drive_fetch_prog[self.rel] = {"state": "error", "error": "mạng lỗi",
+                                              "done": 3, "total": 10}
+        j = self.client.get(f"/api/drive/play/{self.cam}/{self.name}", headers=auth()).json()
+        self.assertEqual(j["state"], "error")
+        self.assertIn("mạng lỗi", j["error"])
+        j = self.client.get(f"/api/drive/play/{self.cam}/{self.name}?retry=1", headers=auth()).json()
+        self.assertIn(j["state"], ("downloading", "done", "local"))
+        deadline = time.time() + 5
+        while time.time() < deadline and not os.path.isfile(self.path):
+            time.sleep(0.02)
+        self.assertTrue(os.path.isfile(self.path))
 
 
 if __name__ == "__main__":

@@ -3007,18 +3007,33 @@
     function pollDriveFetch(cam, fname) {
       stopDriveFetchPoll();
       const url = `api/drive/play/${encodeURIComponent(cam)}/${encodeURIComponent(fname)}`;
+      let first = true;
+      let lastDone = -1, lastT = Date.now();
       const tick = async () => {
         let d;
-        try { d = await (await fetch(url)).json(); } catch (e) { return; }
+        try {
+          d = await (await fetch(url + (first ? "?retry=1" : ""))).json();
+          first = false;
+        } catch (e) { return; }
         if (d.state === "local" || d.state === "done") { stopDriveFetchPoll(); return; }
         if (d.state === "error") {
           stopDriveFetchPoll();
           document.getElementById("statusText").textContent = "⚠️ " + (d.error || "Không tải được bản ghi từ Drive");
           return;
         }
-        const pct = d.total ? Math.floor(d.done / d.total * 100) : 0;
-        document.getElementById("statusText").textContent =
-          `☁️ Đang tải bản ghi từ Drive… ${pct}% (${drvFmtBytes(d.done)}/${drvFmtBytes(d.total)})`;
+        if (d.state === "none" || d.state === "drive") {
+          stopDriveFetchPoll();
+          document.getElementById("statusText").textContent =
+            "⚠️ Bản ghi không còn trên Drive — không xem lại được.";
+          return;
+        }
+        const done = d.done || 0;
+        if (done !== lastDone) { lastDone = done; lastT = Date.now(); }
+        const stalled = (Date.now() - lastT) > 25000 ? " — đang kết nối lại…" : "";
+        document.getElementById("statusText").textContent = d.total
+          ? `☁️ Đang tải bản ghi từ Drive… ${Math.floor(done / d.total * 100)}% ` +
+            `(${drvFmtBytes(done)}/${drvFmtBytes(d.total)})${stalled}`
+          : `☁️ Đang tải bản ghi từ Drive… ${drvFmtBytes(done)}${stalled}`;
       };
       tick();
       driveFetchPoll = setInterval(tick, 1000);
@@ -3053,7 +3068,12 @@
           triedTranscode = true;
           document.getElementById("statusText").textContent =
             "Đang chuyển mã sang H.264 để phát (camera H.265)...";
-          video.onloadedmetadata = () => { video.onloadedmetadata = null; stopDriveFetchPoll(); startAt(); };
+          video.onloadedmetadata = () => {
+            video.onloadedmetadata = null;
+            stopDriveFetchPoll();
+            if (seg.drive) document.getElementById("statusText").textContent = `☁️ Phát lại từ Drive: ${seg.time}`;
+            startAt();
+          };
           video.src = transUrl;
         } else {
           stopDriveFetchPoll();
