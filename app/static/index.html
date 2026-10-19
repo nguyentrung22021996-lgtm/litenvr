@@ -74,22 +74,13 @@
       color: var(--text-main);
       padding-bottom: 36px;
       overflow-x: hidden;
+      transition: background-color 0.3s ease, color 0.3s ease;
     }
 
     /* Keyframes nhẹ GPU (chỉ chạy 1 lần khi mở) */
     @keyframes fadeSlideUp {
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
-    }
-
-    @keyframes modalBackdropIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-
-    @keyframes modalBoxIn {
-      from { opacity: 0; transform: translateY(16px) scale(0.97); }
-      to { opacity: 1; transform: translateY(0) scale(1); }
     }
 
     @keyframes menuDrop {
@@ -106,7 +97,7 @@
       border-radius: var(--radius-sm);
       font-size: 13px;
       font-family: inherit;
-      transition: transform 0.16s var(--ease-out), background 0.16s, border-color 0.16s, box-shadow 0.16s;
+      transition: transform 0.16s var(--ease-out), background-color 0.16s, border-color 0.16s, box-shadow 0.16s, filter 0.16s;
     }
 
     button, select {
@@ -176,6 +167,7 @@
       position: sticky;
       top: 0;
       z-index: 30;
+      transition: background-color 0.25s ease, border-color 0.25s ease;
     }
 
     .brand {
@@ -271,11 +263,22 @@
       border-radius: var(--radius-md);
       box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), inset 0 1px 0 var(--glass-hi);
       z-index: 60;
-      animation: menuDrop 0.18s var(--ease-out) both;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transform: translateY(-6px);
+      transition: opacity 0.16s var(--ease-out), transform 0.16s var(--ease-out), visibility 0.16s;
+    }
+
+    .settings-menu:not([hidden]), .accent-menu:not([hidden]) {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translateY(0);
     }
 
     .settings-menu[hidden], .accent-menu[hidden] {
-      display: none;
+      display: flex;
     }
 
     .settings-menu button {
@@ -319,6 +322,7 @@
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
       cursor: pointer;
       padding: 0;
+      transition: transform 0.16s var(--ease-out), border-color 0.16s, box-shadow 0.16s;
     }
 
     .swatch:hover {
@@ -366,12 +370,13 @@
       flex-direction: column;
       gap: 6px;
       box-shadow: var(--shadow-card);
-      transition: transform 0.2s var(--ease-out), border-color 0.2s;
+      transition: transform 0.2s var(--ease-out), background-color 0.2s, border-color 0.2s, box-shadow 0.2s;
     }
 
     .stat-card:hover {
       transform: translateY(-2px);
       border-color: var(--border-hover);
+      box-shadow: 0 12px 26px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
 
     .stat-head {
@@ -452,7 +457,7 @@
       cursor: pointer;
       position: relative;
       box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
-      transition: transform 0.22s var(--ease-out), border-color 0.22s, box-shadow 0.22s;
+      transition: transform 0.22s var(--ease-out), background-color 0.22s, border-color 0.22s, box-shadow 0.22s;
     }
 
     .cam-tile:hover {
@@ -807,7 +812,7 @@
       position: relative;
       overflow: hidden;
       box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
-      transition: transform 0.22s var(--ease-out), border-color 0.22s, box-shadow 0.22s;
+      transition: transform 0.22s var(--ease-out), background-color 0.22s, border-color 0.22s, box-shadow 0.22s;
     }
 
     .event-card:hover {
@@ -823,6 +828,11 @@
       border-radius: 7px;
       background: #000;
       display: block;
+      transition: transform 0.4s var(--ease-out);
+    }
+
+    .event-card:hover img {
+      transform: scale(1.035);
     }
 
     .evt-star {
@@ -843,6 +853,11 @@
       line-height: 1;
       cursor: pointer;
       z-index: 2;
+      transition: transform 0.16s var(--ease-out), background-color 0.16s, border-color 0.16s;
+    }
+
+    .evt-star:active {
+      transform: scale(0.9);
     }
 
     .evt-star:hover {
@@ -869,7 +884,7 @@
 
     /* ================= MODALS & FORMS ================= */
     .modal {
-      display: none;
+      display: flex;
       position: fixed;
       inset: 0;
       background: rgba(5, 8, 14, 0.8);
@@ -879,7 +894,16 @@
       justify-content: center;
       z-index: 60;
       padding: 16px;
-      animation: modalBackdropIn 0.2s ease both;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.2s var(--ease-out), visibility 0.2s;
+    }
+
+    .modal.open {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
     }
 
     .modal-box {
@@ -894,7 +918,14 @@
       overflow-y: auto;
       border: 1px solid var(--border-hover);
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 var(--glass-hi);
-      animation: modalBoxIn 0.28s var(--ease-out) both;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      transition: opacity 0.26s var(--ease-out), transform 0.3s var(--ease-out);
+    }
+
+    .modal:not(.open) .modal-box {
+      opacity: 0;
+      transform: translateY(14px) scale(0.98);
     }
 
     .modal-box h3 {
@@ -932,6 +963,12 @@
       margin-bottom: 8px;
       font-size: 13px;
       flex-wrap: wrap;
+      transition: background-color 0.18s var(--ease-out), border-color 0.18s var(--ease-out);
+    }
+
+    .cam-item:hover, .user-row:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-hover);
     }
 
     .user-row > div:first-child {
@@ -2211,9 +2248,9 @@
         box.appendChild(div);
       }
       updateStorageHint();
-      document.getElementById("camModal").style.display = "flex";
+      document.getElementById("camModal").classList.add("open");
     }
-    function closeCamModal() { document.getElementById("camModal").style.display = "none"; }
+    function closeCamModal() { document.getElementById("camModal").classList.remove("open"); }
 
     function editCam(id) {
       const c = cameras[id];
@@ -2497,9 +2534,9 @@
       document.getElementById("inpMinFree").value = sysInfo.min_free_percent != null ? sysInfo.min_free_percent : 3;
       document.getElementById("inpPostMotion").value = sysInfo.post_motion_sec;
       document.getElementById("inpRamBuffer").checked = sysInfo.ram_buffer !== false;
-      document.getElementById("storageModal").style.display = "flex";
+      document.getElementById("storageModal").classList.add("open");
     }
-    function closeStorageModal() { document.getElementById("storageModal").style.display = "none"; }
+    function closeStorageModal() { document.getElementById("storageModal").classList.remove("open"); }
 
     async function saveStorage() {
       const payload = {
@@ -2540,9 +2577,9 @@
       if (!cfg.enabled) el.textContent = "Trạng thái: Đang tắt.";
       else if (st.connected) el.textContent = "✅ Đã kết nối HA, đang lắng nghe chuyển động." + (st.last_event ? ` Lần cuối: ${st.last_event}` : "");
       else el.textContent = "⏳ Chưa kết nối" + (st.last_error ? ` (${st.last_error})` : "");
-      document.getElementById("hassModal").style.display = "flex";
+      document.getElementById("hassModal").classList.add("open");
     }
-    function closeHassModal() { document.getElementById("hassModal").style.display = "none"; }
+    function closeHassModal() { document.getElementById("hassModal").classList.remove("open"); }
 
     async function loadHassSensors(silent) {
       const el = silent ? null : (document.getElementById("camHassMsg") || document.getElementById("hassStatus"));
@@ -3099,13 +3136,13 @@
       } catch (e) { /* im lặng */ }
     }
     function openLogsModal() {
-      document.getElementById("logsModal").style.display = "flex";
+      document.getElementById("logsModal").classList.add("open");
       refreshLogs();
       if (_logsTimer) clearInterval(_logsTimer);
       _logsTimer = setInterval(refreshLogs, 5000);
     }
     function closeLogsModal() {
-      document.getElementById("logsModal").style.display = "none";
+      document.getElementById("logsModal").classList.remove("open");
       if (_logsTimer) { clearInterval(_logsTimer); _logsTimer = null; }
     }
     function clearServerLogHint() {
@@ -3372,7 +3409,7 @@
       document.getElementById("ntDiskCrit").value = cfg.disk_crit_percent || 95;
       document.getElementById("ntStatus").textContent = "";
       loadDiskHealth();
-      document.getElementById("notifyModal").style.display = "flex";
+      document.getElementById("notifyModal").classList.add("open");
     }
     async function loadDiskHealth() {
       const el = document.getElementById("ntDiskHealth");
@@ -3393,7 +3430,7 @@
         el.textContent = "";
       }
     }
-    function closeNotifyModal() { document.getElementById("notifyModal").style.display = "none"; }
+    function closeNotifyModal() { document.getElementById("notifyModal").classList.remove("open"); }
     async function saveNotify() {
       const payload = {
         telegram_enabled: document.getElementById("ntEnabled").checked,
@@ -3448,9 +3485,9 @@
       document.getElementById("bkStatus").textContent =
         `Đã sao lưu ${cfg.done_count || 0} bản ghi (${drvFmtBytes(cfg.done_bytes || 0)}) · còn chờ ${cfg.pending || 0}`;
       bkToggleKind();
-      document.getElementById("backupModal").style.display = "flex";
+      document.getElementById("backupModal").classList.add("open");
     }
-    function closeBackupModal() { document.getElementById("backupModal").style.display = "none"; }
+    function closeBackupModal() { document.getElementById("backupModal").classList.remove("open"); }
     function readBackupPayload() {
       const cams = document.getElementById("bkCameras").value.split(",")
         .map(s => s.trim()).filter(Boolean);
@@ -3702,16 +3739,16 @@
     let SEC_USERS = [], SEC_EDIT = "", SEC_ALL_CAMS = [];
 
     function openSecModal() {
-      document.getElementById("secModal").style.display = "flex";
+      document.getElementById("secModal").classList.add("open");
       const active = document.querySelector("#secTabs button.active");
       secTab(active && !active.hidden ? active.dataset.tab : "me");
       loadTfaState();
     }
-    function closeSecModal() { document.getElementById("secModal").style.display = "none"; }
+    function closeSecModal() { document.getElementById("secModal").classList.remove("open"); }
 
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
-      const open = [...document.querySelectorAll(".modal")].filter(m => m.style.display && m.style.display !== "none");
+      const open = [...document.querySelectorAll(".modal.open")];
       if (!open.length) { closeMenu(); return; }
       const top = open[open.length - 1];
       const closers = {
@@ -3721,7 +3758,7 @@
         driveModal: closeDriveModal
       };
       const fn = closers[top.id];
-      if (fn) fn(); else top.style.display = "none";
+      if (fn) fn(); else top.classList.remove("open");
     });
 
     function secTab(name) {
@@ -3986,7 +4023,7 @@
     let _drvTimer = null, _drvPollTimer = null, _drvData = null;
 
     async function openDriveModal() {
-      document.getElementById("driveModal").style.display = "flex";
+      document.getElementById("driveModal").classList.add("open");
       const today = new Date().toISOString().slice(0, 10);
       if (!document.getElementById("drvNowFrom").value) {
         document.getElementById("drvNowFrom").value = today;
@@ -3996,7 +4033,7 @@
       if (!_drvTimer) _drvTimer = setInterval(loadDrive, 5000);
     }
     function closeDriveModal() {
-      document.getElementById("driveModal").style.display = "none";
+      document.getElementById("driveModal").classList.remove("open");
       if (_drvTimer) { clearInterval(_drvTimer); _drvTimer = null; }
       if (_drvPollTimer) { clearInterval(_drvPollTimer); _drvPollTimer = null; }
     }
@@ -4199,7 +4236,7 @@
     }
 
     setInterval(async () => {
-      if (!isAdmin() || document.getElementById("driveModal").style.display === "flex") return;
+      if (!isAdmin() || document.getElementById("driveModal").classList.contains("open")) return;
       try {
         const d = await fetch("api/drive").then(r => r.json());
         const pending = (d.counts.pending || 0) + (d.counts.uploading || 0);
