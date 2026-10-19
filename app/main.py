@@ -4107,7 +4107,7 @@ def drive_download_file(file_id: str, dest_path: str, kbps: int, prog: dict) -> 
            + "?alt=media&supportsAllDrives=true")
     tmp = dest_path + ".part"
     last_err: Exception = DriveHttpError(500, {"error": "Tải thất bại"})
-    for attempt in range(5):
+    for attempt in range(8):
         resume_from = 0
         try:
             if os.path.isfile(tmp):
@@ -4120,7 +4120,7 @@ def drive_download_file(file_id: str, dest_path: str, kbps: int, prog: dict) -> 
                 headers["Range"] = f"bytes={resume_from}-"
             req = urllib.request.Request(url, headers=headers)
             # timeout ngắn để phát hiện kết nối Google bị treo rồi tải tiếp, thay vì đứng im
-            with urllib.request.urlopen(req, timeout=45) as r:
+            with urllib.request.urlopen(req, timeout=20) as r:
                 if resume_from > 0 and getattr(r, "status", 200) != 206:
                     resume_from = 0  # server bỏ qua Range -> phải tải lại từ đầu
                 if resume_from == 0:
@@ -4161,20 +4161,20 @@ def drive_download_file(file_id: str, dest_path: str, kbps: int, prog: dict) -> 
                     os.remove(tmp)
                 except OSError:
                     pass
-                if attempt < 4:
+                if attempt < 7:
                     time.sleep(1)
                     continue
                 raise DriveHttpError(416, {"error": "Tải bản ghi từ Drive thất bại"})
             if e.code == 401 and attempt == 0:
                 token = drive_access_token(force=True)
                 continue
-            if e.code >= 500 and attempt < 4:
+            if e.code >= 500 and attempt < 7:
                 time.sleep(2 * (attempt + 1))
                 continue
             raise DriveHttpError(e.code, {"error": "Tải bản ghi từ Drive thất bại"})
         except Exception as e:
             last_err = e
-            if attempt < 4:
+            if attempt < 7:
                 time.sleep(2 * (attempt + 1))
                 continue
             raise
@@ -4777,7 +4777,7 @@ def drive_play_status(cam_id: str, fname: str, retry: int = 0):
     row = None
     try:
         row = db_conn().execute(
-            "SELECT drive_id FROM drive_uploads WHERE path=? AND status='done'",
+            "SELECT drive_id, size FROM drive_uploads WHERE path=? AND status='done'",
             (key,)).fetchone()
     except Exception:
         pass
@@ -4789,7 +4789,8 @@ def drive_play_status(cam_id: str, fname: str, retry: int = 0):
     pr = _drive_fetch_prog.get(key) or {}
     return {"state": pr.get("state") or "downloading",
             "error": pr.get("error", ""),
-            "done": int(pr.get("done") or 0), "total": int(pr.get("total") or 0)}
+            "done": int(pr.get("done") or 0),
+            "total": int(pr.get("total") or (row[1] if len(row) > 1 else 0) or 0)}
 
 
 @app.post("/api/drive/cleanup")

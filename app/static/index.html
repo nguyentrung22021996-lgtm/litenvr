@@ -2682,6 +2682,8 @@
       if (scrub) scrub.textContent = "● Đang xem trực tiếp";
       const statusEl = document.getElementById("statusText");
       statusEl.textContent = "Đang xem trực tiếp (Live)...";
+      video.onloadedmetadata = null;
+      video.onerror = null;
       const hlsUrl = `hls/${currentCam}/live.m3u8`;
       startLiveHeartbeat();
       video.onended = null;
@@ -3015,7 +3017,14 @@
           d = await (await fetch(url + (first ? "?retry=1" : ""))).json();
           first = false;
         } catch (e) { return; }
-        if (d.state === "local" || d.state === "done") { stopDriveFetchPoll(); return; }
+        if (d.state === "local" || d.state === "done") {
+          stopDriveFetchPoll();
+          const v = document.getElementById("videoPlayer");
+          if (!v || v.readyState < 1) {
+            document.getElementById("statusText").textContent = "☁️ Đã tải xong — đang mở bản ghi…";
+          }
+          return;
+        }
         if (d.state === "error") {
           stopDriveFetchPoll();
           document.getElementById("statusText").textContent = "⚠️ " + (d.error || "Không tải được bản ghi từ Drive");
@@ -3029,7 +3038,7 @@
         }
         const done = d.done || 0;
         if (done !== lastDone) { lastDone = done; lastT = Date.now(); }
-        const stalled = (Date.now() - lastT) > 25000 ? " — đang kết nối lại…" : "";
+        const stalled = (Date.now() - lastT) > 10000 ? " — đang kết nối lại…" : "";
         document.getElementById("statusText").textContent = d.total
           ? `☁️ Đang tải bản ghi từ Drive… ${Math.floor(done / d.total * 100)}% ` +
             `(${drvFmtBytes(done)}/${drvFmtBytes(d.total)})${stalled}`
