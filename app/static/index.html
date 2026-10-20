@@ -296,6 +296,27 @@
       border-color: var(--border-subtle);
     }
 
+    .menu-group-label {
+      padding: 6px 10px 2px;
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .menu-sep {
+      height: 1px;
+      margin: 4px 8px;
+      background: var(--border-subtle);
+    }
+
+    .accent-menu .theme-toggle {
+      justify-content: flex-start;
+      width: 100%;
+      font-weight: 500;
+    }
+
     .icon-btn {
       padding: 7px 10px;
       font-size: 15px;
@@ -754,12 +775,54 @@
       font-family: inherit;
     }
 
+    .tool-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding-right: 10px;
+      border-right: 1px solid var(--border-subtle);
+    }
+
+    .tool-label {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
     .export-wrap {
       display: inline-flex;
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
       margin-left: auto;
+    }
+
+    .export-panel {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 7px 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+    }
+
+    .export-panel[hidden] {
+      display: none;
+    }
+
+    .export-panel label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .export-panel .check-inline input {
+      width: auto;
     }
 
     .pb-tools {
@@ -1187,6 +1250,7 @@
       .tb-main.open {
         display: flex;
         flex-direction: column;
+        flex-wrap: nowrap;
         align-items: stretch;
         position: absolute;
         left: 0;
@@ -1211,7 +1275,7 @@
       }
       .tb-main .spacer { display: none; }
       .tb-main #statusText { text-align: center; }
-      .tb-main .menu-wrap { width: 100%; }
+      .tb-main .menu-wrap { width: 100%; flex-direction: column; }
       .tb-main .settings-menu, .tb-main .accent-menu {
         position: static;
         width: 100%;
@@ -1220,6 +1284,7 @@
         margin-top: 6px;
         box-shadow: none;
       }
+      .tb-main .settings-menu[hidden], .tb-main .accent-menu[hidden] { display: none; }
       .tb-main .accent-menu { flex-direction: column; }
       .user-chip { justify-content: center; padding: 8px; }
       .export-wrap { margin-left: 0; width: 100%; }
@@ -1254,6 +1319,8 @@
       .ptz-pad { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 48px); width: 100%; }
       .rec-tools { gap: 8px; }
       .rec-tools input[type="time"] { flex: 1; min-width: 90px; }
+      .tool-group { border-right: 0; padding-right: 0; }
+      .export-panel { width: 100%; }
       .user-row { flex-direction: column; align-items: flex-start; }
       .user-row > div:last-child { width: 100%; }
       h3 { font-size: 17px; }
@@ -1297,30 +1364,39 @@
     <div class="tb-main" id="tbMain">
       <select id="camSelect" aria-label="Chọn camera"></select>
       <input type="date" id="dateInput" aria-label="Chọn ngày">
-      <button id="btnLive" class="active" onclick="playLive()" data-perm="live">Trực tiếp (Live)</button>
+      <button id="btnLive" class="active" onclick="playLive()" data-perm="live">Trực tiếp</button>
       <button id="btnGrid" onclick="toggleGrid()" data-perm="live">⊞ Lưới</button>
-      <button class="warn" onclick="testMotion()" data-admin data-perm="live">⚡ Test Motion</button>
-      <button class="primary" onclick="openCamModal()" data-admin>+ Quản lý Camera</button>
+      <div class="spacer"></div>
+      <span id="statusText" style="font-size:13px;">Đang khởi tạo...</span>
+      <span id="userChip" class="user-chip" hidden></span>
       <div class="menu-wrap">
-        <button class="btn-settings" onclick="toggleSettings(event)" aria-haspopup="true" aria-expanded="false">⚙️ Cài đặt</button>
+        <button class="icon-btn" onclick="toggleSettings(event)" title="Cài đặt" aria-label="Cài đặt" aria-haspopup="true" aria-expanded="false">⚙️</button>
         <div class="settings-menu" id="settingsMenu" hidden role="menu">
+          <div class="menu-group-label" role="presentation">Camera</div>
+          <button onclick="openCamModal()" data-admin>📷 Quản lý Camera</button>
+          <button onclick="testMotion()" data-admin data-perm="live">⚡ Test Motion</button>
+          <div class="menu-sep" role="presentation"></div>
+          <div class="menu-group-label" role="presentation">Lưu trữ</div>
           <button onclick="openStorageModal()" data-admin>⚙️ Lưu trữ</button>
           <button onclick="openDriveModal()" data-admin>☁️ Google Drive <span id="driveBadge" class="log-badge" hidden>0</span></button>
           <button onclick="openBackupModal()" data-admin>💾 Sao lưu SMB/NFS/FTP</button>
+          <div class="menu-sep" role="presentation"></div>
+          <div class="menu-group-label" role="presentation">Kết nối</div>
           <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
           <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
+          <div class="menu-sep" role="presentation"></div>
+          <div class="menu-group-label" role="presentation">Hệ thống</div>
           <button onclick="showDiagnostics()" data-admin>🔍 Chẩn đoán</button>
           <button id="btnLogs" onclick="openLogsModal()" data-admin>📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
           <button onclick="openSecModal()" title="Tài khoản, mật khẩu, 2FA &amp; nhật ký đăng nhập">🔐 Bảo mật</button>
         </div>
       </div>
-      <div class="spacer"></div>
-      <span id="statusText" style="font-size:13px;">Đang khởi tạo...</span>
-      <span id="userChip" class="user-chip" hidden></span>
-      <button id="btnTheme" class="icon-btn" onclick="toggleTheme()" title="Đổi sáng/tối" aria-label="Đổi chế độ sáng tối">🌙</button>
       <div class="menu-wrap">
-        <button class="icon-btn" onclick="toggleAccent(event)" title="Màu nhấn" aria-label="Chọn màu nhấn" aria-haspopup="true" aria-expanded="false">🎨</button>
+        <button class="icon-btn" onclick="toggleAccent(event)" title="Giao diện" aria-label="Giao diện" aria-haspopup="true" aria-expanded="false">🎨</button>
         <div class="accent-menu" id="accentMenu" hidden>
+          <button id="btnTheme" class="theme-toggle" onclick="event.stopPropagation(); toggleTheme()">🌙 Tối</button>
+          <div class="menu-sep" role="presentation"></div>
+          <div class="menu-group-label" role="presentation">Màu nhấn</div>
           <div class="swatches" id="accentSwatches"></div>
           <label class="accent-custom">Màu khác
             <input type="color" id="accentCustom" value="#3b82f6" onchange="setAccent(this.value)">
@@ -1383,29 +1459,33 @@
       <span id="liveBadge" style="color:#10b981; font-weight:700;">● Live</span>
     </div>
     <div class="rec-tools">
-      <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)" data-perm="ptz">🎮 PTZ</button>
-      <button onclick="lockCurrent()" title="Khoá đoạn bản ghi tại con trỏ để không bị xoá tự động" data-perm="lock">🔒 Khoá đoạn</button>
-      <button onclick="unlockCurrent()" title="Mở khoá đoạn bản ghi tại con trỏ" data-perm="lock">🔓 Mở khoá</button>
-      <span class="pb-tools" data-perm="playback">
-        <span>Tốc độ:</span>
+      <div class="tool-group">
+        <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)" data-perm="ptz">🎮 PTZ</button>
+        <button onclick="lockCurrent()" title="Khoá đoạn bản ghi tại con trỏ để không bị xoá tự động" data-perm="lock">🔒 Khoá</button>
+        <button onclick="unlockCurrent()" title="Mở khoá đoạn bản ghi tại con trỏ" data-perm="lock">🔓 Mở khoá</button>
+      </div>
+      <div class="tool-group pb-tools" data-perm="playback">
+        <label for="pbSpeed" class="tool-label">Tốc độ</label>
         <select id="pbSpeed" onchange="setPlaybackSpeed(this.value)" title="Tốc độ phát lại">
           <option value="0.5">0.5×</option>
           <option value="1" selected>1×</option>
           <option value="2">2×</option>
           <option value="4">4×</option>
         </select>
-        <button onclick="stepFrame(-1)" title="Lùi 1 khung">⏪ Khung</button>
-        <button onclick="stepFrame(1)" title="Tiến 1 khung">Khung ⏩</button>
-        <button onclick="snapshotFrame()" title="Lưu ảnh khung hình đang phát">📷 Lưu ảnh</button>
-      </span>
-      <span class="export-wrap" data-perm="export">
-        <span>Xuất clip:</span>
-        <input type="time" id="expFrom" step="1" aria-label="Từ giờ">
-        <span>→</span>
-        <input type="time" id="expTo" step="1" aria-label="Đến giờ">
-        <button class="primary" onclick="exportClip(false)">⬇️ Tải đoạn</button>
-        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="expHc" style="width:auto;"> chuyển H.264</label>
-      </span>
+        <button onclick="stepFrame(-1)" title="Lùi 1 khung" aria-label="Lùi 1 khung">⏪</button>
+        <button onclick="stepFrame(1)" title="Tiến 1 khung" aria-label="Tiến 1 khung">⏩</button>
+        <button onclick="snapshotFrame()" title="Lưu ảnh khung hình đang phát" aria-label="Lưu ảnh khung hình">📷</button>
+      </div>
+      <div class="export-wrap" data-perm="export">
+        <button class="primary" id="btnExport" onclick="toggleExport(event)" aria-expanded="false" aria-controls="exportPanel">⬇️ Xuất clip</button>
+        <div class="export-panel" id="exportPanel" hidden>
+          <label>Từ <input type="time" id="expFrom" step="1" aria-label="Từ giờ"></label>
+          <span aria-hidden="true">→</span>
+          <label>Đến <input type="time" id="expTo" step="1" aria-label="Đến giờ"></label>
+          <label class="check-inline"><input type="checkbox" id="expHc"> H.264</label>
+          <button class="primary" onclick="exportClip()">Tải đoạn</button>
+        </div>
+      </div>
     </div>
     <div id="ptzBox" style="display:none; margin-top:8px;">
       <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start;">
@@ -3387,6 +3467,15 @@
       const post = (sysInfo && sysInfo.post_motion_sec) || 60;
       exportRange(Math.max(0, sec - 10), Math.min(86400, sec + post + 10), document.getElementById("expHc").checked);
     }
+    function toggleExport(e) {
+      if (e) e.stopPropagation();
+      const panel = document.getElementById("exportPanel");
+      const btn = document.getElementById("btnExport");
+      const show = panel.hidden;
+      panel.hidden = !show;
+      btn.setAttribute("aria-expanded", show ? "true" : "false");
+      if (show) document.getElementById("expFrom").focus();
+    }
     function exportClip() {
       const from = timeStrToSec(document.getElementById("expFrom").value, Math.max(0, lastCursorSec - 60));
       const to = timeStrToSec(document.getElementById("expTo").value, Math.min(86400, lastCursorSec + 60));
@@ -3682,7 +3771,7 @@
     function applyTheme(t) {
       document.documentElement.setAttribute("data-theme", t);
       const btn = document.getElementById("btnTheme");
-      if (btn) btn.textContent = t === "light" ? "☀️" : "🌙";
+      if (btn) btn.textContent = t === "light" ? "☀️ Sáng" : "🌙 Tối";
       try { localStorage.setItem("nvr-theme", t); } catch (e) {}
     }
 
@@ -3750,7 +3839,7 @@
     (function initAppearance() {
       const t = document.documentElement.getAttribute("data-theme") || "dark";
       const btn = document.getElementById("btnTheme");
-      if (btn) btn.textContent = t === "light" ? "☀️" : "🌙";
+      if (btn) btn.textContent = t === "light" ? "☀️ Sáng" : "🌙 Tối";
       buildSwatches();
       let saved = "#3b82f6";
       try { saved = localStorage.getItem("nvr-accent") || saved; } catch (e) {}
