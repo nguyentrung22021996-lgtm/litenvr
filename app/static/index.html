@@ -1485,9 +1485,34 @@
       padding: 10px;
       margin-bottom: 12px;
       font-size: 13px;
-      max-height: 200px;
+      max-height: 280px;
       overflow-y: auto;
     }
+
+    .onvif-actions, .onvif-scan-row, .onvif-ip-row, .onvif-addrow {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .onvif-actions { margin-bottom: 8px; }
+    .onvif-actions button:disabled, .onvif-addrow button:disabled { opacity: .5; cursor: default; }
+    .onvif-scan-row { margin-bottom: 8px; }
+    .onvif-scan-row label { font-size: 12px; color: var(--text-muted); }
+    .onvif-scan-row input { flex: 1 1 170px; min-width: 0; max-width: 260px; }
+    .onvif-ip-row { margin-bottom: 10px; }
+    .onvif-addbox {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+    .onvif-addrow { margin-bottom: 6px; }
+    .onvif-addrow input { flex: 1 1 140px; min-width: 0; }
+    .onvif-hint { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+    .onvif-hint.error { color: var(--err-text); }
+    .onvif-hint.ok { color: var(--ok-text); }
 
     .onvif-item {
       display: flex;
@@ -1500,8 +1525,37 @@
       margin-bottom: 6px;
     }
 
-    .onvif-item .nm { font-weight: 600; }
-    .onvif-item .ip { color: var(--text-muted); margin-left: 8px; }
+    .onvif-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+      cursor: pointer;
+    }
+    .onvif-check input[type="checkbox"] {
+      width: auto;
+      min-height: 0;
+      flex: none;
+      cursor: pointer;
+    }
+    .onvif-check input[type="checkbox"]:disabled { cursor: default; }
+    .onvif-dev-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .onvif-item .nm {
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .onvif-item .ip { color: var(--text-muted); margin-left: 0; font-size: 12px; }
+    .onvif-source {
+      display: inline-block;
+      margin-left: 4px;
+      padding: 0 5px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      font-size: 11px;
+    }
 
     textarea {
       width: 100%;
@@ -1650,6 +1704,10 @@
       }
       input, select, textarea, button { font-size: 16px; }
       .grid-2 { grid-template-columns: 1fr; }
+      .onvif-scan-row input { flex-basis: 100%; max-width: none; }
+      .onvif-addrow input, .onvif-addrow button { flex-basis: 100%; }
+      .onvif-item { align-items: flex-start; }
+      .onvif-item > button { min-height: 36px; }
       .ptz-pad { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 48px); width: 100%; }
       .rec-tools { gap: 8px; }
       .rec-tools input[type="time"] { flex: 1; min-width: 90px; }
@@ -1944,15 +2002,30 @@
       <h3 style="margin-top:0">Quản lý &amp; Thêm Camera Đa Hãng</h3>
       <div id="camListBox" style="margin-bottom:14px;"></div>
 
-      <div style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
-        <button onclick="onvifDiscover()">🔎 Tìm camera ONVIF</button>
-        <button onclick="toggleBulk()">➕ Thêm hàng loạt</button>
+      <div class="onvif-actions">
+        <button type="button" id="btnOnvifDiscover" onclick="onvifDiscover()">🔎 Dò camera ONVIF</button>
+        <button type="button" id="btnOnvifScan" onclick="onvifScan()">🌐 Quét dải IP</button>
+        <button type="button" onclick="toggleBulk()">➕ Thêm hàng loạt</button>
       </div>
-      <div style="display:flex; gap:6px; margin-bottom:10px;">
-        <input id="onvifIp" placeholder="Hoặc nhập IP camera ONVIF (VD: 192.168.1.10 hoặc 192.168.1.10:8000)" style="flex:1;">
+      <div class="onvif-scan-row">
+        <label for="onvifSubnet">Dải IP</label>
+        <input id="onvifSubnet" placeholder="192.168.1.0/24" autocomplete="off" spellcheck="false">
+        <span class="onvif-hint">Dùng khi Docker chặn multicast.</span>
+      </div>
+      <div id="onvifMsg" class="onvif-hint" role="status" aria-live="polite"></div>
+      <div id="onvifBox" class="onvif-box" style="display:none;"></div>
+      <div id="onvifAddBox" class="onvif-addbox" style="display:none;">
+        <div class="onvif-addrow">
+          <input id="onvifUser" placeholder="Tài khoản ONVIF" autocomplete="username">
+          <input id="onvifPass" type="password" placeholder="Mật khẩu ONVIF" autocomplete="current-password">
+          <button class="primary" type="button" id="btnOnvifAdd" onclick="onvifAutoAdd()">➕ Thêm camera đã chọn</button>
+        </div>
+        <div id="onvifAddMsg" class="onvif-hint" role="status" aria-live="polite"></div>
+      </div>
+      <div class="onvif-ip-row">
+        <input id="onvifIp" placeholder="Hoặc nhập IP ONVIF (VD: 192.168.1.10)" style="flex:1;">
         <button onclick="onvifProbe(document.getElementById('onvifIp').value.trim())">Lấy luồng RTSP</button>
       </div>
-      <div id="onvifBox" class="onvif-box" style="display:none;"></div>
       <div id="bulkBox" style="display:none; margin-bottom:10px;">
         <div class="form-row">
           <label>Mỗi dòng: mã | tên | rtsp_url | sub_url (tùy chọn)</label>
@@ -1966,11 +2039,16 @@
           <label>Chọn hãng Camera (Tự tạo link RTSP):</label>
           <select id="inpBrand" onchange="applyBrandPreset()">
             <option value="custom">Tự nhập đường dẫn RTSP</option>
+            <option value="onvif">ONVIF / Hãng khác (giữ URL hiện có)</option>
             <option value="imou">Imou / Dahua / KBVision</option>
-            <option value="ezviz">Ezviz / Hikvision / HiLook</option>
+            <option value="ezviz">Ezviz / Hikvision / HiLook / Annke</option>
             <option value="tapo">TP-Link Tapo / Vigigi</option>
             <option value="yoosee">Yoosee (onvif1 / onvif2)</option>
             <option value="xiaomi">Xiaomi / Yi / Thingino</option>
+            <option value="reolink">Reolink</option>
+            <option value="uniview">Uniview (UNV)</option>
+            <option value="foscam">Foscam</option>
+            <option value="amcrest">Amcrest</option>
           </select>
         </div>
         <div class="form-row">
@@ -2854,7 +2932,7 @@
     function applyBrandPreset() {
       const brand = document.getElementById("inpBrand").value;
       const box = document.getElementById("quickGenBox");
-      if (brand === "custom") { box.style.display = "none"; return; }
+      if (brand === "custom" || brand === "onvif") { box.style.display = "none"; return; }
       box.style.display = "grid";
       const ip = document.getElementById("genIp").value.trim() || "192.168.1.100";
       const u = encodeURIComponent(document.getElementById("genUser").value.trim() || "admin");
@@ -2876,12 +2954,24 @@
       } else if (brand === "xiaomi") {
         main = `rtsp://${u}:${p}@${ip}:554/ch0_0.h264`;
         sub  = `rtsp://${u}:${p}@${ip}:554/ch0_1.h264`;
+      } else if (brand === "reolink") {
+        main = `rtsp://${u}:${p}@${ip}:554/h264Preview_01_main`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/h264Preview_01_sub`;
+      } else if (brand === "uniview") {
+        main = `rtsp://${u}:${p}@${ip}:554/media/video1`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/media/video2`;
+      } else if (brand === "foscam") {
+        main = `rtsp://${u}:${p}@${ip}:554/videoMain`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/videoSub`;
+      } else if (brand === "amcrest") {
+        main = `rtsp://${u}:${p}@${ip}:554/cam/realmonitor?channel=1&subtype=0`;
+        sub  = `rtsp://${u}:${p}@${ip}:554/cam/realmonitor?channel=1&subtype=1`;
       }
       document.getElementById("inpRtsp").value = main;
       document.getElementById("inpSubRtsp").value = sub;
     }
 
-    function openCamModal() {
+    function renderCamList() {
       const box = document.getElementById("camListBox");
       box.innerHTML = "";
       for (const [id, info] of Object.entries(cameras)) {
@@ -2896,9 +2986,16 @@
                          </div>`;
         box.appendChild(div);
       }
+    }
+
+    function openCamModal() {
+      renderCamList();
       updateStorageHint();
       const testOut = document.getElementById("camTestResult");
       if (testOut) testOut.textContent = "";
+      const subnet = document.getElementById("onvifSubnet");
+      if (subnet && !subnet.value.trim()) subnet.value = guessOnvifSubnet();
+      onvifReset();
       document.getElementById("camModal").classList.add("open");
     }
     function closeCamModal() { document.getElementById("camModal").classList.remove("open"); }
@@ -2907,7 +3004,9 @@
       const c = cameras[id];
       document.getElementById("inpCamId").value = id;
       document.getElementById("inpCamName").value = c.name || "";
-      document.getElementById("inpBrand").value = c.brand || "custom";
+      const brandSel = document.getElementById("inpBrand");
+      brandSel.value = c.brand || "custom";
+      if (!brandSel.value) brandSel.value = "onvif";
       document.getElementById("inpRecordMode").value = c.record_mode || "continuous";
       document.getElementById("inpStorageTarget").value = c.storage_target || "both";
       document.getElementById("inpRetentionDays").value = c.retention_days || 0;
@@ -3178,54 +3277,284 @@
       await init();
     }
 
-    async function onvifDiscover() {
-      const box = document.getElementById("onvifBox");
-      box.style.display = "block";
-      box.innerHTML = "Đang tìm camera ONVIF trong mạng (3s)...";
-      try {
-        const d = await fetch("api/onvif/discover?timeout=3").then(r => r.json());
-        const devs = d.devices || [];
-        if (!devs.length) {
-          box.innerHTML = "Không tìm thấy camera ONVIF. Kiểm tra camera đã bật ONVIF và cùng mạng LAN.";
-          return;
+    let onvifDevices = [];
+
+    function onvifHostFromUrl(url) {
+      try { return new URL(String(url || "").replace(/^rtsp/i, "http")).hostname.toLowerCase(); } catch (e) { return ""; }
+    }
+
+    function onvifPrivateSubnet(host) {
+      const p = String(host || "").split(".");
+      if (p.length !== 4 || p.some(x => !/^\d+$/.test(x) || Number(x) > 255)) return "";
+      const a = Number(p[0]), b = Number(p[1]);
+      if (a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)
+          || (a === 169 && b === 254) || a === 127) {
+        return `${p[0]}.${p[1]}.${p[2]}.0/24`;
+      }
+      return "";
+    }
+
+    function guessOnvifSubnet() {
+      let subnet = onvifPrivateSubnet(location.hostname);
+      if (subnet) return subnet;
+      for (const info of Object.values(cameras)) {
+        for (const key of ["rtsp_url", "sub_rtsp_url"]) {
+          subnet = onvifPrivateSubnet(onvifHostFromUrl(info[key]));
+          if (subnet) return subnet;
         }
-        box.innerHTML = "";
-        for (const dev of devs) {
-          const el = document.createElement("div");
-          el.className = "onvif-item";
-          el.innerHTML = `<div><span class="nm">${esc(dev.name)}</span><span class="ip">${esc(dev.ip)}</span></div>
-            <button onclick="onvifProbe('${esc(dev.ip)}')">Lấy luồng RTSP</button>`;
-          box.appendChild(el);
-        }
-      } catch (e) {
-        box.innerHTML = "Lỗi tìm kiếm ONVIF: " + esc(String(e));
+      }
+      return "";
+    }
+
+    function onvifSetMsg(text, kind) {
+      const el = document.getElementById("onvifMsg");
+      if (!el) return;
+      el.className = "onvif-hint" + (kind ? " " + kind : "");
+      el.textContent = text || "";
+    }
+
+    function onvifBusy(on) {
+      for (const id of ["btnOnvifDiscover", "btnOnvifScan"]) {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !!on;
+      }
+      if (on) {
+        const add = document.getElementById("btnOnvifAdd");
+        if (add) add.disabled = true;
+      } else {
+        updateOnvifSelection();
       }
     }
 
-    async function onvifProbe(host, port) {
+    function onvifReset() {
+      onvifDevices = [];
+      const box = document.getElementById("onvifBox");
+      if (box) { box.style.display = "none"; box.innerHTML = ""; }
+      const add = document.getElementById("onvifAddBox");
+      if (add) add.style.display = "none";
+      const addMsg = document.getElementById("onvifAddMsg");
+      if (addMsg) { addMsg.className = "onvif-hint"; addMsg.textContent = ""; }
+      const pass = document.getElementById("onvifPass");
+      if (pass) pass.value = "";
+      onvifSetMsg("");
+    }
+
+    function onvifKey(dev) {
+      return `${dev.ip || dev.host || ""}:${Number(dev.port) || 80}`;
+    }
+
+    function onvifExistingHosts() {
+      const out = new Set();
+      for (const info of Object.values(cameras)) {
+        for (const key of ["rtsp_url", "sub_rtsp_url"]) {
+          const host = onvifHostFromUrl(info[key]);
+          if (host) out.add(host);
+        }
+      }
+      return out;
+    }
+
+    function onvifMergeDevices(list) {
+      const map = new Map();
+      for (const dev of onvifDevices) map.set(onvifKey(dev), dev);
+      for (const dev of (list || [])) {
+        if (!dev || !(dev.ip || dev.host)) continue;
+        const key = onvifKey(dev);
+        const old = map.get(key);
+        if (old) {
+          const name = (dev.name && dev.name !== dev.ip) ? dev.name : (old.name || dev.name);
+          map.set(key, { ...old, ...dev, name });
+        } else {
+          map.set(key, dev);
+        }
+      }
+      onvifDevices = [...map.values()].sort((a, b) => onvifKey(a).localeCompare(onvifKey(b)));
+      onvifRenderDevices();
+    }
+
+    function updateOnvifSelection() {
+      const n = document.querySelectorAll("#onvifBox .onvif-dev-chk:checked:not(:disabled)").length;
+      const btn = document.getElementById("btnOnvifAdd");
+      if (!btn) return;
+      btn.disabled = n === 0;
+      btn.textContent = n ? `➕ Thêm ${n} camera` : "➕ Thêm camera đã chọn";
+    }
+
+    function onvifRenderDevices() {
+      const box = document.getElementById("onvifBox");
+      const add = document.getElementById("onvifAddBox");
+      if (!box || !add) return;
+      if (!onvifDevices.length) {
+        box.style.display = "none";
+        box.innerHTML = "";
+        add.style.display = "none";
+        return;
+      }
+      const existing = onvifExistingHosts();
+      box.style.display = "block";
+      box.innerHTML = onvifDevices.map((dev, idx) => {
+        const host = String(dev.ip || dev.host || "");
+        const has = existing.has(host.toLowerCase());
+        const name = dev.name || host;
+        const source = dev.source === "scan" ? "Quét IP" : "ONVIF";
+        return `<div class="onvif-item">
+          <label class="onvif-check">
+            <input type="checkbox" class="onvif-dev-chk" data-idx="${idx}" ${has ? "disabled" : "checked"} onchange="updateOnvifSelection()">
+            <span class="onvif-dev-main">
+              <span class="nm">${esc(name)}</span>
+              <span class="ip">${esc(host)}:${Number(dev.port) || 80} · ${source}${has ? " · Đã có" : ""}</span>
+            </span>
+          </label>
+          <button type="button" onclick="onvifProbeDevice(${idx})">Lấy luồng</button>
+        </div>`;
+      }).join("");
+      add.style.display = "block";
+      updateOnvifSelection();
+    }
+
+    function onvifProbeDevice(idx) {
+      const dev = onvifDevices[idx];
+      if (dev) onvifProbe(dev.ip || dev.host, dev.port, dev.xaddr || "");
+    }
+
+    async function onvifDiscover() {
+      if (document.getElementById("btnOnvifDiscover")?.disabled) return;
+      onvifBusy(true);
+      onvifSetMsg("Đang dò camera ONVIF trong mạng (3s)...");
+      try {
+        const r = await fetch("api/onvif/discover?timeout=3");
+        let d = {};
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+        onvifMergeDevices(d.devices || []);
+        if (onvifDevices.length) {
+          onvifSetMsg(`Tìm thấy ${onvifDevices.length} camera ONVIF.`, "ok");
+          return;
+        }
+        const subnet = document.getElementById("onvifSubnet").value.trim();
+        if (subnet) {
+          onvifSetMsg("Multicast không thấy camera, đang quét dải IP...");
+          await onvifScan(true);
+        } else {
+          onvifSetMsg("Không thấy camera ONVIF. Nhập dải IP LAN rồi bấm Quét dải IP.", "error");
+        }
+      } catch (e) {
+        onvifSetMsg("Lỗi dò ONVIF: " + e.message, "error");
+      } finally {
+        onvifBusy(false);
+      }
+    }
+
+    async function onvifScan(auto) {
+      const input = document.getElementById("onvifSubnet");
+      const subnet = input ? input.value.trim() : "";
+      if (!subnet) {
+        if (!auto) alert("Nhập dải IP cần quét, ví dụ 192.168.1.0/24");
+        return;
+      }
+      onvifBusy(true);
+      onvifSetMsg(`Đang quét ${subnet} (có thể mất 5–30 giây)...`);
+      try {
+        const r = await fetch(`api/onvif/scan?subnet=${encodeURIComponent(subnet)}&timeout=0.8`);
+        let d = {};
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+        onvifMergeDevices(d.devices || []);
+        if (onvifDevices.length) {
+          onvifSetMsg(`Đã quét ${d.scanned || 0} IP, thấy ${onvifDevices.length} camera ONVIF.`, "ok");
+        } else {
+          onvifSetMsg(`Đã quét ${d.scanned || 0} IP nhưng không thấy camera ONVIF. Kiểm tra camera đã bật ONVIF và đúng dải IP.`, "error");
+        }
+      } catch (e) {
+        onvifSetMsg("Lỗi quét IP: " + e.message, "error");
+      } finally {
+        onvifBusy(false);
+      }
+    }
+
+    async function onvifProbe(host, port, xaddr) {
       if (!host) return alert("Nhập IP camera ONVIF trước.");
       if (host.includes(":")) { const parts = host.split(":"); host = parts[0]; port = port || parts[1]; }
-      const box = document.getElementById("onvifBox");
-      box.style.display = "block";
-      const user = prompt(`Tài khoản ONVIF cho ${host}:`, document.getElementById("genUser").value || "admin");
-      if (user === null) return;
-      const pass = prompt(`Mật khẩu ONVIF cho ${host}:`, "");
-      if (pass === null) return;
-      box.innerHTML = `Đang lấy luồng RTSP từ ${esc(host)}...`;
+      const userField = document.getElementById("onvifUser");
+      const passField = document.getElementById("onvifPass");
+      let user = userField.value.trim();
+      let pass = passField.value;
+      if (!user && !pass) {
+        user = prompt(`Tài khoản ONVIF cho ${host}:`, document.getElementById("genUser").value || "admin");
+        if (user === null) return;
+        pass = prompt(`Mật khẩu ONVIF cho ${host}:`, "");
+        if (pass === null) return;
+        userField.value = user;
+        passField.value = pass;
+      }
+      onvifSetMsg(`Đang lấy luồng RTSP từ ${host}...`);
       try {
-        const d = await fetch("api/onvif/probe", {
+        const r = await fetch("api/onvif/probe", {
           method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({host, port: parseInt(port) || 80, username: user, password: pass})
-        }).then(async r => { if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); });
+          body: JSON.stringify({host, port: parseInt(port) || 80, username: user, password: pass, xaddr: xaddr || ""})
+        });
+        let d = {};
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
         document.getElementById("inpRtsp").value = d.main_rtsp_url || "";
         document.getElementById("inpSubRtsp").value = d.sub_rtsp_url || "";
         if (!document.getElementById("inpCamName").value) document.getElementById("inpCamName").value = d.name || host;
         if (!document.getElementById("inpCamId").value) document.getElementById("inpCamId").value = ("cam_" + host.replace(/\./g, "_"));
-        box.innerHTML = `Đã lấy luồng từ <b>${esc(d.name)}</b>. Kiểm tra rồi bấm "Lưu Camera".`;
+        const brandSel = document.getElementById("inpBrand");
+        if (d.brand && [...brandSel.options].some(o => o.value === d.brand)) brandSel.value = d.brand;
+        onvifSetMsg(`Đã lấy luồng từ ${d.name || host}. Kiểm tra rồi bấm "Lưu Camera".`, "ok");
         if (globalThis.__clientLog) __clientLog("info", "ONVIF probe OK: " + (d.name || host));
       } catch (e) {
-        box.innerHTML = "Lỗi ONVIF: " + esc(String(e));
+        onvifSetMsg("Lỗi ONVIF: " + e.message, "error");
         if (globalThis.__clientLog) __clientLog("warn", "ONVIF probe lỗi: " + String(e));
+      }
+    }
+
+    async function onvifAutoAdd() {
+      const selected = [...document.querySelectorAll("#onvifBox .onvif-dev-chk:checked:not(:disabled)")]
+        .map(chk => onvifDevices[Number(chk.dataset.idx)]).filter(Boolean);
+      if (!selected.length) return onvifSetMsg("Chọn ít nhất một camera để thêm.", "error");
+      const btn = document.getElementById("btnOnvifAdd");
+      const addMsg = document.getElementById("onvifAddMsg");
+      onvifBusy(true);
+      btn.textContent = "Đang lấy luồng...";
+      addMsg.className = "onvif-hint";
+      addMsg.textContent = `Đang lấy luồng và thêm ${selected.length} camera...`;
+      try {
+        const r = await fetch("api/onvif/auto_add", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            devices: selected.map(d => ({host: d.ip || d.host, port: Number(d.port) || 80, xaddr: d.xaddr || "", name: d.name || ""})),
+            username: document.getElementById("onvifUser").value.trim(),
+            password: document.getElementById("onvifPass").value,
+            record_mode: document.getElementById("inpRecordMode").value,
+            storage_target: document.getElementById("inpStorageTarget").value,
+            room: document.getElementById("inpRoom").value.trim(),
+            tags: document.getElementById("inpTags").value.trim()
+          })
+        });
+        let d = {};
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+        await init();
+        renderCamList();
+        onvifRenderDevices();
+        const added = d.added || 0;
+        const failures = (d.results || []).filter(x => x.status !== "added");
+        addMsg.className = "onvif-hint " + (added ? "ok" : "error");
+        onvifSetMsg("");
+        addMsg.textContent = `Đã thêm ${added} camera.` + (failures.length
+          ? ` ${failures.length} mục bỏ qua/lỗi: ` + failures.slice(0, 3).map(x => `${x.name || x.host}: ${x.error}`).join("; ")
+          : "");
+        if (added) {
+          document.getElementById("onvifUser").value = "";
+          document.getElementById("onvifPass").value = "";
+        }
+      } catch (e) {
+        addMsg.className = "onvif-hint error";
+        addMsg.textContent = "Lỗi thêm camera: " + e.message;
+      } finally {
+        onvifBusy(false);
       }
     }
 

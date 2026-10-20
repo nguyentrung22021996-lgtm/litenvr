@@ -415,6 +415,186 @@ class ApiTests(_AppCase):
             cfg["cameras"].pop("camLong", None); cfg["cameras"].pop("camTiny", None)
 
 
+class _FakeOnvifHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, text, status=200):
+        data = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/soap+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8", "replace")
+        host, port = self.server.server_address[0], self.server.server_port
+        base = f"http://{host}:{port}"
+        if "GetSystemDateAndTime" in body:
+            self._send('<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+                       '<s:Body><tds:GetSystemDateAndTimeResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>'
+                       '</s:Body></s:Envelope>')
+        elif "GetDeviceInformation" in body:
+            self._send('<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+                       '<s:Body><tds:GetDeviceInformationResponse xmlns:tds="http://www.onvif.org/ver10/device/wsdl">'
+                       '<tds:Manufacturer>Dahua</tds:Manufacturer><tds:Model>Cam X</tds:Model>'
+                       '</tds:GetDeviceInformationResponse></s:Body></s:Envelope>')
+        elif "GetCapabilities" in body:
+            self._send(f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+                       f'xmlns:tds="http://www.onvif.org/ver10/device/wsdl" '
+                       f'xmlns:tt="http://www.onvif.org/ver10/schema">'
+                       f'<s:Body><tds:GetCapabilitiesResponse><tds:Capabilities><tt:Media>'
+                       f'<tt:XAddr>{base}/onvif/Media</tt:XAddr>'
+                       f'</tt:Media></tds:Capabilities></tds:GetCapabilitiesResponse></s:Body></s:Envelope>')
+        elif "GetProfiles" in body:
+            self._send('<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+                       'xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
+                       'xmlns:tt="http://www.onvif.org/ver10/schema">'
+                       '<s:Body><trt:GetProfilesResponse>'
+                       '<trt:Profiles token="MainTok"><tt:Name>Main</tt:Name>'
+                       '<tt:VideoEncoderConfiguration><tt:Encoding>H264</tt:Encoding>'
+                       '<tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution>'
+                       '</tt:VideoEncoderConfiguration></trt:Profiles>'
+                       '<trt:Profiles token="SubTok"><tt:Name>Sub</tt:Name>'
+                       '<tt:VideoEncoderConfiguration><tt:Encoding>H264</tt:Encoding>'
+                       '<tt:Resolution><tt:Width>640</tt:Width><tt:Height>360</tt:Height></tt:Resolution>'
+                       '</tt:VideoEncoderConfiguration></trt:Profiles>'
+                       '</trt:GetProfilesResponse></s:Body></s:Envelope>')
+        elif "GetStreamUri" in body:
+            token = re.search(r"ProfileToken>([^<]+)<", body)
+            stream = "main" if token and token.group(1) == "MainTok" else "sub"
+            self._send('<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+                       'xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
+                       'xmlns:tt="http://www.onvif.org/ver10/schema">'
+                       '<s:Body><trt:GetStreamUriResponse><trt:MediaUri>'
+                       f'<tt:Uri>rtsp://{host}:8554/{stream}</tt:Uri>'
+                       '</trt:MediaUri></trt:GetStreamUriResponse></s:Body></s:Envelope>')
+        else:
+            self._send('<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+                       '<s:Body><s:Fault><s:Reason><s:Text>Unknown action</s:Text></s:Reason></s:Fault>'
+                       '</s:Body></s:Envelope>', status=400)
+
+
+class _FakeAuthHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def do_POST(self):
+        if getattr(self.server, "mode", "") == "digest":
+            body = b'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"/>'
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Digest realm="onvif", nonce="abc"')
+            self.send_header("Content-Type", "application/soap+xml")
+        else:
+            body = b'{"error":"Unauthorized"}'
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class OnvifTests(_AppCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.onvif = ThreadingHTTPServer(("127.0.0.2", 0), _FakeOnvifHandler)
+        cls.onvif_port = cls.onvif.server_port
+        cls.auth_json = ThreadingHTTPServer(("127.0.0.2", 0), _FakeAuthHandler)
+        cls.auth_json.mode = "json"
+        cls.auth_digest = ThreadingHTTPServer(("127.0.0.2", 0), _FakeAuthHandler)
+        cls.auth_digest.mode = "digest"
+        cls.onvif_thread = threading.Thread(target=cls.onvif.serve_forever, daemon=True)
+        cls.onvif_thread.start()
+        for srv in (cls.auth_json, cls.auth_digest):
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        for srv in (cls.onvif, cls.auth_json, cls.auth_digest):
+            srv.shutdown()
+            srv.server_close()
+        super().tearDownClass()
+
+    def test_discovery_parser_and_scan_validation(self):
+        sample = (
+            '<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" '
+            'xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery">'
+            '<e:Body><d:ProbeMatches><d:ProbeMatch>'
+            '<d:XAddrs>http://192.168.5.8/onvif/device_service</d:XAddrs>'
+            '<d:Scopes>onvif://www.onvif.org/name/Front%20Gate</d:Scopes>'
+            '</d:ProbeMatch></d:ProbeMatches></e:Body></e:Envelope>'
+        ).encode()
+        dev = self.m._parse_discovery_response(sample, "192.168.5.8")
+        self.assertEqual(dev["name"], "Front Gate")
+        self.assertEqual(dev["ip"], "192.168.5.8")
+        self.assertEqual(dev["port"], 80)
+        self.assertTrue(dev["xaddr"].endswith("/onvif/device_service"))
+        hosts, label = self.m._parse_scan_targets("127.0.0.2/32")
+        self.assertEqual(hosts, ["127.0.0.2"])
+        self.assertEqual(label, "127.0.0.2/32")
+        with self.assertRaises(ValueError):
+            self.m._parse_scan_targets("8.8.8.0/24")
+        with self.assertRaises(ValueError):
+            self.m._parse_scan_targets("10.0.0.0/8")
+
+    def test_profile_pick_by_resolution(self):
+        profiles = [
+            {"token": "a", "name": "HD", "width": 1920, "height": 1080, "uri": "rtsp://a"},
+            {"token": "b", "name": "Low", "width": 640, "height": 360, "uri": "rtsp://b"},
+        ]
+        main, sub = self.m._onvif_pick_profiles(profiles)
+        self.assertEqual(main["token"], "a")
+        self.assertEqual(sub["token"], "b")
+
+    def test_probe_profiles_and_auth_urls(self):
+        d = self.m.onvif_probe("127.0.0.2", self.onvif_port, "user", "pa:ss@word")
+        self.assertEqual(d["brand"], "imou")
+        self.assertEqual(d["onvif_port"], self.onvif_port)
+        self.assertIn("rtsp://user:pa%3Ass%40word@127.0.0.2:8554/main", d["main_rtsp_url"])
+        self.assertIn("rtsp://user:pa%3Ass%40word@127.0.0.2:8554/sub", d["sub_rtsp_url"])
+        self.assertEqual(len(d["profiles"]), 2)
+
+    def test_scan_unicast(self):
+        d = self.m.onvif_scan_network("127.0.0.2/32", timeout=1.0, ports=[self.onvif_port])
+        self.assertEqual(d["scanned"], 1)
+        self.assertEqual(len(d["devices"]), 1)
+        self.assertEqual(d["devices"][0]["name"], "Dahua Cam X")
+
+    def test_scan_rejects_plain_401_and_accepts_digest(self):
+        bad = self.m.onvif_scan_network("127.0.0.2/32", timeout=1.0, ports=[self.auth_json.server_port])
+        self.assertEqual(bad["devices"], [])
+        good = self.m.onvif_scan_network("127.0.0.2/32", timeout=1.0, ports=[self.auth_digest.server_port])
+        self.assertEqual(len(good["devices"]), 1)
+        self.assertTrue(good["devices"][0]["auth_required"])
+
+    def test_auto_add_and_duplicate(self):
+        payload = {
+            "devices": [{"host": "127.0.0.2", "port": self.onvif_port,
+                         "xaddr": f"http://127.0.0.2:{self.onvif_port}/onvif/device_service",
+                         "name": "Fake cam"}],
+            "username": "admin", "password": "pw",
+            "record_mode": "off", "storage_target": "hdd", "room": "Test", "tags": "onvif",
+        }
+        r = self.client.post("/api/onvif/auto_add", json=payload, headers=auth())
+        self.assertEqual(r.status_code, 200, r.text)
+        j = r.json()
+        self.assertEqual(j["added"], 1, j)
+        cam_id = j["cam_ids"][0]
+        cam = self.m.CONFIG["cameras"][cam_id]
+        self.assertEqual(cam["brand"], "imou")
+        self.assertEqual(cam["record_mode"], "off")
+        self.assertEqual(cam["room"], "Test")
+        self.assertIn("rtsp://admin:pw@127.0.0.2:8554/main", cam["rtsp_url"])
+        r2 = self.client.post("/api/onvif/auto_add", json=payload, headers=auth())
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertEqual(r2.json()["added"], 0)
+        self.assertEqual(r2.json()["results"][0]["status"], "skipped")
+        self.client.delete(f"/api/cameras/{cam_id}", headers=auth())
+
+
 class BuilderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

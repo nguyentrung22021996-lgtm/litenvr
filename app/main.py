@@ -1,5 +1,6 @@
 import os
 import asyncio
+import ipaddress
 import json
 import time
 import base64
@@ -12,6 +13,7 @@ import secrets
 import mimetypes
 import threading
 import subprocess
+import unicodedata
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -21,8 +23,9 @@ import tempfile
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import anyio
 from fastapi import FastAPI, HTTPException, Request, Body
@@ -1057,6 +1060,13 @@ def resolve_video_codec(cam_id: str, cam_info: dict):
     return "copy" if _is_browser_safe_h264(codec, info.get("pix_fmt", "")) else "h264"
 
 # ---------------- ONVIF (tự dò camera & lấy URL RTSP) ----------------
+ONVIF_DEVICE_PATH = "/onvif/device_service"
+# Cổng HTTP/ONVIF thường gặp: Dahua/Hikvision (80), Tapo (2020), Hanet/Reolink (8000),
+# một số hãng dùng 8080/8899/5000.
+ONVIF_SCAN_PORTS = (80, 2020, 8000, 8080, 8899, 5000)
+ONVIF_MAX_SCAN_HOSTS = 1024
+
+
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -1073,7 +1083,7 @@ def _onvif_security(username: str, password: str) -> str:
     if not username:
         return ""
     nonce = os.urandom(16)
-    created = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     digest = base64.b64encode(
         hashlib.sha1(nonce + created.encode() + password.encode()).digest()
     ).decode()
@@ -1105,20 +1115,100 @@ def _onvif_post(url: str, action: str, body: str, username: str = "", password: 
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
     except urllib.error.HTTPError as e:
-        # Một số camera yêu cầu HTTP Digest cho ONVIF (ngoài WS-Security).
+        # Một số camera yêu cầu HTTP Digest/Basic cho ONVIF (ngoài WS-Security).
         www = (e.headers.get("WWW-Authenticate") or "").lower()
-        if e.code == 401 and username and "digest" in www:
+        if e.code in (401, 403) and username and "digest" in www:
             mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
             mgr.add_password(None, url, username, password)
             opener = urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(mgr))
             with opener.open(req, timeout=timeout) as r:
                 raw = r.read()
+        elif e.code in (401, 403) and username and ("basic" in www or not www):
+            token = base64.b64encode(f"{username}:{password}".encode()).decode()
+            req.add_unredirected_header("Authorization", "Basic " + token)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
         else:
             raise
     return ET.fromstring(raw)
 
+
+def _onvif_device_url(host_or_url: str, port: int = 80) -> str:
+    """Chuẩn hoá host/IP/XAddr thành URL device_service đầy đủ."""
+    raw = (host_or_url or "").strip()
+    if not raw:
+        raise ValueError("Thiếu địa chỉ camera ONVIF")
+    if "://" not in raw:
+        raw = "http://" + raw
+    p = urllib.parse.urlsplit(raw)
+    if not p.hostname:
+        raise ValueError("Địa chỉ camera ONVIF không hợp lệ")
+    scheme = p.scheme or "http"
+    pport = p.port or int(port or 80)
+    hostpart = f"[{p.hostname}]" if ":" in p.hostname else p.hostname
+    path = p.path or ONVIF_DEVICE_PATH
+    if path == "/":
+        path = ONVIF_DEVICE_PATH
+    return urllib.parse.urlunsplit((scheme, f"{hostpart}:{pport}", path, p.query, ""))
+
+
+def _onvif_port_from_url(url: str, default: int = 80) -> int:
+    try:
+        return int(urllib.parse.urlsplit(url).port or default)
+    except Exception:
+        return default
+
+
+def _onvif_base_url(url: str) -> str:
+    p = urllib.parse.urlsplit(url)
+    return f"{p.scheme}://{p.netloc}"
+
+
+def _with_rtsp_auth(url: str, user: str, password: str) -> str:
+    if not user or not url or "@" in url.split("://", 1)[-1]:
+        return url
+    scheme, rest = url.split("://", 1)
+    u = urllib.parse.quote(user, safe="")
+    p = urllib.parse.quote(password or "", safe="")
+    return f"{scheme}://{u}:{p}@{rest}"
+
+
+def _parse_discovery_response(data: bytes, source_ip: str) -> Optional[dict]:
+    """Đọc một ProbeMatch WS-Discovery thành thông tin thiết bị."""
+    try:
+        root = ET.fromstring(data)
+    except Exception:
+        return None
+    addrs = _find_text(root, "XAddrs").split()
+    xaddr = addrs[0] if addrs else ""
+    scopes = _find_text(root, "Scopes")
+    name = ""
+    for part in scopes.split():
+        if "/name/" in part:
+            name = urllib.parse.unquote(part.split("/name/", 1)[1])
+    if not name:
+        name = _find_text(root, "Address")
+    host = source_ip
+    if xaddr:
+        try:
+            p = urllib.parse.urlsplit(xaddr if "://" in xaddr else "http://" + xaddr)
+            host = p.hostname or source_ip
+        except Exception:
+            pass
+    if not xaddr:
+        xaddr = f"http://{host}:80{ONVIF_DEVICE_PATH}"
+    return {
+        "ip": host,
+        "host": host,
+        "port": _onvif_port_from_url(xaddr),
+        "xaddr": xaddr,
+        "name": name or host,
+        "scopes": scopes,
+    }
+
+
 def onvif_discover(timeout: float = 3.0) -> List[dict]:
-    """WS-Discovery qua UDP multicast: tìm camera ONVIF trong mạng LAN."""
+    """WS-Discovery multicast. Gửi lặp 3 lần để giảm mất gói UDP."""
     mid = f"uuid:{uuid.uuid4()}"
     msg = (
         '<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" '
@@ -1135,91 +1225,311 @@ def onvif_discover(timeout: float = 3.0) -> List[dict]:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.settimeout(0.5)
-        s.sendto(msg, ("239.255.255.250", 3702))
+        try:
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        except OSError:
+            pass
+        try:
+            s.bind(("", 0))
+        except OSError:
+            pass
         end = time.time() + max(0.5, min(timeout, 8))
+        next_send = 0.0
         while time.time() < end:
+            now = time.time()
+            if now >= next_send:
+                try:
+                    s.sendto(msg, ("239.255.255.250", 3702))
+                except OSError:
+                    pass
+                next_send = now + 1.0
+            s.settimeout(max(0.1, min(0.4, end - now)))
             try:
                 data, addr = s.recvfrom(65535)
             except socket.timeout:
                 continue
-            try:
-                root = ET.fromstring(data)
-            except Exception:
+            except OSError:
+                break
+            dev = _parse_discovery_response(data, addr[0])
+            if not dev:
                 continue
-            addrs = _find_text(root, "XAddrs").split()
-            scopes = _find_text(root, "Scopes")
-            name = ""
-            for part in scopes.split():
-                if "name/" in part:
-                    name = part.split("name/", 1)[1]
-            host = addr[0]
-            key = addrs[0] if addrs else host
-            found[key] = {
-                "ip": host,
-                "xaddr": addrs[0] if addrs else "",
-                "name": name or host,
-                "scopes": scopes,
-            }
+            dev["source"] = "multicast"
+            key = (dev.get("xaddr") or dev["ip"]).lower()
+            found[key] = dev
     finally:
         s.close()
-    return sorted(found.values(), key=lambda x: x["ip"])
+    return sorted(found.values(), key=lambda x: (x["ip"], x["port"]))
 
-def _with_rtsp_auth(url: str, user: str, password: str) -> str:
-    if not user or "@" in url.split("://", 1)[-1]:
-        return url
-    scheme, rest = url.split("://", 1)
-    return f"{scheme}://{user}:{password}@{rest}"
 
-def onvif_probe(host: str, port: int = 80, username: str = "", password: str = "") -> dict:
-    """Lấy tên thiết bị + URL RTSP main/sub qua ONVIF (GetDeviceInformation/GetProfiles/GetStreamUri)."""
-    base = f"http://{host}:{int(port)}"
-    device = base + "/onvif/device_service"
+def _onvif_private_target(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local)
 
+
+def _parse_scan_targets(spec: str) -> tuple:
+    """Nhận CIDR / dải IP nội bộ, trả (danh sách host, nhãn dải)."""
+    text = (spec or "").strip()
+    if not text:
+        raise ValueError("Chưa nhập dải IP cần quét")
+    if "-" in text and "/" not in text:
+        left, right = [x.strip() for x in text.split("-", 1)]
+        try:
+            a = ipaddress.ip_address(left)
+            b = ipaddress.ip_address(right)
+        except ValueError:
+            raise ValueError("Dải IP không hợp lệ")
+        if a.version != 4 or b.version != 4 or int(b) < int(a):
+            raise ValueError("Dải IP không hợp lệ")
+        total = int(b) - int(a) + 1
+        if total > ONVIF_MAX_SCAN_HOSTS:
+            raise ValueError(f"Dải IP quá lớn (tối đa {ONVIF_MAX_SCAN_HOSTS} địa chỉ)")
+        hosts = [str(ipaddress.ip_address(int(a) + i)) for i in range(total)]
+        label = f"{a}-{b}"
+    else:
+        try:
+            net = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            raise ValueError("Dải IP không hợp lệ (VD: 192.168.1.0/24)")
+        if net.version != 4:
+            raise ValueError("Chỉ hỗ trợ IPv4")
+        if net.num_addresses > ONVIF_MAX_SCAN_HOSTS + 2:
+            raise ValueError(f"Dải IP quá lớn (tối đa {ONVIF_MAX_SCAN_HOSTS} địa chỉ)")
+        hosts = [str(ip) for ip in net.hosts()] or [str(net.network_address)]
+        label = str(net)
+    if not hosts or any(not _onvif_private_target(h) for h in hosts):
+        raise ValueError("Chỉ quét địa chỉ mạng nội bộ (192.168.x.x, 10.x.x.x, 172.16-31.x.x)")
+    return hosts, label
+
+
+def _onvif_scan_target(host: str, port: int, timeout: float) -> Optional[dict]:
+    """Thử một IP:cổng bằng SOAP GetSystemDateAndTime (không cần tài khoản)."""
+    try:
+        with socket.create_connection((host, port), timeout=min(0.5, timeout)):
+            pass
+    except OSError:
+        return None
+    url = f"http://{host}:{port}{ONVIF_DEVICE_PATH}"
+    body = (
+        '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+        'xmlns:tds="http://www.onvif.org/ver10/device/wsdl">'
+        '<s:Body><tds:GetSystemDateAndTime/></s:Body></s:Envelope>'
+    ).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/soap+xml; charset=utf-8",
+        "SOAPAction": "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime",
+    })
+    raw, status, www = b"", 0, ""
+    try:
+        with urllib.request.urlopen(req, timeout=max(0.8, timeout)) as r:
+            status = r.status
+            raw = r.read(65536)
+    except urllib.error.HTTPError as e:
+        status = e.code
+        www = (e.headers.get("WWW-Authenticate") or "").lower()
+        try:
+            raw = e.read(65536)
+        except Exception:
+            raw = b""
+    except Exception:
+        return None
+    text = raw.decode("utf-8", "replace").lower()
+    if status == 200:
+        if "getsystemdateandtime" not in text and "envelope" not in text:
+            return None
+    elif status in (401, 403):
+        # Chỉ nhận challenge Basic/Digest hoặc SOAP; tránh web server 401/403 thường.
+        if not (("basic" in www or "digest" in www)
+                or any(k in text for k in ("soap", "onvif", "envelope", "fault"))):
+            return None
+    elif status in (400, 405, 415, 500) and any(k in text for k in ("soap", "onvif", "envelope", "fault")):
+        pass
+    else:
+        return None
     name = ""
+    if status == 200:
+        try:
+            root = _onvif_post(
+                url, "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
+                "<tds:GetDeviceInformation/>", timeout=max(1.0, timeout),
+            )
+            manufacturer = _find_text(root, "Manufacturer")
+            model = _find_text(root, "Model")
+            name = (manufacturer + " " + model).strip()
+        except Exception:
+            pass
+    return {
+        "ip": host,
+        "host": host,
+        "port": port,
+        "xaddr": url,
+        "name": name or host,
+        "source": "scan",
+        "auth_required": status != 200,
+    }
+
+
+def onvif_scan_network(subnet: str, timeout: float = 0.8, ports: Optional[List[int]] = None) -> dict:
+    """Quét unicast dải IP nội bộ. Hoạt động cả khi Docker bridge chặn multicast."""
+    hosts, label = _parse_scan_targets(subnet)
+    timeout = max(0.3, min(float(timeout or 0.8), 2.0))
+    ports = list(ports or ONVIF_SCAN_PORTS)
+    tasks = [(h, p) for h in hosts for p in ports]
+    found = []
+    with ThreadPoolExecutor(max_workers=min(96, max(1, len(tasks)))) as ex:
+        futures = {ex.submit(_onvif_scan_target, h, p, timeout): (h, p) for h, p in tasks}
+        for fut in as_completed(futures):
+            try:
+                dev = fut.result()
+            except Exception:
+                dev = None
+            if dev:
+                found.append(dev)
+    found.sort(key=lambda d: (ipaddress.ip_address(d["ip"]), d["port"]))
+    return {"devices": found, "subnet": label, "scanned": len(hosts), "ports": ports}
+
+
+def _onvif_profile_meta(prof) -> dict:
+    token = prof.attrib.get("token", "")
+    pname = ""
+    for child in list(prof):
+        if _local(child.tag) == "Name" and child.text:
+            pname = child.text.strip()
+            break
+    width = height = 0
+    encoding = ""
+    for el in prof.iter():
+        tag = _local(el.tag)
+        if tag == "Resolution":
+            for c in el:
+                if _local(c.tag) == "Width":
+                    width = int(c.text or 0)
+                elif _local(c.tag) == "Height":
+                    height = int(c.text or 0)
+        elif tag == "Encoding" and el.text:
+            encoding = el.text.strip()
+    return {"token": token, "name": pname, "width": width, "height": height, "encoding": encoding}
+
+
+def _onvif_pick_profiles(profiles: List[dict]) -> tuple:
+    """Chọn luồng chính/phụ theo tên, rồi đến độ phân giải thực tế."""
+    usable = [p for p in profiles if p.get("uri")]
+    if not usable:
+        return None, None
+
+    def area(p):
+        return int(p.get("width") or 0) * int(p.get("height") or 0)
+
+    def pick(keys):
+        for p in usable:
+            low = (p.get("name", "") + " " + p.get("token", "")).lower()
+            if any(k in low for k in keys):
+                return p
+        return None
+
+    main = pick(("main", "primary", "profile_1", "profile1"))
+    if main is None:
+        main = max(usable, key=area)
+    sub = pick(("sub", "second", "minor", "profile_2", "profile2"))
+    if sub is main:
+        sub = None
+    if sub is None:
+        others = [p for p in usable if p is not main]
+        if others:
+            sub = min(others, key=area) if any(area(p) for p in others) else others[0]
+    return main, sub
+
+
+def _onvif_guess_brand(*parts) -> str:
+    text = " ".join(str(x or "") for x in parts).lower()
+    rules = (
+        (("reolink",), "reolink"),
+        (("uniview", "unv "), "uniview"),
+        (("foscam",), "foscam"),
+        (("amcrest",), "amcrest"),
+        (("imou", "dahua", "kbvision", "kb vision"), "imou"),
+        (("hikvision", "ezviz", "hilook", "annke"), "ezviz"),
+        (("tapo", "tp-link", "tp link"), "tapo"),
+        (("yoosee",), "yoosee"),
+        (("xiaomi", "thingino", "yi "), "xiaomi"),
+    )
+    for keys, brand in rules:
+        if any(k in text for k in keys):
+            return brand
+    return "onvif"
+
+
+def onvif_probe(host: str, port: int = 80, username: str = "", password: str = "", xaddr: str = "") -> dict:
+    """Lấy tên thiết bị + URL RTSP main/sub qua ONVIF (GetProfiles/GetStreamUri)."""
+    device = _onvif_device_url(xaddr or host, port)
+    p = urllib.parse.urlsplit(device)
+    actual_host = p.hostname or host
+    actual_port = int(p.port or 80)
+    base = _onvif_base_url(device)
+    try:
+        with socket.create_connection((actual_host, actual_port), timeout=3.0):
+            pass
+    except OSError as e:
+        raise HTTPException(status_code=502, detail=f"Không kết nối được ONVIF {actual_host}:{actual_port} ({e})")
+
+    manufacturer = model = name = ""
     try:
         root = _onvif_post(device, "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation",
                            "<tds:GetDeviceInformation/>", username, password)
-        name = _find_text(root, "Manufacturer")
+        manufacturer = _find_text(root, "Manufacturer")
         model = _find_text(root, "Model")
-        if model:
-            name = (name + " " + model).strip()
+        name = (manufacturer + " " + model).strip()
     except Exception as e:
-        log_event("warn", f"ONVIF GetDeviceInformation lỗi ({host}): {e}")
+        log_event("warn", f"ONVIF GetDeviceInformation lỗi ({actual_host}): {e}")
 
-    media_url = base + "/onvif/media_service"
     def get_profiles(url):
         return _onvif_post(url, "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
                            "<trt:GetProfiles/>", username, password)
+
+    media_urls = []
     try:
-        root = get_profiles(media_url)
-    except Exception:
-        media_url = ""
-        try:
-            caps = _onvif_post(device, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
-                               "<tds:GetCapabilities><tds:Category>Media</tds:Category></tds:GetCapabilities>",
-                               username, password)
-            for el in _find_all(caps, "Media"):
-                for child in el.iter():
-                    if _local(child.tag) == "XAddr" and child.text:
-                        media_url = child.text.strip()
-                        break
-                if media_url:
+        caps = _onvif_post(device, "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
+                           "<tds:GetCapabilities><tds:Category>Media</tds:Category></tds:GetCapabilities>",
+                           username, password)
+        for el in _find_all(caps, "Media"):
+            for child in el.iter():
+                if _local(child.tag) == "XAddr" and child.text:
+                    media_urls.append(child.text.strip())
                     break
+            if media_urls:
+                break
+    except Exception as e:
+        log_event("warn", f"ONVIF GetCapabilities lỗi ({actual_host}): {e}")
+    for path in ("/onvif/media_service", "/onvif/Media", "/onvif/media", "/onvif/services"):
+        media_urls.append(base + path)
+    seen = set()
+    unique_urls = []
+    for u in media_urls:
+        if u and u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+    media_urls = unique_urls
+
+    root = None
+    media_url = ""
+    last_error = None
+    for candidate in media_urls:
+        try:
+            root = get_profiles(candidate)
+            media_url = candidate
+            break
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Không gọi được ONVIF Media: {e}")
-        if not media_url:
-            raise HTTPException(status_code=502, detail="Camera không cung cấp dịch vụ Media qua ONVIF")
-        root = get_profiles(media_url)
+            last_error = e
+    if root is None:
+        raise HTTPException(status_code=502, detail=f"Không gọi được ONVIF Media: {last_error or 'không có phản hồi'}")
 
     profiles = []
     for prof in _find_all(root, "Profiles"):
-        token = prof.attrib.get("token", "")
-        pname = ""
-        for el in prof.iter():
-            if _local(el.tag) == "Name":
-                pname = (el.text or "").strip()
-                break
+        meta = _onvif_profile_meta(prof)
+        token = meta.pop("token", "")
         if not token:
             continue
         uri = ""
@@ -1234,22 +1544,18 @@ def onvif_probe(host: str, port: int = 80, username: str = "", password: str = "
             uri = _find_text(r, "Uri")
         except Exception as e:
             log_event("warn", f"ONVIF GetStreamUri lỗi profile {token}: {e}")
-        profiles.append({"token": token, "name": pname, "uri": _with_rtsp_auth(uri, username, password) if uri else ""})
+        profiles.append({**meta, "token": token, "uri": _with_rtsp_auth(uri, username, password) if uri else ""})
 
-    usable = [p for p in profiles if p["uri"]]
-    def pick(keys):
-        for p in usable:
-            low = (p["name"] + " " + p["token"]).lower()
-            if any(k in low for k in keys):
-                return p
-        return None
-    main = pick(("main", "primary", "profile_1", "profile1")) or (usable[0] if usable else None)
-    sub = pick(("sub", "second", "minor", "profile_2", "profile2"))
-    if sub is None and len(usable) > 1:
-        sub = next((p for p in usable if p is not main), None)
+    main, sub = _onvif_pick_profiles(profiles)
     return {
-        "host": host,
-        "name": name or host,
+        "host": actual_host,
+        "port": actual_port,
+        "onvif_port": actual_port,
+        "xaddr": device,
+        "name": name or actual_host,
+        "manufacturer": manufacturer,
+        "model": model,
+        "brand": _onvif_guess_brand(manufacturer, model),
         "profiles": profiles,
         "main_rtsp_url": main["uri"] if main else "",
         "sub_rtsp_url": sub["uri"] if sub else "",
@@ -2414,6 +2720,22 @@ class OnvifProbeReq(BaseModel):
     port: int = 80
     username: str = ""
     password: str = ""
+    xaddr: str = ""
+
+class OnvifDeviceReq(BaseModel):
+    host: str
+    port: int = 80
+    xaddr: str = ""
+    name: str = ""
+
+class OnvifAutoAddReq(BaseModel):
+    devices: List[OnvifDeviceReq] = []
+    username: str = ""
+    password: str = ""
+    record_mode: str = "continuous"
+    storage_target: str = "both"
+    room: str = ""
+    tags: str = ""
 
 class BulkCamerasReq(BaseModel):
     items: List[CameraItem]
@@ -2686,13 +3008,9 @@ def _norm_cam_hass(item: CameraItem) -> dict:
             ents.append(e)
     return {"hass_entities": ents}
 
-@app.post("/api/cameras")
-def add_or_update_camera(item: CameraItem):
-    cam_id = item.cam_id.strip()
-    if not cam_id:
-        raise HTTPException(status_code=400, detail="Mã camera không hợp lệ")
-    stop_camera_worker(cam_id)
-    CONFIG.setdefault("cameras", {})[cam_id] = {
+def _camera_record(item: CameraItem) -> dict:
+    """Chuẩn hoá dữ liệu camera trước khi ghi config (dùng chung cho thêm/sửa/bulk)."""
+    return {
         "name": item.name,
         "brand": item.brand,
         "rtsp_url": item.rtsp_url.strip(),
@@ -2711,6 +3029,44 @@ def add_or_update_camera(item: CameraItem):
         "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
         **_norm_cam_hass(item),
     }
+
+
+def _camera_url_host(url: str) -> str:
+    try:
+        return (urllib.parse.urlsplit(url or "").hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _onvif_existing_hosts() -> set:
+    hosts = set()
+    for cam in CONFIG.get("cameras", {}).values():
+        for key in ("rtsp_url", "sub_rtsp_url"):
+            host = _camera_url_host(cam.get(key, ""))
+            if host:
+                hosts.add(host)
+    return hosts
+
+
+def _onvif_unique_cam_id(name: str, host: str) -> str:
+    raw = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+    base = (base or host.replace(".", "_"))[:44].strip("_")
+    candidate = "cam_" + base
+    n = 2
+    while candidate in CONFIG.get("cameras", {}):
+        candidate = f"cam_{base}_{n}"
+        n += 1
+    return candidate
+
+
+@app.post("/api/cameras")
+def add_or_update_camera(item: CameraItem):
+    cam_id = item.cam_id.strip()
+    if not cam_id:
+        raise HTTPException(status_code=400, detail="Mã camera không hợp lệ")
+    stop_camera_worker(cam_id)
+    CONFIG.setdefault("cameras", {})[cam_id] = _camera_record(item)
     save_config(CONFIG)
     refresh_go2rtc()
     start_camera_worker(cam_id)
@@ -2725,22 +3081,7 @@ def bulk_add_cameras(req: BulkCamerasReq):
         if not cam_id:
             continue
         stop_camera_worker(cam_id)
-        CONFIG.setdefault("cameras", {})[cam_id] = {
-            "name": item.name, "brand": item.brand,
-            "rtsp_url": item.rtsp_url.strip(),
-            "sub_rtsp_url": (item.sub_rtsp_url or "").strip(),
-            "rtsp_transport": item.rtsp_transport,
-            "audio_mode": item.audio_mode, "record_mode": item.record_mode,
-            "video_codec": item.video_codec,
-            "storage_target": item.storage_target if item.storage_target in ("hdd", "drive", "both") else "both",
-            "room": item.room, "tags": item.tags,
-            "onvif_port": int(item.onvif_port or 80),
-            "retention_days": max(0.0, float(item.retention_days or 0)),
-            "max_gb": max(0.0, float(item.max_gb or 0)),
-            "schedule_enabled": bool(item.schedule_enabled),
-            "schedule": [w for w in (item.schedule or []) if isinstance(w, dict)],
-            **_norm_cam_hass(item),
-        }
+        CONFIG.setdefault("cameras", {})[cam_id] = _camera_record(item)
         start_camera_worker(cam_id)
         added += 1
     save_config(CONFIG)
@@ -2755,10 +3096,86 @@ def api_onvif_discover(timeout: float = 3.0):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"WS-Discovery lỗi: {e}")
 
+@app.get("/api/onvif/scan")
+def api_onvif_scan(subnet: str, timeout: float = 0.8):
+    """Quét unicast dải IP nội bộ cho camera ONVIF (dùng khi multicast bị chặn)."""
+    try:
+        return onvif_scan_network(subnet, timeout)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Quét ONVIF lỗi: {e}")
+
+@app.post("/api/onvif/auto_add")
+def api_onvif_auto_add(req: OnvifAutoAddReq):
+    """Tự lấy luồng và thêm các camera ONVIF đã chọn vào cấu hình."""
+    devices = req.devices[:32]
+    if not devices:
+        raise HTTPException(status_code=400, detail="Chưa chọn camera nào")
+    probed: List[Any] = [None] * len(devices)
+
+    def probe_one(idx: int, dev: OnvifDeviceReq):
+        try:
+            probed[idx] = (dev, onvif_probe(dev.host, dev.port, req.username, req.password, dev.xaddr), "")
+        except HTTPException as e:
+            probed[idx] = (dev, None, str(e.detail))
+        except Exception as e:
+            probed[idx] = (dev, None, str(e))
+
+    with ThreadPoolExecutor(max_workers=min(4, len(devices))) as ex:
+        futures = [ex.submit(probe_one, i, dev) for i, dev in enumerate(devices)]
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+            except Exception:
+                pass
+
+    existing_hosts = _onvif_existing_hosts()
+    added_ids = []
+    results = []
+    for dev, info, error in probed:
+        host = (info or {}).get("host") or dev.host
+        label = (info or {}).get("name") or dev.name or host
+        if error:
+            results.append({"status": "error", "host": host, "name": label, "error": error})
+            continue
+        if host.lower() in existing_hosts:
+            results.append({"status": "skipped", "host": host, "name": label, "error": "Camera đã có trong danh sách"})
+            continue
+        main_url = (info or {}).get("main_rtsp_url") or ""
+        if not main_url:
+            results.append({"status": "error", "host": host, "name": label, "error": "Không lấy được URL RTSP chính"})
+            continue
+        cam_id = _onvif_unique_cam_id(label, host)
+        item = CameraItem(
+            cam_id=cam_id,
+            name=label,
+            brand=(info or {}).get("brand") or "onvif",
+            rtsp_url=main_url,
+            sub_rtsp_url=(info or {}).get("sub_rtsp_url") or "",
+            onvif_port=int((info or {}).get("onvif_port") or dev.port or 80),
+            record_mode=req.record_mode if req.record_mode in ("continuous", "motion", "off") else "continuous",
+            storage_target=req.storage_target if req.storage_target in ("hdd", "drive", "both") else "both",
+            room=req.room,
+            tags=req.tags,
+        )
+        CONFIG.setdefault("cameras", {})[cam_id] = _camera_record(item)
+        existing_hosts.add(host.lower())
+        added_ids.append(cam_id)
+        results.append({"status": "added", "host": host, "name": label, "cam_id": cam_id})
+
+    if added_ids:
+        save_config(CONFIG)
+        refresh_go2rtc()
+        for cam_id in added_ids:
+            start_camera_worker(cam_id)
+        log_event("info", f"ONVIF tự thêm {len(added_ids)} camera")
+    return {"status": "ok", "added": len(added_ids), "cam_ids": added_ids, "results": results}
+
 @app.post("/api/onvif/probe")
 def api_onvif_probe(req: OnvifProbeReq):
     try:
-        return onvif_probe(req.host, req.port, req.username, req.password)
+        return onvif_probe(req.host, req.port, req.username, req.password, req.xaddr)
     except HTTPException:
         raise
     except urllib.error.HTTPError as e:
