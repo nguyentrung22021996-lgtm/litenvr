@@ -185,3 +185,4 @@ Nếu chạy ZimaOS và muốn cấu hình "chuẩn" như bản đang chạy (c�
 - Giới hạn `cpus: "1.00"` phù hợp box yếu; muốn live mượt hơn với nhiều camera HEVC thì nâng lên `"2.00"`.
 
 Cả 2 file đều import được theo cách ở trên; nhớ sửa `source` của volume cho đúng ổ cứng của bạn.
+
