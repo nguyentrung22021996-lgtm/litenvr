@@ -1060,6 +1060,16 @@
       justify-content: center;
     }
 
+    /* ================= EVENT SEARCH BAR ================= */
+    #evtSearchBar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 14px; }
+    #evtSearchQ { flex: 1; min-width: 170px; }
+    .evt-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; flex: 3 1 520px; }
+    .evt-filters select, .evt-filters input[type="date"] { min-width: 0; max-width: 100%; }
+    .evt-filter-star { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-main); }
+    .evt-filter-star input { width: auto; }
+    #btnEvtFilters { display: none; }
+    #btnEvtFilters.active-filter { border-color: var(--accent); color: var(--accent); }
+
     /* ================= EVENTS LIST GRID ================= */
     .events-list {
       max-width: var(--max-w);
@@ -1535,6 +1545,13 @@
       .user-row { flex-direction: column; align-items: flex-start; }
       .user-row > div:last-child { width: 100%; }
       h3 { font-size: 17px; }
+      #evtSearchBar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 8px 10px; }
+      #evtSearchQ { grid-column: 1; min-width: 0; width: 100%; }
+      #btnEvtFilters { display: inline-flex; grid-column: 2; align-items: center; justify-content: center; white-space: nowrap; padding: 0 12px; min-height: 39px; }
+      .evt-filters { grid-column: 1 / -1; display: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; flex: none; }
+      .evt-filters.open { display: grid; }
+      .evt-filters select, .evt-filters input[type="date"] { width: 100%; }
+      .evt-filters > button { width: 100%; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -1754,16 +1771,19 @@
     </div>
   </div>
 
-  <div id="evtSearchBar" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 14px;">
-    <input id="evtSearchQ" placeholder="🔎 Tìm sự kiện (nhãn, camera)…" style="flex:1; min-width:170px;" oninput="debouncedEventSearch()">
-    <select id="evtSearchCam"><option value="">Tất cả camera</option></select>
-    <select id="evtSearchLabel" title="Nhãn sự kiện" onchange="runEventSearch()"><option value="">Mọi nhãn</option></select>
-    <input type="date" id="evtSearchFrom" title="Từ ngày" onchange="runEventSearch()">
-    <input type="date" id="evtSearchTo" title="Đến ngày" onchange="runEventSearch()">
-    <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-main);" title="Chỉ hiện sự kiện đã đánh dấu">
-      <input type="checkbox" id="evtSearchStar" onchange="runEventSearch()" style="width:auto;"> ★ Đã đánh dấu
-    </label>
-    <button onclick="clearEventSearch()">✕ Xoá lọc</button>
+  <div id="evtSearchBar">
+    <input id="evtSearchQ" placeholder="🔎 Tìm sự kiện (nhãn, camera)…" oninput="debouncedEventSearch()">
+    <button id="btnEvtFilters" type="button" onclick="toggleEvtFilters(event)" aria-expanded="false" aria-controls="evtFilters">⚙ Bộ lọc</button>
+    <div class="evt-filters" id="evtFilters">
+      <select id="evtSearchCam"><option value="">Tất cả camera</option></select>
+      <select id="evtSearchLabel" title="Nhãn sự kiện" onchange="runEventSearch()"><option value="">Mọi nhãn</option></select>
+      <input type="date" id="evtSearchFrom" title="Từ ngày" onchange="runEventSearch()">
+      <input type="date" id="evtSearchTo" title="Đến ngày" onchange="runEventSearch()">
+      <label class="evt-filter-star" title="Chỉ hiện sự kiện đã đánh dấu">
+        <input type="checkbox" id="evtSearchStar" onchange="runEventSearch()"> ★ Đã đánh dấu
+      </label>
+      <button onclick="clearEventSearch()">✕ Xoá lọc</button>
+    </div>
   </div>
   <div class="events-list" id="searchResults" style="display:none;"></div>
   <div id="evtSearchMore" style="display:none; padding:4px 14px 12px;">
@@ -3392,6 +3412,21 @@
       clearTimeout(_evtSearchTimer);
       _evtSearchTimer = setTimeout(runEventSearch, 350);
     }
+    function toggleEvtFilters(ev) {
+      if (ev) ev.stopPropagation();
+      const box = document.getElementById("evtFilters");
+      const btn = document.getElementById("btnEvtFilters");
+      const open = !box.classList.contains("open");
+      box.classList.toggle("open", open);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    function updateEvtFilterBtn(f) {
+      const btn = document.getElementById("btnEvtFilters");
+      if (!btn) return;
+      const n = [f.cam, f.label, f.star, f.from, f.to].filter(Boolean).length;
+      btn.textContent = n ? `⚙ Bộ lọc (${n})` : "⚙ Bộ lọc";
+      btn.classList.toggle("active-filter", n > 0);
+    }
     let _evtSearchOffset = 0;
     const EVT_PAGE = 60;
     function evtSearchFiltered() {
@@ -3451,6 +3486,7 @@
     }
     async function runEventSearch() {
       const f = evtSearchFiltered();
+      updateEvtFilterBtn(f);
       const box = document.getElementById("searchResults");
       const list = document.getElementById("eventsList");
       if (!evtSearchActive(f)) {
