@@ -208,6 +208,20 @@
       margin-left: auto;
     }
 
+    .date-nav {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .date-nav input[type="date"] {
+      width: auto;
+    }
+
+    .date-nav .icon-btn {
+      padding: 7px 9px;
+    }
+
     #statusText {
       font-size: 12.5px !important;
       color: var(--text-muted) !important;
@@ -1288,6 +1302,9 @@
       .tb-main .spacer { display: none; }
       .tb-main #statusText { text-align: center; }
       .tb-main .menu-wrap { width: 100%; flex-direction: column; }
+      .tb-main .date-nav { display: flex; gap: 6px; }
+      .tb-main .date-nav button { width: auto; flex: 1; text-align: center; padding: 10px 8px; }
+      .tb-main .date-nav input { flex: 1.4; min-width: 0; }
       .tb-main .settings-menu, .tb-main .accent-menu {
         position: static;
         width: 100%;
@@ -1375,7 +1392,12 @@
     <button id="btnMenu" class="btn-menu" onclick="toggleMenu()" aria-label="Mở menu" aria-expanded="false">☰</button>
     <div class="tb-main" id="tbMain">
       <select id="camSelect" aria-label="Chọn camera"></select>
-      <input type="date" id="dateInput" aria-label="Chọn ngày">
+      <div class="date-nav">
+        <button class="icon-btn" onclick="shiftDate(-1, event)" title="Lùi 1 ngày (Shift: 7 ngày)" aria-label="Lùi 1 ngày">◀</button>
+        <input type="date" id="dateInput" aria-label="Chọn ngày xem lại">
+        <button class="icon-btn" onclick="shiftDate(1, event)" title="Tới 1 ngày (Shift: 7 ngày)" aria-label="Tới 1 ngày">▶</button>
+        <button class="icon-btn" onclick="goToday()" title="Về hôm nay" aria-label="Về hôm nay">⌂</button>
+      </div>
       <button id="btnLive" class="active" onclick="playLive()" data-perm="live">Trực tiếp</button>
       <button id="btnGrid" onclick="toggleGrid()" data-perm="live">⊞ Lưới</button>
       <div class="spacer"></div>
@@ -2124,7 +2146,42 @@
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
     const dateInput = document.getElementById("dateInput");
-    dateInput.value = new Date().toISOString().split("T")[0];
+    function ymd(d) {
+      const p = n => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+    function todayStr() { return ymd(new Date()); }
+    dateInput.value = todayStr();
+    let liveWaitSeq = 0;
+
+    function shiftDate(delta, e) {
+      let d = dateInput.value ? new Date(dateInput.value + "T00:00:00") : new Date();
+      if (isNaN(d.getTime())) d = new Date();
+      d.setDate(d.getDate() + delta * (e && e.shiftKey ? 7 : 1));
+      const v = ymd(d);
+      if (v > todayStr()) return;
+      dateInput.value = v;
+      loadTimeline();
+      updateDateBadge();
+    }
+
+    function goToday() {
+      dateInput.value = todayStr();
+      loadTimeline();
+      updateDateBadge();
+    }
+
+    function updateDateBadge() {
+      const el = document.getElementById("liveBadge");
+      if (!el) return;
+      if (dateInput.value === todayStr()) {
+        el.textContent = liveMode ? "● Live" : "⏸ Xem lại";
+        el.style.color = liveMode ? "#10b981" : "#94a3b8";
+      } else {
+        el.textContent = "📅 " + dateInput.value.split("-").reverse().join("/");
+        el.style.color = "#94a3b8";
+      }
+    }
 
     async function loadSystem() {
       const res = await fetch("api/system");
@@ -2245,13 +2302,13 @@
       }
       loadEventLabels();
       if (Object.keys(cameras).length === 0) {
-        document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm '+ Quản lý Camera' để thêm." : "Chưa có camera được cấp quyền.";
+        document.getElementById("statusText").textContent = isAdmin() ? "Chưa có camera. Bấm ⚙️ → Quản lý Camera để thêm." : "Chưa có camera được cấp quyền.";
         if (isAdmin()) openCamModal();
         return;
       }
       currentCam = sel.value;
       sel.onchange = () => { currentCam = sel.value; renderCamStrip(); loadTimeline(); playLive(); };
-      dateInput.onchange = () => loadTimeline();
+      dateInput.onchange = () => { loadTimeline(); updateDateBadge(); };
       initScrubber();
       video.addEventListener("timeupdate", () => {
         if (currentSegStartSec == null || isNaN(video.currentTime)) return;
@@ -2525,13 +2582,25 @@
       if (!payload.cam_id || !payload.name || !payload.rtsp_url) {
         return alert("Vui lòng điền đủ Mã Camera, Tên và đường dẫn RTSP!");
       }
-      await fetch("api/cameras", {
+      const res = await fetch("api/cameras", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
       });
+      if (!res.ok) {
+        let msg = "HTTP " + res.status;
+        try { const d = await res.json(); msg = d.detail || msg; } catch (e) {}
+        return alert("Lưu camera thất bại: " + msg);
+      }
       closeCamModal();
       await init();
+      if (cameras[payload.cam_id]) {
+        currentCam = payload.cam_id;
+        document.getElementById("camSelect").value = payload.cam_id;
+        renderCamStrip();
+        await loadTimeline();
+        playLive();
+      }
     }
 
     async function removeCam(id) {
@@ -2761,7 +2830,7 @@
 
     function startLiveHeartbeat() {
       if (liveHeartbeatTimer) clearInterval(liveHeartbeatTimer);
-      const beat = () => { if (currentCam) fetch(`api/live/${currentCam}`, {method: "POST"}).catch(() => {}); };
+      const beat = () => { if (currentCam) fetch(`api/live/${encodeURIComponent(currentCam)}`, {method: "POST"}).catch(() => {}); };
       beat();
       liveHeartbeatTimer = setInterval(beat, 5000);
     }
@@ -2769,8 +2838,25 @@
       if (liveHeartbeatTimer) { clearInterval(liveHeartbeatTimer); liveHeartbeatTimer = null; }
     }
 
-    function playLive() {
+    async function waitLiveReady(camId, seq) {
+      const statusEl = document.getElementById("statusText");
+      for (let i = 0; i < 15; i++) {
+        if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return false;
+        try {
+          const st = await fetch(`api/status/${encodeURIComponent(camId)}`).then(r => r.json());
+          if (st.hls_ready) return true;
+          statusEl.textContent = `Đang khởi động camera ${camId}... (${i + 1}s)`;
+          if (i >= 5 && st.last_error) statusEl.textContent = "Live lỗi: " + st.last_error;
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      return false;
+    }
+
+    async function playLive() {
       if (!currentCam) return;
+      const camId = currentCam;
+      const seq = ++liveWaitSeq;
       document.getElementById("btnLive").classList.add("active");
       currentSegStartSec = null;
       liveMode = true;
@@ -2781,35 +2867,39 @@
       const scrub = document.getElementById("scrubTime");
       if (scrub) scrub.textContent = "● Đang xem trực tiếp";
       const statusEl = document.getElementById("statusText");
-      statusEl.textContent = "Đang xem trực tiếp (Live)...";
+      statusEl.textContent = "Đang kết nối camera...";
+      updateDateBadge();
       video.onloadedmetadata = null;
       video.onerror = null;
-      const hlsUrl = `hls/${currentCam}/live.m3u8`;
+      const hlsUrl = `hls/${encodeURIComponent(camId)}/live.m3u8`;
       startLiveHeartbeat();
       video.onended = null;
+      await waitLiveReady(camId, seq);
+      if (seq !== liveWaitSeq || camId !== currentCam || !liveMode) return;
       if (typeof Hls !== "undefined" && Hls.isSupported()) {
-        if (hls) hls.destroy();
-        hls = new Hls({liveDurationInfinity: true});
-        hls.on(Hls.Events.ERROR, (evt, data) => {
-          if (!data || !data.fatal) return;
+        if (hls) { hls.destroy(); hls = null; }
+        const inst = new Hls({liveDurationInfinity: true});
+        hls = inst;
+        inst.on(Hls.Events.ERROR, (evt, data) => {
+          if (!data || !data.fatal || hls !== inst) return;
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
             statusEl.textContent = "Live: đang chờ luồng từ camera... (thử lại)";
-            hls.startLoad();
+            setTimeout(() => { if (hls === inst) inst.startLoad(); }, 1500);
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             statusEl.textContent = "Live: lỗi giải mã, đang thử lại...";
-            hls.recoverMediaError();
+            inst.recoverMediaError();
           } else {
             statusEl.textContent = "Live lỗi: " + data.details + " (kiểm tra camera/đổi codec H.264)";
             __clientLog("error", "Live HLS: " + data.details);
-            hls.destroy(); hls = null;
+            inst.destroy(); if (hls === inst) hls = null;
           }
         });
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        inst.on(Hls.Events.MANIFEST_PARSED, () => {
           statusEl.textContent = "Đang xem trực tiếp (Live)";
           video.play().catch(() => {});
         });
-        hls.loadSource(hlsUrl);
-        hls.attachMedia(video);
+        inst.loadSource(hlsUrl);
+        inst.attachMedia(video);
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = hlsUrl;
         statusEl.textContent = "Đang xem trực tiếp (Live)";
@@ -2821,7 +2911,8 @@
 
     async function loadTimeline() {
       if (!currentCam) return;
-      const res = await fetch(`api/timeline/${currentCam}?date=${dateInput.value}`);
+      updateDateBadge();
+      const res = await fetch(`api/timeline/${encodeURIComponent(currentCam)}?date=${dateInput.value}`);
       if (!res.ok) { segments = []; return; }
       const data = await res.json();
       segments = data.segments || [];
@@ -3086,6 +3177,7 @@
       if (hls) { hls.destroy(); hls = null; }
       liveMode = false;
       document.getElementById("btnLive").classList.remove("active");
+      updateDateBadge();
       setCursor(targetSec, false);
       document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(targetSec);
 
