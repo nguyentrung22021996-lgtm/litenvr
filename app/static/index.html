@@ -17,6 +17,11 @@
       --text-main: #f1f5f9;
       --text-muted: #94a3b8;
       --text-dim: #64748b;
+      --ok-text: #34d399;
+      --warn-text: #fbbf24;
+      --err-text: #f87171;
+      --info-text: #60a5fa;
+      --lime-text: #a3e635;
       --accent: #3b82f6;
       --accent-strong: #1d4ed8;
       --accent-rgb: 59, 130, 246;
@@ -46,7 +51,12 @@
       --border-hover: rgba(15, 23, 42, 0.22);
       --text-main: #0f172a;
       --text-muted: #55637a;
-      --text-dim: #7c8798;
+      --text-dim: #64748b;
+      --ok-text: #047857;
+      --warn-text: #a16207;
+      --err-text: #b91c1c;
+      --info-text: #1d4ed8;
+      --lime-text: #4d7c0f;
       --glass-bg: rgba(255, 255, 255, 0.74);
       --glass-card: rgba(255, 255, 255, 0.66);
       --glass-hi: rgba(255, 255, 255, 0.7);
@@ -554,6 +564,10 @@
       box-shadow: 0 12px 26px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
 
+    [data-theme="light"] .stat-card:hover {
+      box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    }
+
     .stat-head {
       display: flex;
       justify-content: space-between;
@@ -595,6 +609,10 @@
       border-radius: 99px;
       overflow: hidden;
       margin-top: 4px;
+    }
+
+    [data-theme="light"] .bar {
+      background: rgba(15, 23, 42, 0.10);
     }
 
     .bar > i {
@@ -639,6 +657,15 @@
       transform: translateY(-3px);
       border-color: rgba(255, 255, 255, 0.28);
       box-shadow: 0 12px 24px rgba(0, 0, 0, 0.45);
+    }
+
+    [data-theme="light"] .cam-tile {
+      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+    }
+
+    [data-theme="light"] .cam-tile:hover {
+      border-color: var(--border-hover);
+      box-shadow: 0 12px 24px rgba(15, 23, 42, 0.14);
     }
 
     .cam-tile.active {
@@ -1182,7 +1209,7 @@
       flex-direction: column;
       gap: 5px;
       font-size: 13px;
-      color: #cbd5e1;
+      color: var(--text-main);
     }
 
     .grid-2 {
@@ -1222,20 +1249,20 @@
       font-size: 11px;
       font-weight: 600;
       background: rgba(16, 185, 129, 0.2);
-      color: #34d399;
+      color: var(--ok-text);
       border: 1px solid rgba(16, 185, 129, 0.35);
       margin-left: 6px;
     }
 
     .badge.motion {
       background: rgba(245, 158, 11, 0.2);
-      color: #fbbf24;
+      color: var(--warn-text);
       border-color: rgba(245, 158, 11, 0.35);
     }
 
     .badge.off {
       background: rgba(148, 163, 184, 0.15);
-      color: #94a3b8;
+      color: var(--text-muted);
       border-color: rgba(148, 163, 184, 0.25);
     }
 
@@ -1272,7 +1299,7 @@
 
     .log-cam.err { border-left-color: #ef4444; }
     .log-cam.warn { border-left-color: #f59e0b; }
-    .log-cam.ok { border-left-color: #10b981; }
+    .log-cam.ok { border-left-color: var(--ok-text); }
     .log-cam .nm { font-weight: 600; }
     .log-cam .msg {
       color: var(--text-muted);
@@ -1320,13 +1347,13 @@
       padding: 2px 0;
     }
 
-    .log-line .ts { color: #64748b; flex: none; }
+    .log-line .ts { color: var(--text-dim); flex: none; }
     .log-line .lv { flex: none; font-weight: 700; }
-    .log-line.info .lv { color: #60a5fa; }
-    .log-line.warn .lv { color: #fbbf24; }
-    .log-line.error .lv { color: #f87171; }
-    .log-line .cid { color: #a3e635; flex: none; }
-    .log-empty { color: #64748b; text-align: center; padding: 24px; }
+    .log-line.info .lv { color: var(--info-text); }
+    .log-line.warn .lv { color: var(--warn-text); }
+    .log-line.error .lv { color: var(--err-text); }
+    .log-line .cid { color: var(--lime-text); flex: none; }
+    .log-empty { color: var(--text-dim); text-align: center; padding: 24px; }
 
     .onvif-box {
       background: var(--bg-elevated);
@@ -1416,9 +1443,9 @@
       flex-wrap: wrap;
     }
 
-    .audit-line .ts { color: #64748b; flex: none; }
-    .sec-warn { color: #fbbf24; font-size: 13px; margin: 4px 0; }
-    .sec-ok { color: #34d399; font-size: 13px; margin: 4px 0; }
+    .audit-line .ts { color: var(--text-dim); flex: none; }
+    .sec-warn { color: var(--warn-text); font-size: 13px; margin: 4px 0; }
+    .sec-ok { color: var(--ok-text); font-size: 13px; margin: 4px 0; }
 
     /* ================= TABLET RESPONSIVE ================= */
     @media (max-width: 960px) {
@@ -1473,10 +1500,14 @@
     /* ================= MOBILE RESPONSIVE ================= */
     @media (max-width: 640px) {
       .topbar { padding: 10px 14px; }
-      .stats-bar { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; padding: 0 10px; }
-      .stat-card:last-child { grid-column: span 2; }
-      .stat-value, #cpuVal, #ramVal, #diskVal { font-size: 16px; }
-      .stat-head { font-size: 11px; }
+      .stats-bar { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 10px; padding: 0 10px; }
+      .stat-card { padding: 8px 9px; gap: 4px; border-radius: 8px; }
+      .stat-card:last-child { grid-column: auto; }
+      .stat-card canvas { display: none; }
+      .stat-head { font-size: 9.5px; letter-spacing: 0.3px; gap: 4px; }
+      .stat-value, #cpuVal, #ramVal, #diskVal { font-size: 14.5px; }
+      .stat-sub { font-size: 10px; }
+      .bar { height: 5px; margin-top: 2px; }
       .cam-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; padding: 0 10px; }
       .cam-tile img, .cam-tile .tile-noimg { height: 88px; }
       .grid-view, .grid-view.g9 { grid-template-columns: 1fr; padding: 0 10px; }
@@ -1639,7 +1670,7 @@
   </div>
 
   <div class="timeline-container">
-    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#94a3b8; margin-bottom:4px; font-variant-numeric:tabular-nums;">
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--text-muted); margin-bottom:4px; font-variant-numeric:tabular-nums;">
       <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
     </div>
     <div class="timeline-bar" id="timelineBar" title="Kéo hoặc bấm để tua">
@@ -1658,9 +1689,9 @@
       <span><i style="background:rgba(245,158,11,.7)"></i>Có chuyển động</span>
       <span><i style="background:#f43f5e"></i>Sự kiện</span>
     </div>
-    <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#cbd5e1; margin-top:8px; font-weight:500;">
+    <div style="display:flex; justify-content:space-between; font-size:12.5px; color:var(--text-main); margin-top:8px; font-weight:500;">
       <span id="scrubTime">Bản ghi: 00:00:00</span>
-      <span id="liveBadge" style="color:#10b981; font-weight:700;">● Live</span>
+      <span id="liveBadge" style="color:var(--ok-text); font-weight:700;">● Live</span>
     </div>
     <div class="rec-tools">
       <div class="tool-group">
@@ -1706,7 +1737,7 @@
           <button onclick="ptz('down')" title="Xuống">▼</button>
           <button onclick="ptz('downright')" title="Chéo xuống phải">↘</button>
         </div>
-        <div style="display:flex; flex-direction:column; gap:8px; font-size:12.5px; color:#94a3b8; padding-top:8px;">
+        <div style="display:flex; flex-direction:column; gap:8px; font-size:12.5px; color:var(--text-muted); padding-top:8px;">
           <div style="display:flex; gap:6px;">
             <button onclick="ptz('zoomin')" title="Zoom vào">➕ Zoom</button>
             <button onclick="ptz('zoomout')" title="Zoom ra">➖ Zoom</button>
@@ -1717,7 +1748,7 @@
             <select id="ptzPreset"></select>
             <button onclick="ptzPresetGo()">📍 Đến preset</button>
           </div>
-          <span id="ptzMsg" style="color:#cbd5e1;"></span>
+          <span id="ptzMsg" style="color:var(--text-main);"></span>
         </div>
       </div>
     </div>
@@ -1729,7 +1760,7 @@
     <select id="evtSearchLabel" title="Nhãn sự kiện" onchange="runEventSearch()"><option value="">Mọi nhãn</option></select>
     <input type="date" id="evtSearchFrom" title="Từ ngày" onchange="runEventSearch()">
     <input type="date" id="evtSearchTo" title="Đến ngày" onchange="runEventSearch()">
-    <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:#cbd5e1;" title="Chỉ hiện sự kiện đã đánh dấu">
+    <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-main);" title="Chỉ hiện sự kiện đã đánh dấu">
       <input type="checkbox" id="evtSearchStar" onchange="runEventSearch()" style="width:auto;"> ★ Đã đánh dấu
     </label>
     <button onclick="clearEventSearch()">✕ Xoá lọc</button>
@@ -1737,7 +1768,7 @@
   <div class="events-list" id="searchResults" style="display:none;"></div>
   <div id="evtSearchMore" style="display:none; padding:4px 14px 12px;">
     <button onclick="loadMoreEvents()">⬇ Tải thêm</button>
-    <span id="evtSearchCount" style="color:#94a3b8; margin-left:8px; font-size:13px;"></span>
+    <span id="evtSearchCount" style="color:var(--text-muted); margin-left:8px; font-size:13px;"></span>
   </div>
   <div class="events-list" id="eventsList"></div>
 
@@ -1791,7 +1822,7 @@
             <option value="hdd">Chỉ ổ cứng</option>
             <option value="drive">Chỉ Google Drive (tự xoá ổ cứng sau khi tải xong)</option>
           </select>
-          <small id="storageTargetHint" style="color:#94a3b8;font-size:12px;"></small>
+          <small id="storageTargetHint" style="color:var(--text-muted);font-size:12px;"></small>
         </div>
         <div class="form-row">
           <label>Số ngày lưu riêng cho camera (0 = dùng mức chung):</label>
@@ -1892,7 +1923,7 @@
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
         <button type="button" onclick="addCamHassRow()">+ Thêm cảm biến</button>
         <button type="button" class="warn" onclick="loadHassSensors()">↻ Tải danh sách sensor từ HA</button>
-        <span id="camHassMsg" style="font-size:12px;color:#94a3b8;"></span>
+        <span id="camHassMsg" style="font-size:12px;color:var(--text-muted);"></span>
       </div>
 
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
@@ -1941,13 +1972,13 @@
       </div>
       <hr style="border:0; border-top:1px solid var(--border-subtle); margin:18px 0 12px;">
       <h4 style="margin:0 0 8px;">💾 Sao lưu / Khôi phục toàn bộ cấu hình</h4>
-      <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">Bao gồm camera, lịch ghi hình, Home Assistant, thông báo Telegram/Webhook.</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Bao gồm camera, lịch ghi hình, Home Assistant, thông báo Telegram/Webhook.</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button onclick="window.location='api/config/export'">⬇️ Xuất cấu hình (.json)</button>
         <button onclick="document.getElementById('restoreFile').click()">⬆️ Nhập cấu hình</button>
         <input type="file" id="restoreFile" accept="application/json,.json" style="display:none;" onchange="importConfigFile(this)">
       </div>
-      <div id="backupMsg" style="font-size:12px;color:#94a3b8;margin-top:8px;"></div>
+      <div id="backupMsg" style="font-size:12px;color:var(--text-muted);margin-top:8px;"></div>
     </div>
   </div>
 
@@ -1955,13 +1986,13 @@
   <div class="modal" id="driveModal">
     <div class="modal-box" style="max-width:720px;">
       <h3 style="margin-top:0">☁️ Sao lưu Google Drive (24/7)</h3>
-      <div id="drvStatusLine" style="font-size:13.5px;color:#cbd5e1;margin-bottom:6px;">Đang tải...</div>
-      <div id="drvQuotaLine" style="font-size:12.5px;color:#94a3b8;margin-bottom:8px;"></div>
-      <div id="drvPaused" hidden style="font-size:13px;color:#fbbf24;margin-bottom:10px;"></div>
+      <div id="drvStatusLine" style="font-size:13.5px;color:var(--text-main);margin-bottom:6px;">Đang tải...</div>
+      <div id="drvQuotaLine" style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px;"></div>
+      <div id="drvPaused" hidden style="font-size:13px;color:var(--warn-text);margin-bottom:10px;"></div>
 
       <div id="drvConnectBox" style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
         <div style="font-weight:600;margin-bottom:6px;">🔗 Kết nối tài khoản Google</div>
-        <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;line-height:1.55;">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.55;">
           Vào <b>console.cloud.google.com</b> → tạo dự án → bật <b>Google Drive API</b> → tạo OAuth client loại
           <b>"TVs and Limited Input devices"</b> (mục Credentials). Sau đó dán Client ID / Client Secret vào đây.
           Google chỉ cho phép LiteNVR quyền <b>drive.file</b> (chỉ thấy các file do chính LiteNVR tạo ra) — đủ để
@@ -1975,14 +2006,14 @@
           <button class="primary" onclick="driveConnectStart()">🔗 Kết nối bằng mã thiết bị</button>
         </div>
         <div id="drvCodeBox" hidden style="margin-top:12px;background:var(--bg-input);border:1px solid var(--border-focus);border-radius:10px;padding:14px;text-align:center;">
-          <div style="font-size:12px;color:#94a3b8;">Mở trang Google bên dưới và nhập mã này:</div>
-          <div id="drvUserCode" style="font-size:28px;font-weight:800;letter-spacing:5px;margin:8px 0;color:#60a5fa;font-variant-numeric:tabular-nums;"></div>
+          <div style="font-size:12px;color:var(--text-muted);">Mở trang Google bên dưới và nhập mã này:</div>
+          <div id="drvUserCode" style="font-size:28px;font-weight:800;letter-spacing:5px;margin:8px 0;color:var(--info-text);font-variant-numeric:tabular-nums;"></div>
           <button style="width:auto;padding:8px 16px;" onclick="window.open('https://www.google.com/device','_blank','noopener')">Mở google.com/device ↗</button>
-          <div id="drvPollMsg" style="font-size:12px;color:#94a3b8;margin-top:10px;">Đang chờ bạn cấp quyền... (tự kiểm tra mỗi 4 giây)</div>
+          <div id="drvPollMsg" style="font-size:12px;color:var(--text-muted);margin-top:10px;">Đang chờ bạn cấp quyền... (tự kiểm tra mỗi 4 giây)</div>
         </div>
         <details style="margin-top:12px;">
-          <summary style="cursor:pointer;font-size:13px;color:#94a3b8;">Hoặc dán Refresh Token có sẵn (rclone / OAuth Playground)</summary>
-          <textarea id="drvPasteToken" rows="3" placeholder='Dán refresh_token, hoặc cả JSON token của rclone: {"access_token":"...","refresh_token":"..."}' style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--bg-input);color:#fff;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px;font-family:inherit;"></textarea>
+          <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);">Hoặc dán Refresh Token có sẵn (rclone / OAuth Playground)</summary>
+          <textarea id="drvPasteToken" rows="3" placeholder='Dán refresh_token, hoặc cả JSON token của rclone: {"access_token":"...","refresh_token":"..."}' style="width:100%;box-sizing:border-box;margin-top:8px;background:var(--bg-input);color:var(--text-main);border:1px solid var(--border-subtle);border-radius:10px;padding:10px;font-family:inherit;"></textarea>
           <div style="display:flex;gap:8px;margin-top:8px;">
             <button onclick="drivePasteToken()">💾 Kết nối bằng token</button>
           </div>
@@ -1990,7 +2021,7 @@
       </div>
 
       <div id="drvConnectedBox" hidden style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px;">
-        <div id="drvConnInfo" style="font-size:12.5px;color:#94a3b8;margin-bottom:10px;"></div>
+        <div id="drvConnInfo" style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button onclick="driveTest()">🔎 Kiểm tra kết nối</button>
           <button class="warn" onclick="driveDisconnect()">⛔ Ngắt kết nối</button>
@@ -2001,23 +2032,23 @@
       <label class="log-chk" style="font-size:13px;margin-bottom:8px;">
         <input type="checkbox" id="drvEnabled"> Bật sao lưu bản ghi lên Google Drive
       </label>
-      <div style="font-size:12px;color:#94a3b8;margin:6px 0 4px;">Camera sao lưu (không chọn = tất cả):</div>
+      <div style="font-size:12px;color:var(--text-muted);margin:6px 0 4px;">Camera sao lưu (không chọn = tất cả):</div>
       <div id="drvCamList" class="perm-grid"></div>
       <div class="grid-2" style="margin-top:10px;">
         <label>Giới hạn tốc độ tải lên (Mbps — 0 = không giới hạn) <input type="number" id="drvBandwidth" min="0" step="1"></label>
         <label>Giới hạn dung lượng NVR dùng (GB — 0 = dùng tới khi Drive gần đầy) <input type="number" id="drvMaxGb" min="0" step="50"></label>
         <label>Dọn file cũ nhất khi Drive còn trống dưới (MB) <input type="number" id="drvMinFree" min="200" step="500"></label>
       </div>
-      <div style="font-size:12px;color:#94a3b8;margin-top:6px;">Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">Khi đạt giới hạn hoặc Drive sắp đầy: LiteNVR xoá <b>vĩnh viễn</b> file cũ nhất đã tải lên (không vào thùng rác) để dọn chỗ. Bản ghi trên ổ cứng không bị ảnh hưởng.</div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px;">
         <button class="primary" onclick="saveDrive()">💾 Lưu cài đặt</button>
       </div>
-      <div id="drvMsg" style="font-size:12.5px;color:#94a3b8;margin-top:8px;"></div>
+      <div id="drvMsg" style="font-size:12.5px;color:var(--text-muted);margin-top:8px;"></div>
 
       <hr style="border:0;border-top:1px solid var(--border-subtle);margin:16px 0 12px;">
 
       <div style="font-weight:600;margin-bottom:8px;">📊 Trạng thái &amp; hàng đợi</div>
-      <div id="drvStats" style="font-size:13px;color:#cbd5e1;display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;"></div>
+      <div id="drvStats" style="font-size:13px;color:var(--text-main);display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
         <span style="font-size:13px;">Tải bù bản ghi cũ:</span>
         <select id="drvNowCam" style="width:auto;max-width:200px;"></select>
@@ -2073,8 +2104,8 @@
         <label>Long-Lived Access Token (HA &gt; Hồ sơ &gt; Security &gt; Create Token):</label>
         <input type="password" id="hassToken" placeholder="Dán token HA...">
       </div>
-      <div id="hassStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
-      <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">Gán cảm biến chuyển động cho từng camera trong form <b>Sửa camera</b> (mục 🎯 / 🛰️). Mọi thay đổi trạng thái của cảm biến đều kích hoạt ghi hình.</div>
+      <div id="hassStatus" style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;"></div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Gán cảm biến chuyển động cho từng camera trong form <b>Sửa camera</b> (mục 🎯 / 🛰️). Mọi thay đổi trạng thái của cảm biến đều kích hoạt ghi hình.</div>
 
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="testHass()">Kiểm tra kết nối</button>
@@ -2100,7 +2131,7 @@
         <label>Bot Token (tạo bot qua @BotFather):</label>
         <input type="password" id="ntToken" placeholder="123456:ABC-DEF...">
       </div>
-      <div id="ntTokenHint" style="font-size:12px;color:#10b981;margin:-6px 0 10px;"></div>
+      <div id="ntTokenHint" style="font-size:12px;color:var(--ok-text);margin:-6px 0 10px;"></div>
       <div class="form-row">
         <label>Chat ID (nhóm/cá nhân nhận tin):</label>
         <input id="ntChatId" placeholder="VD: 123456789">
@@ -2134,8 +2165,8 @@
           <input type="number" id="ntDiskCrit" min="50" max="99" step="1" value="95">
         </div>
       </div>
-      <div id="ntDiskHealth" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
-      <div id="ntStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
+      <div id="ntDiskHealth" style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;"></div>
+      <div id="ntStatus" style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;"></div>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="testNotify()">📨 Gửi thử</button>
         <div style="display:flex; gap:8px;">
@@ -2193,7 +2224,7 @@
           <input id="bkCameras" placeholder="cam_cong, cam_san">
         </div>
       </div>
-      <div id="bkStatus" style="font-size:12px;color:#94a3b8;margin:6px 0 12px;"></div>
+      <div id="bkStatus" style="font-size:12px;color:var(--text-muted);margin:6px 0 12px;"></div>
       <div style="display:flex; gap:8px; justify-content:space-between; margin-top:14px;">
         <button class="warn" onclick="testBackup()">🔌 Kiểm tra đích</button>
         <div style="display:flex; gap:8px;">
@@ -2217,7 +2248,7 @@
 
       <div id="secTabMe">
         <h4 style="margin:0 0 6px;">Đổi mật khẩu</h4>
-        <div id="pwRootNote" hidden style="font-size:12px;color:#94a3b8;">Tài khoản gốc đổi mật khẩu bằng biến môi trường <b>NVR_PASS</b> trong docker-compose (mục environment).</div>
+        <div id="pwRootNote" hidden style="font-size:12px;color:var(--text-muted);">Tài khoản gốc đổi mật khẩu bằng biến môi trường <b>NVR_PASS</b> trong docker-compose (mục environment).</div>
         <div id="pwBox">
           <div class="form-row"><label>Mật khẩu hiện tại:</label><input type="password" id="pwOld" autocomplete="current-password"></div>
           <div class="form-row"><label>Mật khẩu mới (tối thiểu 6 ký tự):</label><input type="password" id="pwNew" autocomplete="new-password"></div>
@@ -2225,14 +2256,14 @@
         </div>
 
         <h4 style="margin:18px 0 6px;">Xác thực 2 lớp (2FA)</h4>
-        <div id="tfaState" style="font-size:13px;color:#94a3b8;">Đang tải...</div>
+        <div id="tfaState" style="font-size:13px;color:var(--text-muted);">Đang tải...</div>
         <div id="tfaInitBox" hidden style="margin-top:8px;">
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <button onclick="tfaInit()">🔑 Tạo mã 2FA</button>
-            <span style="font-size:12px;color:#94a3b8;">Dùng app Google Authenticator / Authy / 1Password</span>
+            <span style="font-size:12px;color:var(--text-muted);">Dùng app Google Authenticator / Authy / 1Password</span>
           </div>
           <div id="tfaSecretBox" hidden>
-            <div style="font-size:12px;color:#94a3b8;margin:8px 0 4px;">Nhập mã dưới đây vào app Authenticator, rồi điền mã 6 số để xác nhận:</div>
+            <div style="font-size:12px;color:var(--text-muted);margin:8px 0 4px;">Nhập mã dưới đây vào app Authenticator, rồi điền mã 6 số để xác nhận:</div>
             <div class="onvif-box" style="font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;" id="tfaSecret"></div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
               <input id="tfaCode" placeholder="Mã 6 số" inputmode="numeric" maxlength="6" style="width:120px;">
@@ -2241,7 +2272,7 @@
           </div>
         </div>
         <div id="tfaOffBox" hidden style="margin-top:8px;">
-          <div style="font-size:12px;color:#94a3b8;margin-bottom:6px;">Nhập mã 6 số hiện tại trong app để tắt 2FA:</div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Nhập mã 6 số hiện tại trong app để tắt 2FA:</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <input id="tfaOffCode" placeholder="Mã 6 số" inputmode="numeric" maxlength="6" style="width:130px;">
             <button class="warn" onclick="tfaDisable()">Tắt 2FA</button>
@@ -2250,7 +2281,7 @@
         <div id="tfaMsg" style="font-size:12px;margin-top:6px;"></div>
 
         <h4 style="margin:18px 0 6px;">Phiên đăng nhập</h4>
-        <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">Các thiết bị/trình duyệt đang đăng nhập tài khoản này.</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Các thiết bị/trình duyệt đang đăng nhập tài khoản này.</div>
         <div id="secSessions"></div>
         <div style="margin-top:8px;">
           <button class="warn" onclick="revokeOtherSessions()">🚪 Đăng xuất các phiên khác</button>
@@ -2289,7 +2320,7 @@
           <button onclick="resetUserForm()">Huỷ / Tạo mới</button>
           <span id="userFormMsg" style="font-size:12px;"></span>
         </div>
-        <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Đổi mật khẩu hoặc tạm khoá tài khoản sẽ đăng xuất ngay các phiên đang mở của tài khoản đó. Tài khoản con không thấy được mật khẩu camera.</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Đổi mật khẩu hoặc tạm khoá tài khoản sẽ đăng xuất ngay các phiên đang mở của tài khoản đó. Tài khoản con không thấy được mật khẩu camera.</div>
       </div>
 
       <div id="secTabAudit" hidden>
@@ -2302,7 +2333,7 @@
 
       <div id="secTabStatus" hidden>
         <h4 style="margin:0 0 6px;">Trạng thái bảo mật</h4>
-        <div id="secStatusBox" style="font-size:13px;color:#cbd5e1;">Đang tải...</div>
+        <div id="secStatusBox" style="font-size:13px;color:var(--text-main);">Đang tải...</div>
       </div>
 
       <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
@@ -2444,10 +2475,10 @@
       if (!el) return;
       if (dateInput.value === todayStr()) {
         el.textContent = liveMode ? "● Live" : "⏸ Xem lại";
-        el.style.color = liveMode ? "#10b981" : "#94a3b8";
+        el.style.color = liveMode ? "var(--ok-text)" : "var(--text-muted)";
       } else {
         el.textContent = "📅 " + dateInput.value.split("-").reverse().join("/");
-        el.style.color = "#94a3b8";
+        el.style.color = "var(--text-muted)";
       }
     }
 
@@ -2860,12 +2891,12 @@
       const out = document.getElementById("camTestResult");
       const btn = document.getElementById("btnTestCam");
       if (!url) {
-        out.style.color = "#f87171";
+        out.style.color = "var(--err-text)";
         out.textContent = "Chưa nhập URL camera";
         return;
       }
       btn.disabled = true;
-      out.style.color = "#94a3b8";
+      out.style.color = "var(--text-muted)";
       out.textContent = "⏳ Đang kiểm tra luồng...";
       try {
         const res = await fetch("api/cameras/test", {
@@ -2884,11 +2915,11 @@
           (d.width && d.height) ? d.width + "×" + d.height : "",
           d.fps ? d.fps + " fps" : ""
         ].filter(Boolean).join(" · ");
-        out.style.color = d.browser_safe ? "#10b981" : "#f59e0b";
+        out.style.color = d.browser_safe ? "var(--ok-text)" : "var(--warn-text)";
         out.textContent = (d.browser_safe ? "✅ " : "⚠️ ") + meta +
           (d.browser_safe ? " — phát trực tiếp OK" : " — sẽ chuyển mã sang H.264");
       } catch (e) {
-        out.style.color = "#f87171";
+        out.style.color = "var(--err-text)";
         out.textContent = "❌ " + e.message;
       } finally {
         btn.disabled = false;
@@ -3434,7 +3465,7 @@
       box.innerHTML = "";
       const events = data.events || [];
       if (!events.length) {
-        box.innerHTML = '<div style="color:#94a3b8; padding:12px;">Không có sự kiện phù hợp.</div>';
+        box.innerHTML = '<div style="color:var(--text-muted); padding:12px;">Không có sự kiện phù hợp.</div>';
       } else {
         events.forEach(e => box.appendChild(searchEventCard(e)));
       }
@@ -4051,20 +4082,20 @@
       };
       const r = await fetch("api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const st = document.getElementById("ntStatus");
-      st.style.color = r.ok ? "#10b981" : "#f87171";
+      st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
       st.textContent = r.ok ? "✔ Đã lưu cấu hình thông báo." : "❌ Lưu lỗi.";
     }
     async function testNotify() {
       const st = document.getElementById("ntStatus");
-      st.style.color = "#94a3b8";
+      st.style.color = "var(--text-muted)";
       st.textContent = "⏳ Đang gửi thử...";
       try {
         const r = await fetch("api/notify/test", { method: "POST" });
         const d = await r.json();
-        st.style.color = r.ok ? "#10b981" : "#f87171";
+        st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
         st.textContent = r.ok ? "✔ " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
       } catch (e) {
-        st.style.color = "#f87171";
+        st.style.color = "var(--err-text)";
         st.textContent = "❌ " + e;
       }
     }
@@ -4115,22 +4146,22 @@
       const r = await fetch("api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(readBackupPayload()) });
       const st = document.getElementById("bkStatus");
-      st.style.color = r.ok ? "#10b981" : "#f87171";
+      st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
       st.textContent = r.ok ? "✔ Đã lưu cấu hình sao lưu." : "❌ Lưu lỗi.";
     }
     async function testBackup() {
       const st = document.getElementById("bkStatus");
-      st.style.color = "#94a3b8";
+      st.style.color = "var(--text-muted)";
       st.textContent = "⏳ Đang kiểm tra đích...";
       await fetch("api/backup", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(readBackupPayload()) });
       try {
         const r = await fetch("api/backup/test", { method: "POST" });
         const d = await r.json();
-        st.style.color = r.ok ? "#10b981" : "#f87171";
+        st.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
         st.textContent = r.ok ? "✔ Đích OK: " + JSON.stringify(d.results) : "❌ " + (d.detail || r.status);
       } catch (e) {
-        st.style.color = "#f87171";
+        st.style.color = "var(--err-text)";
         st.textContent = "❌ " + e;
       }
     }
@@ -4147,11 +4178,11 @@
         const r = await fetch("api/config/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: text });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || r.status);
-        msg.style.color = "#10b981";
+        msg.style.color = "var(--ok-text)";
         msg.textContent = `✔ Đã khôi phục ${d.cameras} camera (khởi động ${d.started} luồng).`;
         await init();
       } catch (e) {
-        msg.style.color = "#f87171";
+        msg.style.color = "var(--err-text)";
         msg.textContent = "❌ " + e;
       }
       input.value = "";
@@ -4190,7 +4221,7 @@
       const chip = document.getElementById("userChip");
       if (chip) {
         chip.hidden = false;
-        const badge = ME.auth_enabled === false ? ' <span style="color:#fbbf24;">bảo mật đang tắt</span>'
+        const badge = ME.auth_enabled === false ? ' <span style="color:var(--warn-text);">bảo mật đang tắt</span>'
           : (ME.role === "admin" ? ' <span class="badge">admin</span>' : "");
         chip.innerHTML = "👤 <b>" + esc(ME.username) + "</b>" + badge + (ME.totp_enabled ? " 🔐" : "");
       }
@@ -4400,12 +4431,12 @@
     async function loadSessions() {
       const box = document.getElementById("secSessions");
       document.getElementById("sessMsg").textContent = "";
-      box.innerHTML = '<div style="color:#94a3b8;font-size:13px;">Đang tải...</div>';
+      box.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">Đang tải...</div>';
       let data = { sessions: [] };
       try { data = await fetch("api/me/sessions").then(r => r.json()); } catch (e) {}
       const rows = data.sessions || [];
       if (!rows.length) {
-        box.innerHTML = '<div style="color:#94a3b8;font-size:13px;">Không có phiên nào.</div>';
+        box.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">Không có phiên nào.</div>';
         return;
       }
       const fmt = (t) => t ? new Date(t * 1000).toLocaleString("vi-VN") : "";
@@ -4416,7 +4447,7 @@
         d.style.marginBottom = "6px";
         d.style.fontSize = "13px";
         d.innerHTML = `<b>${s.current ? "Thiết bị này" : esc(s.ip || "không rõ IP")}</b>` +
-          `<span style="color:#94a3b8;"> · ${fmt(s.created)} → ${fmt(s.expires)}</span>` +
+          `<span style="color:var(--text-muted);"> · ${fmt(s.created)} → ${fmt(s.expires)}</span>` +
           (s.current ? ' <span style="color:var(--accent);">(phiên hiện tại)</span>' : "");
         box.appendChild(d);
       });
@@ -4468,8 +4499,8 @@
       const r = await fetch("api/me/totp/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
       const d = await r.json().catch(() => ({}));
       const msg = document.getElementById("tfaMsg");
-      if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
-      msg.style.color = "#10b981"; msg.textContent = "✔ Đã bật 2FA.";
+      if (!r.ok) { msg.style.color = "var(--err-text)"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "var(--ok-text)"; msg.textContent = "✔ Đã bật 2FA.";
       ME.totp_enabled = true;
       loadTfaState();
     }
@@ -4478,8 +4509,8 @@
       const r = await fetch("api/me/totp/disable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
       const d = await r.json().catch(() => ({}));
       const msg = document.getElementById("tfaMsg");
-      if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
-      msg.style.color = "#10b981"; msg.textContent = "✔ Đã tắt 2FA.";
+      if (!r.ok) { msg.style.color = "var(--err-text)"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "var(--ok-text)"; msg.textContent = "✔ Đã tắt 2FA.";
       ME.totp_enabled = false;
       loadTfaState();
     }
@@ -4490,8 +4521,8 @@
         body: JSON.stringify({ old_password: document.getElementById("pwOld").value, new_password: document.getElementById("pwNew").value })
       });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) { msg.style.color = "#f87171"; msg.textContent = "❌ " + (d.detail || r.status); return; }
-      msg.style.color = "#10b981"; msg.textContent = "✔ Đổi xong — chuyển về trang đăng nhập...";
+      if (!r.ok) { msg.style.color = "var(--err-text)"; msg.textContent = "❌ " + (d.detail || r.status); return; }
+      msg.style.color = "var(--ok-text)"; msg.textContent = "✔ Đổi xong — chuyển về trang đăng nhập...";
       setTimeout(() => { location.href = "login"; }, 1200);
     }
 
@@ -4506,7 +4537,7 @@
     }
     function renderSecUsers() {
       const box = document.getElementById("secUsers");
-      if (!SEC_USERS.length) { box.innerHTML = '<div style="color:#64748b;font-size:13px;">Chưa có tài khoản con.</div>'; return; }
+      if (!SEC_USERS.length) { box.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">Chưa có tài khoản con.</div>'; return; }
       box.innerHTML = SEC_USERS.map(u => {
         const role = u.role === "admin" ? ' <span class="badge">admin</span>' : "";
         const dis = u.enabled ? "" : ' <span class="badge off">tạm khoá</span>';
@@ -4516,20 +4547,20 @@
         else permsTxt = PERM_LABELS.filter(([k]) => u.perms && u.perms[k]).map(([, l]) => l).join(", ") || "chưa cấp quyền nào";
         const cams = (u.cameras && u.cameras.length) ? ("camera: " + u.cameras.join(", ")) : "tất cả camera";
         const actions = u.is_root
-          ? '<span style="font-size:12px;color:#94a3b8;">đổi mật khẩu trong docker-compose (NVR_PASS)</span>'
+          ? '<span style="font-size:12px;color:var(--text-muted);">đổi mật khẩu trong docker-compose (NVR_PASS)</span>'
           : `<div style="display:flex;gap:6px;flex-wrap:wrap;">
                <button onclick="editUser('${esc(u.username)}')">✏️ Sửa</button>
                ${u.totp_enabled ? `<button class="warn" onclick="tfaOff('${esc(u.username)}')">🔓 Tắt 2FA</button>` : ""}
                <button class="warn" onclick="delUser('${esc(u.username)}')">🗑 Xoá</button>
              </div>`;
-        return `<div class="user-row"><div><b>${esc(u.username)}</b>${u.is_root ? ' <span class="badge" style="background:rgba(37,99,235,0.2);color:#60a5fa;border-color:rgba(37,99,235,0.4);">gốc</span>' : ""}${role}${dis}${tfa}<div style="color:#94a3b8;font-size:12px;margin-top:2px;">${esc(permsTxt)} · ${esc(cams)}</div></div>${actions}</div>`;
+        return `<div class="user-row"><div><b>${esc(u.username)}</b>${u.is_root ? ' <span class="badge" style="background:rgba(37,99,235,0.2);color:var(--info-text);border-color:rgba(37,99,235,0.4);">gốc</span>' : ""}${role}${dis}${tfa}<div style="color:var(--text-muted);font-size:12px;margin-top:2px;">${esc(permsTxt)} · ${esc(cams)}</div></div>${actions}</div>`;
       }).join("");
     }
     function renderNuCams(selected) {
       const sel = selected || [];
       document.getElementById("nuCams").innerHTML = SEC_ALL_CAMS.map(c =>
         `<label class="log-chk"><input type="checkbox" value="${esc(c)}" ${sel.includes(c) ? "checked" : ""}> ${esc((cameras[c] && cameras[c].name) || c)}</label>`
-      ).join("") || '<span style="color:#64748b;font-size:12px;">Chưa có camera</span>';
+      ).join("") || '<span style="color:var(--text-dim);font-size:12px;">Chưa có camera</span>';
     }
     function resetUserForm() {
       SEC_EDIT = "";
@@ -4595,7 +4626,7 @@
         r = await fetch("api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       }
       const d = await r.json().catch(() => ({}));
-      msg.style.color = r.ok ? "#10b981" : "#f87171";
+      msg.style.color = r.ok ? "var(--ok-text)" : "var(--err-text)";
       msg.textContent = r.ok ? "✔ Đã lưu." : "❌ " + (d.detail || r.status);
       if (r.ok) { resetUserForm(); loadSecUsers(); }
     }
@@ -4625,7 +4656,7 @@
           totp_enable: "🔐 bật 2FA", totp_disable: "🔓 tắt 2FA"
         };
         el.innerHTML = (d.events || []).map(e =>
-          `<div class="audit-line"><span class="ts">${new Date(e.t * 1000).toLocaleString("vi-VN")}</span><span class="act">${labels[e.action] || esc(e.action)}</span><span>${esc(e.username)}</span><span style="color:#64748b;">${esc(e.ip || "")}</span><span style="color:#94a3b8;">${esc(e.detail || "")}</span></div>`
+          `<div class="audit-line"><span class="ts">${new Date(e.t * 1000).toLocaleString("vi-VN")}</span><span class="act">${labels[e.action] || esc(e.action)}</span><span>${esc(e.username)}</span><span style="color:var(--text-dim);">${esc(e.ip || "")}</span><span style="color:var(--text-muted);">${esc(e.detail || "")}</span></div>`
         ).join("") || '<div class="log-empty">Chưa có sự kiện</div>';
       } catch (e) { el.textContent = "Lỗi tải nhật ký"; }
     }
@@ -4639,7 +4670,7 @@
           ${warns || (d.auth_enabled ? '<div class="sec-ok">✅ Không phát hiện vấn đề bảo mật.</div>' : "")}
           <div style="margin-top:6px;">Tài khoản gốc: <b>${esc(d.root_user)}</b></div>
           <div>Tài khoản con: <b>${d.users}</b> · Có 2FA: <b>${d.totp_users}</b> · Phiên đang mở: <b>${d.active_sessions}</b></div>
-          <div style="font-size:12px;color:#94a3b8;margin-top:8px;">Gợi ý: đổi mật khẩu gốc mạnh (12+ ký tự), tài khoản người xem chỉ cấp quyền xem trực tiếp, bật 2FA cho tài khoản quản trị. Nhật ký đăng nhập lưu trên ổ cứng, không bị xoá tự động khi dọn bản ghi.</div>`;
+          <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">Gợi ý: đổi mật khẩu gốc mạnh (12+ ký tự), tài khoản người xem chỉ cấp quyền xem trực tiếp, bật 2FA cho tài khoản quản trị. Nhật ký đăng nhập lưu trên ổ cứng, không bị xoá tự động khi dọn bản ghi.</div>`;
       } catch (e) { el.textContent = "Lỗi tải trạng thái"; }
     }
 
@@ -4663,7 +4694,7 @@
     }
     function drvMsg(msg, err) {
       const el = document.getElementById("drvMsg");
-      el.style.color = err ? "#f87171" : "#10b981";
+      el.style.color = err ? "var(--err-text)" : "var(--ok-text)";
       el.textContent = msg;
     }
     function drvFmtBytes(n) {
@@ -4683,10 +4714,10 @@
       _drvData = d;
       const line = document.getElementById("drvStatusLine");
       if (d.auth_error) {
-        line.innerHTML = '⚠️ <span style="color:#f87171;">' + esc(d.auth_error) + '</span>';
+        line.innerHTML = '⚠️ <span style="color:var(--err-text);">' + esc(d.auth_error) + '</span>';
       } else if (d.connected) {
         line.innerHTML = '✅ Đã kết nối Google Drive — thư mục: <b>' + esc(d.folder_name) + '</b>'
-          + (d.enabled ? '' : ' <span style="color:#fbbf24;">(chưa bật sao lưu)</span>');
+          + (d.enabled ? '' : ' <span style="color:var(--warn-text);">(chưa bật sao lưu)</span>');
       } else {
         line.innerHTML = '⛔ Chưa kết nối Google Drive';
       }
@@ -4713,7 +4744,7 @@
         cl.innerHTML = d.cameras_all.map(c => {
           const noDrive = c.storage_target === "hdd";
           return `<label style="display:flex;flex-direction:row;align-items:center;gap:6px;cursor:pointer;${noDrive ? "opacity:.55;" : ""}" ${noDrive ? 'title="Camera đang đặt Nơi lưu = Chỉ ổ cứng, không tải lên Drive."' : ""}><input type="checkbox" class="drvCam" value="${esc(c.id)}" ${sel.has(c.id) ? "checked" : ""} ${noDrive ? "disabled" : ""}> ${esc(c.name)}${noDrive ? " (chỉ ổ cứng)" : ""}</label>`;
-        }).join("") || '<span style="color:#64748b;font-size:12px;">Chưa có camera</span>';
+        }).join("") || '<span style="color:var(--text-dim);font-size:12px;">Chưa có camera</span>';
       }
       const focusId = (document.activeElement || {}).id;
       if (focusId !== "drvEnabled") document.getElementById("drvEnabled").checked = !!d.enabled;
@@ -4734,7 +4765,7 @@
         `<span>📥 Chờ: <b>${c.pending || 0}</b></span>` +
         `<span>⬆️ Đang tải: <b>${c.uploading || 0}</b></span>` +
         `<span>✅ Đã tải: <b>${c.done || 0}</b> (${drvFmtBytes(d.uploaded_bytes)})</span>` +
-        `<span${c.error ? ' style="color:#f87171;"' : ''}>❌ Lỗi: <b>${c.error || 0}</b></span>` +
+        `<span${c.error ? ' style="color:var(--err-text);"' : ''}>❌ Lỗi: <b>${c.error || 0}</b></span>` +
         `<span>🗑 Đã dọn: <b>${c.deleted || 0}</b></span>`;
 
       const selCam = document.getElementById("drvNowCam");
@@ -4747,14 +4778,14 @@
       const rec = document.getElementById("drvRecent");
       rec.innerHTML = (d.recent && d.recent.length) ? d.recent.map(r => {
         const st = DRV_STATUS[r.status] || r.status;
-        const color = r.status === "done" ? "#10b981" : r.status === "error" ? "#f87171"
-                    : r.status === "deleted" ? "#64748b" : r.status === "skipped" ? "#64748b" : "#fbbf24";
+        const color = r.status === "done" ? "var(--ok-text)" : r.status === "error" ? "var(--err-text)"
+                    : r.status === "deleted" ? "var(--text-dim)" : r.status === "skipped" ? "var(--text-dim)" : "var(--warn-text)";
         const camName = (d.cameras_all.find(x => x.id === r.cam_id) || {}).name || r.cam_id;
         return `<div class="audit-line"><span class="ts" style="flex:none;">${new Date((r.ts || 0) * 1000).toLocaleString("vi-VN")}</span>`
           + `<span style="flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(camName)} · ${esc(r.name)}</span>`
           + `<span style="flex:none;">${drvFmtBytes(r.size)}</span>`
           + `<span style="flex:none;color:${color};" title="${esc(r.error || "")}">${st}</span></div>`;
-      }).join("") : '<div style="padding:10px;color:#64748b;font-size:12.5px;">Chưa có file nào được đưa lên Drive.</div>';
+      }).join("") : '<div style="padding:10px;color:var(--text-dim);font-size:12.5px;">Chưa có file nào được đưa lên Drive.</div>';
     }
 
     async function driveConnectStart() {
