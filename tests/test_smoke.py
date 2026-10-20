@@ -107,6 +107,27 @@ class ApiTests(_AppCase):
         self.assertIn("running", r.json())
         self.assertEqual(self.client.get("/api/play/cam1/nope.mp4", headers=auth()).status_code, 404)
 
+    def test_recording_days_and_camera_test_api(self):
+        payload = {"cam_id": "calcam", "name": "Cal", "rtsp_url": "rtsp://127.0.0.1:1/x",
+                   "record_mode": "off"}
+        self.assertEqual(self.client.post("/api/cameras", json=payload, headers=auth()).status_code, 200)
+        cam_dir = os.path.join(self.m.RECORDINGS_DIR, "calcam")
+        os.makedirs(cam_dir, exist_ok=True)
+        fname = "2026-05-04_08-00-00.mp4"
+        with open(os.path.join(cam_dir, fname), "wb") as f:
+            f.write(b"")
+        r = self.client.get("/api/recording_days/calcam?month=2026-05", headers=auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["days"], ["2026-05-04"])
+        self.assertEqual(self.client.get("/api/recording_days/calcam?month=2026-13",
+                                         headers=auth()).status_code, 400)
+        self.assertEqual(self.client.post("/api/cameras/test", json={"rtsp_url": ""},
+                                          headers=auth()).status_code, 400)
+        self.assertEqual(self.client.post("/api/cameras/test", json={"rtsp_url": "ftp://x"},
+                                          headers=auth()).status_code, 400)
+        self.assertFalse(self.m.camera_offline_state("calcam")["expected"])
+        self.client.delete("/api/cameras/calcam", headers=auth())
+
     def test_stats(self):
         r = self.client.get("/api/stats", headers=auth())
         self.assertEqual(r.status_code, 200)

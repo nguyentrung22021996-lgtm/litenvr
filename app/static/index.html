@@ -212,6 +212,7 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
+      position: relative;
     }
 
     .date-nav input[type="date"] {
@@ -220,6 +221,135 @@
 
     .date-nav .icon-btn {
       padding: 7px 9px;
+    }
+
+    .cal-pop {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 60;
+      width: 272px;
+      max-width: calc(100vw - 24px);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    .cal-pop[hidden] {
+      display: none;
+    }
+
+    .cal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
+    .cal-head strong {
+      font-size: 13.5px;
+    }
+
+    .cal-head .icon-btn {
+      padding: 4px 9px;
+    }
+
+    .cal-week,
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 2px;
+    }
+
+    .cal-week span {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 3px 0;
+    }
+
+    .cal-day {
+      position: relative;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-main);
+      border-radius: 7px;
+      padding: 6px 0;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+
+    .cal-day:hover {
+      background: var(--glass-hi);
+      border-color: var(--border-subtle);
+    }
+
+    .cal-day:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
+    .cal-day.is-today {
+      border-color: var(--accent);
+    }
+
+    .cal-day.is-sel {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .cal-day.has-rec::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: 2px;
+      transform: translateX(-50%);
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--accent-green);
+    }
+
+    .cal-day.is-sel.has-rec::after {
+      background: #fff;
+    }
+
+    .cal-day.cal-blank {
+      visibility: hidden;
+      cursor: default;
+    }
+
+    .cal-legend {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 7px;
+    }
+
+    .cal-legend i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      display: inline-block;
+    }
+
+    .cam-test-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: -4px 0 10px;
+    }
+
+    .cam-test-row #camTestResult {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      line-height: 1.4;
     }
 
     #statusText {
@@ -514,6 +644,27 @@
     .cam-tile.active {
       border-color: var(--accent-red);
       box-shadow: 0 0 0 1px var(--accent-red), 0 10px 24px rgba(229, 57, 53, 0.25);
+    }
+
+    .cam-tile.offline {
+      border-color: rgba(229, 57, 53, 0.65);
+    }
+
+    .cam-tile .tile-offline {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      z-index: 2;
+      background: rgba(229, 57, 53, 0.92);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 7px;
+      border-radius: 99px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
     }
 
     .cam-tile img {
@@ -1397,6 +1548,17 @@
         <input type="date" id="dateInput" aria-label="Chọn ngày xem lại">
         <button class="icon-btn" onclick="shiftDate(1, event)" title="Tới 1 ngày (Shift: 7 ngày)" aria-label="Tới 1 ngày">▶</button>
         <button class="icon-btn" onclick="goToday()" title="Về hôm nay" aria-label="Về hôm nay">⌂</button>
+        <button class="icon-btn" id="toggleCalendarBtn" onclick="toggleCalendar(event)" aria-haspopup="true" aria-expanded="false" aria-controls="calendarPop" data-perm="playback" title="Lịch ngày có bản ghi" aria-label="Mở lịch ngày có bản ghi">📅</button>
+        <div class="cal-pop" id="calendarPop" hidden role="dialog" aria-label="Lịch ngày có bản ghi">
+          <div class="cal-head">
+            <button class="icon-btn" onclick="shiftCalMonth(-1)" aria-label="Tháng trước">‹</button>
+            <strong id="calTitle"></strong>
+            <button class="icon-btn" id="calNext" onclick="shiftCalMonth(1)" aria-label="Tháng sau">›</button>
+          </div>
+          <div class="cal-week" aria-hidden="true"><span>T2</span><span>T3</span><span>T4</span><span>T5</span><span>T6</span><span>T7</span><span>CN</span></div>
+          <div class="cal-grid" id="calGrid" role="group" aria-label="Các ngày trong tháng"></div>
+          <div class="cal-legend"><i></i> Ngày có bản ghi</div>
+        </div>
       </div>
       <button id="btnLive" class="active" onclick="playLive()" data-perm="live">Trực tiếp</button>
       <button id="btnGrid" onclick="toggleGrid()" data-perm="live">⊞ Lưới</button>
@@ -1502,6 +1664,8 @@
     </div>
     <div class="rec-tools">
       <div class="tool-group">
+        <button onclick="jumpEvent(-1)" data-perm="playback" title="Sự kiện trước (←)" aria-label="Sự kiện trước">⏮</button>
+        <button onclick="jumpEvent(1)" data-perm="playback" title="Sự kiện sau (→)" aria-label="Sự kiện sau">⏭</button>
         <button onclick="togglePtz()" title="Điều khiển xoay camera (ONVIF PTZ)" data-perm="ptz">🎮 PTZ</button>
         <button onclick="lockCurrent()" title="Khoá đoạn bản ghi tại con trỏ để không bị xoá tự động" data-perm="lock">🔒 Khoá</button>
         <button onclick="unlockCurrent()" title="Mở khoá đoạn bản ghi tại con trỏ" data-perm="lock">🔓 Mở khoá</button>
@@ -1675,6 +1839,10 @@
       <div class="form-row">
         <label>Luồng chính (RTSP / HTTP-MJPEG / RTMP / HLS - dùng để ghi hình):</label>
         <input id="inpRtsp" placeholder="rtsp://admin:pass@192.168.1.100:554/... hoặc http://ip/video.mjpg">
+      </div>
+      <div class="cam-test-row">
+        <button type="button" id="btnTestCam" onclick="testCamUrl()">🔍 Kiểm tra</button>
+        <span id="camTestResult" role="status" aria-live="polite"></span>
       </div>
       <div class="form-row">
         <label>Luồng phụ (Tùy chọn giúp xem Live nhẹ hơn - cũng hỗ trợ RTSP/HTTP):</label>
@@ -1921,7 +2089,7 @@
   <!-- Modal Thông báo chuyển động -->
   <div class="modal" id="notifyModal">
     <div class="modal-box">
-      <h3 style="margin-top:0">🔔 Thông báo khi có chuyển động</h3>
+      <h3 style="margin-top:0">🔔 Thông báo chuyển động &amp; sự cố camera</h3>
       <div class="form-row">
         <label style="flex-direction:row; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" id="ntEnabled" style="width:auto;">
@@ -1944,6 +2112,9 @@
         <label>Webhook URL (tùy chọn - nhận POST JSON, dùng cho Node-RED/HASS/n8n):</label>
         <input id="ntWebhook" placeholder="http://...">
       </div>
+      <label class="log-chk" style="font-size:13px; margin-bottom:10px;">
+        <input type="checkbox" id="ntCamOffline"> Cảnh báo camera mất kết nối khi đang ghi hình (sau 60 giây)
+      </label>
       <div class="form-row">
         <label>Địa chỉ LiteNVR để tạo link "Xem lại" (tùy chọn, VD http://192.168.5.63:9895):</label>
         <input id="ntPublicUrl" placeholder="http://192.168.5.63:9895">
@@ -2153,6 +2324,9 @@
     function todayStr() { return ymd(new Date()); }
     dateInput.value = todayStr();
     let liveWaitSeq = 0;
+    let dayEvents = [];
+    const camOffline = {};
+    let calYear = 0, calMonth = 0, calDays = new Set(), calLoadKey = "", calDaysKey = "";
 
     function shiftDate(delta, e) {
       let d = dateInput.value ? new Date(dateInput.value + "T00:00:00") : new Date();
@@ -2161,12 +2335,106 @@
       const v = ymd(d);
       if (v > todayStr()) return;
       dateInput.value = v;
+      closeCalendar();
       loadTimeline();
       updateDateBadge();
     }
 
     function goToday() {
       dateInput.value = todayStr();
+      closeCalendar();
+      loadTimeline();
+      updateDateBadge();
+    }
+
+    function closeCalendar() {
+      const pop = document.getElementById("calendarPop");
+      if (!pop) return;
+      pop.hidden = true;
+      const btn = document.getElementById("toggleCalendarBtn");
+      if (btn) btn.setAttribute("aria-expanded", "false");
+    }
+
+    function toggleCalendar(e) {
+      if (e) e.stopPropagation();
+      const pop = document.getElementById("calendarPop");
+      const show = pop.hidden;
+      closePopovers(pop);
+      if (!show) { closeCalendar(); return; }
+      const d = dateInput.value ? new Date(dateInput.value + "T00:00:00") : new Date();
+      calYear = isNaN(d.getTime()) ? new Date().getFullYear() : d.getFullYear();
+      calMonth = isNaN(d.getTime()) ? new Date().getMonth() : d.getMonth();
+      pop.hidden = false;
+      document.getElementById("toggleCalendarBtn").setAttribute("aria-expanded", "true");
+      renderCalendar();
+      loadCalDays();
+    }
+
+    function shiftCalMonth(delta) {
+      const now = new Date();
+      let y = calYear, m = calMonth + delta;
+      y += Math.floor(m / 12);
+      m = ((m % 12) + 12) % 12;
+      if (y > now.getFullYear() || (y === now.getFullYear() && m > now.getMonth())) return;
+      calYear = y; calMonth = m;
+      renderCalendar();
+      loadCalDays();
+    }
+
+    function renderCalendar() {
+      const grid = document.getElementById("calGrid");
+      if (!grid) return;
+      const first = new Date(calYear, calMonth, 1);
+      const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+      const lead = (first.getDay() + 6) % 7;
+      const today = todayStr();
+      const selected = dateInput.value;
+      const monthVal = `${calYear}-${String(calMonth + 1).padStart(2, "0")}`;
+      document.getElementById("calTitle").textContent = "Tháng " + (calMonth + 1) + " / " + calYear;
+      const next = document.getElementById("calNext");
+      const now = new Date();
+      if (next) next.disabled = calYear === now.getFullYear() && calMonth === now.getMonth();
+      let html = "";
+      for (let i = 0; i < lead; i++) html += '<button class="cal-day cal-blank" tabindex="-1" aria-hidden="true"></button>';
+      for (let day = 1; day <= daysInMonth; day++) {
+        const key = `${monthVal}-${String(day).padStart(2, "0")}`;
+        const cls = ["cal-day"];
+        if (calDays.has(key)) cls.push("has-rec");
+        if (key === today) cls.push("is-today");
+        if (key === selected) cls.push("is-sel");
+        const label = `${day}/${calMonth + 1}/${calYear}` + (calDays.has(key) ? ", có bản ghi" : "");
+        html += `<button class="${cls.join(" ")}" ${key > today ? "disabled" : ""} aria-label="${label}" onclick="pickCalDay('${key}')">${day}</button>`;
+      }
+      grid.innerHTML = html;
+    }
+
+    async function loadCalDays() {
+      const cam = currentCam;
+      const month = `${calYear}-${String(calMonth + 1).padStart(2, "0")}`;
+      const key = cam + "|" + month;
+      calLoadKey = key;
+      if (calDaysKey !== key) {
+        calDaysKey = key;
+        calDays = new Set();
+        renderCalendar();
+      }
+      try {
+        const res = await fetch(`api/recording_days/${encodeURIComponent(cam)}?month=${month}`);
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (calLoadKey !== key) return;
+        calDays = new Set(data.days || []);
+      } catch (e) {
+        if (calLoadKey !== key) return;
+        calDays = new Set();
+      }
+      renderCalendar();
+    }
+
+    function pickCalDay(value) {
+      if (!value || value > todayStr()) return;
+      dateInput.value = value;
+      closeCalendar();
       loadTimeline();
       updateDateBadge();
     }
@@ -2266,16 +2534,39 @@
         tile.setAttribute("role", "button");
         tile.setAttribute("aria-label", "Chọn camera " + info.name);
         const modeTxt = info.schedule_enabled ? "Lịch" : (info.record_mode === "motion" ? "Motion" : (info.record_mode === "off" ? "Live" : "24/7"));
+        const off = !!camOffline[id];
+        tile.classList.toggle("offline", off);
+        if (off) tile.setAttribute("aria-label", "Chọn camera " + info.name + " (mất kết nối)");
         const snap = info._snapshot
           ? `<img src="${info._snapshot}" alt="">`
           : `<div class="tile-noimg">Không có ảnh</div>`;
         tile.innerHTML = `${snap}
+          ${off ? '<span class="tile-offline">● Mất kết nối</span>' : ""}
           <div class="tile-info"><span>${info.name}</span><span class="badge ${info.record_mode === 'motion' ? 'motion' : (info.record_mode === 'off' ? 'off' : '')}">${modeTxt}</span></div>`;
         const pick = () => { currentCam = id; document.getElementById("camSelect").value = id; renderCamStrip(stats); loadTimeline(); playLive(); };
         tile.onclick = pick;
         tile.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
         strip.appendChild(tile);
       }
+    }
+
+    async function refreshCamStatuses() {
+      const ids = Object.keys(cameras);
+      if (!ids.length) return;
+      const rows = await Promise.all(ids.map(async (id) => {
+        try {
+          const r = await fetch(`api/status/${encodeURIComponent(id)}`);
+          return [id, r.ok ? await r.json() : null];
+        } catch (e) {
+          return [id, null];
+        }
+      }));
+      let changed = false;
+      rows.forEach(([id, st]) => {
+        const off = !!(st && st.offline);
+        if (camOffline[id] !== off) { camOffline[id] = off; changed = true; }
+      });
+      if (changed) renderCamStrip();
     }
 
     async function init() {
@@ -2307,7 +2598,7 @@
         return;
       }
       currentCam = sel.value;
-      sel.onchange = () => { currentCam = sel.value; renderCamStrip(); loadTimeline(); playLive(); };
+      sel.onchange = () => { currentCam = sel.value; closeCalendar(); renderCamStrip(); loadTimeline(); playLive(); };
       dateInput.onchange = () => { loadTimeline(); updateDateBadge(); };
       initScrubber();
       video.addEventListener("timeupdate", () => {
@@ -2318,9 +2609,11 @@
       });
       await refreshSnapshots();
       renderCamStrip();
+      refreshCamStatuses();
       await loadStats();
       setInterval(loadStats, 5000);
       setInterval(refreshSnapshots, 30000);
+      setInterval(refreshCamStatuses, 15000);
       // Khi đang xem trực tiếp, tự cập nhật danh sách sự kiện để ảnh chuyển động mới hiện ra.
       setInterval(() => {
         const searching = (document.getElementById("evtSearchQ") || {}).value;
@@ -2405,6 +2698,8 @@
         box.appendChild(div);
       }
       updateStorageHint();
+      const testOut = document.getElementById("camTestResult");
+      if (testOut) testOut.textContent = "";
       document.getElementById("camModal").classList.add("open");
     }
     function closeCamModal() { document.getElementById("camModal").classList.remove("open"); }
@@ -2558,6 +2853,46 @@
           mode: r.querySelector(".s-mode").value
         };
       });
+    }
+
+    async function testCamUrl() {
+      const url = document.getElementById("inpRtsp").value.trim();
+      const out = document.getElementById("camTestResult");
+      const btn = document.getElementById("btnTestCam");
+      if (!url) {
+        out.style.color = "#f87171";
+        out.textContent = "Chưa nhập URL camera";
+        return;
+      }
+      btn.disabled = true;
+      out.style.color = "#94a3b8";
+      out.textContent = "⏳ Đang kiểm tra luồng...";
+      try {
+        const res = await fetch("api/cameras/test", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            rtsp_url: url,
+            rtsp_transport: document.getElementById("inpTransport").value
+          })
+        });
+        let d = {};
+        try { d = await res.json(); } catch (e) {}
+        if (!res.ok) throw new Error(d.detail || ("HTTP " + res.status));
+        const meta = [
+          (d.codec || "").toUpperCase(),
+          (d.width && d.height) ? d.width + "×" + d.height : "",
+          d.fps ? d.fps + " fps" : ""
+        ].filter(Boolean).join(" · ");
+        out.style.color = d.browser_safe ? "#10b981" : "#f59e0b";
+        out.textContent = (d.browser_safe ? "✅ " : "⚠️ ") + meta +
+          (d.browser_safe ? " — phát trực tiếp OK" : " — sẽ chuyển mã sang H.264");
+      } catch (e) {
+        out.style.color = "#f87171";
+        out.textContent = "❌ " + e.message;
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     async function saveCamera() {
@@ -2913,9 +3248,11 @@
       if (!currentCam) return;
       updateDateBadge();
       const res = await fetch(`api/timeline/${encodeURIComponent(currentCam)}?date=${dateInput.value}`);
-      if (!res.ok) { segments = []; return; }
+      if (!res.ok) { segments = []; dayEvents = []; return; }
       const data = await res.json();
       segments = data.segments || [];
+      dayEvents = data.events || [];
+      if (!document.getElementById("calendarPop").hidden) loadCalDays();
       const segLayer = document.getElementById("segLayer");
       const evtLayer = document.getElementById("evtLayer");
       const motionLayer = document.getElementById("motionLayer");
@@ -3172,6 +3509,43 @@
       const v = document.getElementById("videoPlayer");
       if (v && v.scrollIntoView) v.scrollIntoView({behavior: "smooth", block: "center"});
     }
+
+    function jumpEvent(dir) {
+      if (!currentCam) return;
+      const secs = [...new Set(dayEvents.map(e => e.sec_of_day))].sort((a, b) => a - b);
+      if (!secs.length) {
+        document.getElementById("statusText").textContent = "Không có sự kiện trong ngày";
+        return;
+      }
+      const now = new Date();
+      const isToday = dateInput.value === todayStr();
+      const cur = (liveMode && isToday)
+        ? now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()
+        : (lastCursorSec || 0);
+      let target = null;
+      if (dir < 0) {
+        target = [...secs].reverse().find(s => s < cur - 1);
+        if (target == null && liveMode) target = secs[secs.length - 1];
+      } else {
+        target = secs.find(s => s > cur + 1);
+      }
+      if (target == null) {
+        document.getElementById("statusText").textContent =
+          dir < 0 ? "Không còn sự kiện trước" : "Không còn sự kiện sau";
+        return;
+      }
+      playAtSecond(target);
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const t = e.target;
+      if (t && t.closest && t.closest("input, select, textarea, [contenteditable='true']")) return;
+      if (document.querySelector(".modal.open")) return;
+      e.preventDefault();
+      jumpEvent(e.key === "ArrowRight" ? 1 : -1);
+    });
 
     function playAtSecond(targetSec) {
       if (hls) { hls.destroy(); hls = null; }
@@ -3634,6 +4008,7 @@
       document.getElementById("ntPhoto").checked = cfg.with_photo !== false;
       document.getElementById("ntWebhook").value = cfg.webhook_url || "";
       document.getElementById("ntPublicUrl").value = cfg.public_url || "";
+      document.getElementById("ntCamOffline").checked = cfg.camera_offline_alert !== false;
       document.getElementById("ntDiskAlert").checked = !!cfg.disk_alert_enabled;
       document.getElementById("ntDiskWarn").value = cfg.disk_warn_percent || 85;
       document.getElementById("ntDiskCrit").value = cfg.disk_crit_percent || 95;
@@ -3669,6 +4044,7 @@
         webhook_url: document.getElementById("ntWebhook").value.trim(),
         public_url: document.getElementById("ntPublicUrl").value.trim(),
         with_photo: document.getElementById("ntPhoto").checked,
+        camera_offline_alert: document.getElementById("ntCamOffline").checked,
         disk_alert_enabled: document.getElementById("ntDiskAlert").checked,
         disk_warn_percent: parseFloat(document.getElementById("ntDiskWarn").value) || 85,
         disk_crit_percent: parseFloat(document.getElementById("ntDiskCrit").value) || 95
@@ -3874,7 +4250,7 @@
       document.getElementById("btnMenu").setAttribute("aria-expanded", "false");
     }
     document.getElementById("tbMain").addEventListener("click", (e) => {
-      if (e.target.closest('[aria-haspopup="true"]')) return;
+      if (e.target.closest('[aria-haspopup="true"]') || e.target.closest(".date-nav")) return;
       if (e.target.closest("button") && window.innerWidth <= 960) closeMenu();
     });
     window.addEventListener("resize", () => {
@@ -3932,7 +4308,7 @@
     }
 
     function closePopovers(except) {
-      [["settingsMenu", "toggleSettingsBtn"], ["accentMenu", "toggleAccentBtn"]].forEach(([id]) => {
+      [["settingsMenu", "toggleSettingsBtn"], ["accentMenu", "toggleAccentBtn"], ["calendarPop", "toggleCalendarBtn"]].forEach(([id]) => {
         const el = document.getElementById(id);
         if (el && el !== except) {
           el.hidden = true;
@@ -3961,7 +4337,7 @@
     }
 
     document.addEventListener("click", (e) => {
-      if (e.target.closest('[aria-haspopup="true"]')) return;
+      if (e.target.closest('[aria-haspopup="true"]') || e.target.closest(".cal-pop")) return;
       closePopovers();
     });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePopovers(); });

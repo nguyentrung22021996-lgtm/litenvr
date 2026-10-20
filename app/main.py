@@ -219,6 +219,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=stats_sampler, daemon=True).start()
     threading.Thread(target=live_supervisor, daemon=True).start()
     threading.Thread(target=stream_health_supervisor, daemon=True).start()
+    threading.Thread(target=camera_offline_supervisor, daemon=True).start()
     threading.Thread(target=disk_alert_supervisor, daemon=True).start()
     threading.Thread(target=go2rtc_monitor, daemon=True).start()
     try:
@@ -342,7 +343,8 @@ DEFAULT_CONFIG = {
         "with_photo": True,
         "disk_alert_enabled": False,
         "disk_warn_percent": 85,
-        "disk_crit_percent": 95
+        "disk_crit_percent": 95,
+        "camera_offline_alert": True
     },
     "gdrive": {
         "enabled": False,
@@ -892,7 +894,7 @@ def path_permission(request: Request) -> Optional[str]:
         return "live"
     if path.startswith(("/api/stats", "/api/status/")):
         return "live"
-    if path.startswith(("/api/play/", "/api/timeline/", "/api/events", "/api/thumb/",
+    if path.startswith(("/api/play/", "/api/timeline/", "/api/recording_days/", "/api/events", "/api/thumb/",
                         "/recordings/", "/snapshots/", "/api/latest_snapshots")):
         return "playback"
     if path.startswith("/api/export/"):
@@ -975,6 +977,9 @@ motion_active_until: Dict[str, float] = {}
 cam_status: Dict[str, dict] = {}
 # Sức khoẻ luồng theo camera (fps, lần nhận khung gần nhất, đứng/không)
 cam_health: Dict[str, dict] = {}
+# Trạng thái mất kết nối camera (chỉ báo khi camera cần chạy ghi hình)
+_cam_offline: Dict[str, dict] = {}
+_cam_offline_lock = threading.Lock()
 # Cache codec đã dò được: cam_id -> (url_key, codec_name)
 codec_cache: Dict[str, tuple] = {}
 
@@ -1817,6 +1822,71 @@ def stream_health_supervisor():
         _shutdown.wait(10)
 
 
+CAMERA_OFFLINE_ALERT_SEC = int(os.environ.get("CAMERA_OFFLINE_ALERT_SEC", "60") or "60")
+
+
+def camera_offline_state(cam_id: str) -> dict:
+    """Trạng thái mất kết nối hiện tại của camera (dùng chung cho API và cảnh báo)."""
+    info = (CONFIG.get("cameras") or {}).get(cam_id) or {}
+    expected = bool(info) and schedule_record_mode(info) != "off"
+    with _cam_offline_lock:
+        rec = dict(_cam_offline.get(cam_id) or {})
+    down_since = float(rec.get("down_since") or 0)
+    offline = bool(expected and down_since and time.time() - down_since >= 20)
+    return {"expected": expected, "offline": offline,
+            "down_since": int(down_since) if down_since else 0,
+            "alerted": bool(rec.get("alerted"))}
+
+
+def camera_offline_supervisor():
+    """Báo Telegram/webhook khi camera cần ghi hình mất kết nối quá lâu, báo lại khi hồi phục."""
+    while not _shutdown.is_set():
+        try:
+            now = time.time()
+            cfg = CONFIG.get("notify") or {}
+            alerts_on = bool(cfg.get("camera_offline_alert", True))
+            with worker_lock:
+                procs = dict(ffmpeg_processes)
+            for cam_id, info in list((CONFIG.get("cameras") or {}).items()):
+                expected = schedule_record_mode(info) != "off"
+                proc = procs.get(cam_id)
+                alive = bool(proc and proc.poll() is None and cam_status.get(cam_id, {}).get("running"))
+                with _cam_offline_lock:
+                    rec = _cam_offline.setdefault(cam_id, {"down_since": 0, "alerted": False})
+                    if not expected:
+                        rec["down_since"] = 0
+                        rec["alerted"] = False
+                        continue
+                    if alive:
+                        was_alerted = bool(rec.get("alerted"))
+                        down_since = float(rec.get("down_since") or 0)
+                        rec["down_since"] = 0
+                        rec["alerted"] = False
+                        if was_alerted and alerts_on:
+                            name = info.get("name", cam_id)
+                            mins = max(1, int((now - down_since) / 60))
+                            threading.Thread(
+                                target=send_alert,
+                                args=(f"✅ {name}: đã kết nối lại sau {mins} phút.",),
+                                daemon=True).start()
+                        continue
+                    if not rec.get("down_since"):
+                        rec["down_since"] = now
+                    down_for = now - float(rec["down_since"])
+                    if alerts_on and not rec.get("alerted") and down_for >= CAMERA_OFFLINE_ALERT_SEC:
+                        rec["alerted"] = True
+                        name = info.get("name", cam_id)
+                        err = (cam_status.get(cam_id, {}).get("last_error") or "").strip()
+                        text = (f"⚠️ {name}: mất kết nối hơn {max(1, int(down_for / 60))} phút.")
+                        if err:
+                            text += f"\nLỗi: {mask_secrets(err)[:300]}"
+                        log_event("warn", f"Camera mất kết nối > {int(down_for)}s, đã gửi cảnh báo", cam_id)
+                        threading.Thread(target=send_alert, args=(text,), daemon=True).start()
+        except Exception as e:
+            log_event("warn", f"camera_offline_supervisor: {mask_secrets(str(e))}")
+        _shutdown.wait(10)
+
+
 def _camera_worker_loop(cam_id: str, token: threading.Event):
     backoff = 2
     st = cam_status.setdefault(cam_id, {})
@@ -2322,6 +2392,7 @@ class NotifySettings(BaseModel):
     disk_alert_enabled: bool = False
     disk_warn_percent: float = 85
     disk_crit_percent: float = 95
+    camera_offline_alert: bool = True
 
 class PtzCmd(BaseModel):
     action: str                      # up|down|left|right|upleft|upright|downleft|downright|zoomin|zoomout|home|stop|preset
@@ -2333,6 +2404,10 @@ class LockReq(BaseModel):
     cam_id: str
     file: str
     note: str = ""
+
+class CameraTestReq(BaseModel):
+    rtsp_url: str
+    rtsp_transport: str = "tcp"
 
 class OnvifProbeReq(BaseModel):
     host: str
@@ -2704,6 +2779,62 @@ def api_onvif_probe(req: OnvifProbeReq):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"ONVIF probe lỗi: {e}")
 
+@app.post("/api/cameras/test")
+def test_camera_stream(req: CameraTestReq):
+    """Kiểm tra nhanh URL camera bằng ffprobe (codec/độ phân giải/fps) trước khi lưu."""
+    url = (req.rtsp_url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Chưa nhập URL camera")
+    if not re.match(r"^(rtsp|rtsps|http|https|rtmp|rtmps)://", url, re.I):
+        raise HTTPException(status_code=400, detail="URL phải bắt đầu bằng rtsp://, http://, rtmp://...")
+    transport = req.rtsp_transport if req.rtsp_transport in ("tcp", "udp") else "tcp"
+    cmd = [
+        "ffprobe", "-v", "error",
+        *_input_args(url, {"rtsp_transport": transport}),
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name,profile,pix_fmt,width,height,avg_frame_rate:format=duration,format_name",
+        "-of", "json",
+        url,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Quá thời gian 12s: camera không phản hồi hoặc sai URL")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Không tìm thấy ffprobe trên máy chủ")
+    data = {}
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except ValueError:
+        data = {}
+    streams = data.get("streams") or []
+    info = streams[0] if streams else {}
+    codec = (info.get("codec_name") or "").lower()
+    if not codec:
+        err = (proc.stderr or "").strip().splitlines()
+        detail = mask_secrets(" | ".join(err[-3:])[:400]) if err else "Không đọc được luồng video"
+        raise HTTPException(status_code=502, detail=f"Không mở được luồng: {detail}")
+    pix_fmt = (info.get("pix_fmt") or "").lower()
+    profile = (info.get("profile") or "").lower()
+    fps = 0.0
+    try:
+        num, _, den = (info.get("avg_frame_rate") or "0/1").partition("/")
+        fps = round(float(num) / float(den or 1), 1)
+    except (TypeError, ValueError, ZeroDivisionError):
+        fps = 0.0
+    browser_safe = _is_browser_safe_h264(codec, pix_fmt)
+    return {
+        "ok": True,
+        "codec": codec,
+        "profile": profile,
+        "pix_fmt": pix_fmt,
+        "width": int(info.get("width") or 0),
+        "height": int(info.get("height") or 0),
+        "fps": fps,
+        "browser_safe": browser_safe,
+        "format": (data.get("format") or {}).get("format_name", ""),
+    }
+
 @app.post("/api/live/{cam_id}")
 def api_live_heartbeat(cam_id: str):
     if cam_id not in CONFIG.get("cameras", {}):
@@ -2725,6 +2856,8 @@ def delete_camera(cam_id: str):
         del CONFIG["cameras"][cam_id]
         codec_cache.pop(cam_id, None)
         cam_status.pop(cam_id, None)
+        with _cam_offline_lock:
+            _cam_offline.pop(cam_id, None)
         save_config(CONFIG)
         refresh_go2rtc()
     return {"status": "ok"}
@@ -3365,6 +3498,30 @@ def get_timeline(cam_id: str, date: str):
         "post_motion_sec": CONFIG.get("post_motion_sec", 60),
     }
 
+@app.get("/api/recording_days/{cam_id}")
+def get_recording_days(cam_id: str, month: str):
+    """Các ngày có bản ghi trong tháng YYYY-MM (ổ cứng + đã tải lên Drive)."""
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month or ""):
+        raise HTTPException(status_code=400, detail="Tháng không hợp lệ (YYYY-MM)")
+    days = set()
+    cam_rec_dir = os.path.join(RECORDINGS_DIR, cam_id)
+    try:
+        for fname in os.listdir(cam_rec_dir):
+            if fname.startswith(month + "-") and fname.endswith(".mp4"):
+                days.add(fname[:10])
+    except OSError:
+        pass
+    try:
+        rows = db_conn().execute(
+            "SELECT name FROM drive_uploads WHERE cam_id=? AND status='done' AND name GLOB ?",
+            (cam_id, month + "-*.mp4")).fetchall()
+    except Exception:
+        rows = []
+    for (fname,) in rows:
+        if len(fname) >= 10 and fname[4] == "-" and fname[7] == "-":
+            days.add(fname[:10])
+    return {"month": month, "days": sorted(days)}
+
 _thumb_slots = threading.BoundedSemaphore(2)
 
 
@@ -3546,6 +3703,7 @@ def get_notify_settings():
         "disk_alert_enabled": bool(nt.get("disk_alert_enabled", False)),
         "disk_warn_percent": float(nt.get("disk_warn_percent", 85) or 85),
         "disk_crit_percent": float(nt.get("disk_crit_percent", 95) or 95),
+        "camera_offline_alert": bool(nt.get("camera_offline_alert", True)),
     }
 
 @app.post("/api/notify")
@@ -3561,6 +3719,7 @@ def update_notify_settings(settings: NotifySettings):
     nt["disk_alert_enabled"] = settings.disk_alert_enabled
     nt["disk_warn_percent"] = float(settings.disk_warn_percent or 85)
     nt["disk_crit_percent"] = float(settings.disk_crit_percent or 95)
+    nt["camera_offline_alert"] = settings.camera_offline_alert
     save_config(CONFIG)
     log_event("info", "Đã lưu cấu hình thông báo")
     return {"status": "ok"}
@@ -4997,8 +5156,12 @@ def get_cam_status(cam_id: str, request: Request):
     logs = list(st.get("log", []))
     if AUTH_ENABLED and u.get("role") != "admin":
         logs = [mask_secrets(x) for x in logs]
+    off = camera_offline_state(cam_id)
     return {
         "running": bool(st.get("running")),
+        "expected": off["expected"],
+        "offline": off["offline"],
+        "offline_since": off["down_since"],
         "hls_ready": hls_ready,
         "detected_codec": st.get("detected_codec", ""),
         "detected_profile": st.get("detected_profile", ""),
