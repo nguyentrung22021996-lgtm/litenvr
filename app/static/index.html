@@ -296,6 +296,16 @@
       border-color: var(--border-subtle);
     }
 
+    .menu-group {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .menu-group[hidden] {
+      display: none;
+    }
+
     .menu-group-label {
       padding: 6px 10px 2px;
       font-size: 10.5px;
@@ -808,7 +818,9 @@
       border-radius: var(--radius-md);
     }
 
-    .export-panel[hidden] {
+    .export-panel[hidden],
+    .pb-tools[hidden],
+    .export-wrap[hidden] {
       display: none;
     }
 
@@ -1372,23 +1384,31 @@
       <div class="menu-wrap">
         <button class="icon-btn" onclick="toggleSettings(event)" title="Cài đặt" aria-label="Cài đặt" aria-haspopup="true" aria-expanded="false">⚙️</button>
         <div class="settings-menu" id="settingsMenu" hidden role="menu">
-          <div class="menu-group-label" role="presentation">Camera</div>
-          <button onclick="openCamModal()" data-admin>📷 Quản lý Camera</button>
-          <button onclick="testMotion()" data-admin data-perm="live">⚡ Test Motion</button>
+          <div class="menu-group" role="presentation">
+            <div class="menu-group-label">Camera</div>
+            <button onclick="openCamModal()" data-admin>📷 Quản lý Camera</button>
+            <button onclick="testMotion()" data-admin data-perm="live">⚡ Test Motion</button>
+          </div>
           <div class="menu-sep" role="presentation"></div>
-          <div class="menu-group-label" role="presentation">Lưu trữ</div>
-          <button onclick="openStorageModal()" data-admin>⚙️ Lưu trữ</button>
-          <button onclick="openDriveModal()" data-admin>☁️ Google Drive <span id="driveBadge" class="log-badge" hidden>0</span></button>
-          <button onclick="openBackupModal()" data-admin>💾 Sao lưu SMB/NFS/FTP</button>
+          <div class="menu-group" role="presentation">
+            <div class="menu-group-label">Lưu trữ</div>
+            <button onclick="openStorageModal()" data-admin>⚙️ Lưu trữ</button>
+            <button onclick="openDriveModal()" data-admin>☁️ Google Drive <span id="driveBadge" class="log-badge" hidden>0</span></button>
+            <button onclick="openBackupModal()" data-admin>💾 Sao lưu SMB/NFS/FTP</button>
+          </div>
           <div class="menu-sep" role="presentation"></div>
-          <div class="menu-group-label" role="presentation">Kết nối</div>
-          <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
-          <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
+          <div class="menu-group" role="presentation">
+            <div class="menu-group-label">Kết nối</div>
+            <button onclick="openHassModal()" data-admin>🛰️ Home Assistant</button>
+            <button onclick="openNotifyModal()" data-admin>🔔 Thông báo</button>
+          </div>
           <div class="menu-sep" role="presentation"></div>
-          <div class="menu-group-label" role="presentation">Hệ thống</div>
-          <button onclick="showDiagnostics()" data-admin>🔍 Chẩn đoán</button>
-          <button id="btnLogs" onclick="openLogsModal()" data-admin>📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
-          <button onclick="openSecModal()" title="Tài khoản, mật khẩu, 2FA &amp; nhật ký đăng nhập">🔐 Bảo mật</button>
+          <div class="menu-group" role="presentation">
+            <div class="menu-group-label">Hệ thống</div>
+            <button onclick="showDiagnostics()" data-admin>🔍 Chẩn đoán</button>
+            <button id="btnLogs" onclick="openLogsModal()" data-admin>📋 Nhật ký <span id="logBadge" class="log-badge" hidden>0</span></button>
+            <button onclick="openSecModal()" title="Tài khoản, mật khẩu, 2FA &amp; nhật ký đăng nhập">🔐 Bảo mật</button>
+          </div>
         </div>
       </div>
       <div class="menu-wrap">
@@ -3714,6 +3734,24 @@
       const admin = isAdmin();
       document.querySelectorAll("[data-admin]").forEach(el => { el.hidden = !admin; });
       document.querySelectorAll("[data-perm]").forEach(el => { el.hidden = !can(el.dataset.perm); });
+      const menuKids = [...document.querySelectorAll("#settingsMenu > .menu-group, #settingsMenu > .menu-sep")];
+      menuKids.forEach(el => {
+        if (el.classList.contains("menu-group")) {
+          el.hidden = ![...el.querySelectorAll("button")].some(b => !b.hidden);
+        }
+      });
+      menuKids.forEach(el => { if (el.classList.contains("menu-sep")) el.hidden = true; });
+      let seenGroup = false;
+      menuKids.forEach((el, i) => {
+        if (!el.classList.contains("menu-group") || el.hidden) return;
+        if (seenGroup) {
+          for (let j = i - 1; j >= 0; j--) {
+            if (menuKids[j].classList.contains("menu-sep")) { menuKids[j].hidden = false; break; }
+            if (menuKids[j].classList.contains("menu-group") && !menuKids[j].hidden) break;
+          }
+        }
+        seenGroup = true;
+      });
       document.getElementById("btnLogout").hidden = !!(ME && ME.auth_enabled === false);
       if (ME && !can("live")) {
         [".player-box", "#camStrip", "#gridView"].forEach(sel => {
