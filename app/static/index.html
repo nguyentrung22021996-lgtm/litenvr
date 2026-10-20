@@ -816,6 +816,53 @@
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
 
+    .tl-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 12px;
+      flex-wrap: wrap;
+      margin-bottom: 4px;
+    }
+
+    .tl-ticks {
+      display: flex;
+      justify-content: space-between;
+      flex: 1 1 260px;
+      min-width: 0;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .tl-ticks span { white-space: nowrap; }
+
+    .tl-zoom {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      background: var(--bg-elevated, rgba(2, 6, 23, 0.4));
+    }
+
+    .tl-zoom button {
+      padding: 4px 8px;
+      min-height: 26px;
+      font-size: 12px;
+      border-radius: 6px;
+      box-shadow: none;
+    }
+
+    .tl-zoom button.active {
+      background: rgba(var(--accent-rgb), 0.18);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .tl-zoom button:disabled { opacity: 0.35; cursor: default; }
+
     .timeline-bar {
       height: 30px;
       background: #0b0f17;
@@ -847,7 +894,7 @@
       position: absolute;
       top: 0;
       bottom: 0;
-      width: 0.25%;
+      width: 3px;
       background: #059669;
     }
 
@@ -1063,12 +1110,76 @@
     /* ================= EVENT SEARCH BAR ================= */
     #evtSearchBar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 14px; }
     #evtSearchQ { flex: 1; min-width: 170px; }
-    .evt-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; flex: 3 1 520px; }
-    .evt-filters select, .evt-filters input[type="date"] { min-width: 0; max-width: 100%; }
+    .evt-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; flex: 3 1 520px; }
+    .evt-filters select, .evt-filters input[type="date"] { min-width: 0; max-width: 100%; padding: 6px 9px; }
     .evt-filter-star { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-main); }
     .evt-filter-star input { width: auto; }
     #btnEvtFilters { display: none; }
     #btnEvtFilters.active-filter { border-color: var(--accent); color: var(--accent); }
+    .evt-presets { display: flex; gap: 6px; flex-wrap: wrap; grid-column: 1 / -1; }
+    .evt-presets button { padding: 4px 8px; font-size: 12.5px; min-height: 30px; }
+    .evt-presets button.active { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
+    .evt-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 0 14px 8px; }
+    .evt-chips[hidden] { display: none; }
+    .evt-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: 100%;
+      padding: 3px 5px 3px 9px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      background: var(--bg-elevated);
+      color: var(--text-main);
+      font-size: 12px;
+    }
+    .evt-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .evt-chip button {
+      width: 18px;
+      height: 18px;
+      min-height: 18px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1;
+      box-shadow: none;
+    }
+    .evt-chip button:hover { background: var(--bg-hover, rgba(148, 163, 184, 0.16)); color: var(--text-main); }
+    .evt-day-head {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 6px 0 -4px;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+    .evt-empty { grid-column: 1 / -1; color: var(--text-muted); padding: 12px 2px; }
+    .evt-day-head::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--border-subtle);
+    }
+    .evt-detail-box { max-width: 760px; }
+    .evt-detail-img {
+      display: block;
+      width: 100%;
+      max-height: 56vh;
+      object-fit: contain;
+      background: #020617;
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+    }
+    .evt-detail-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 14px 0 18px; font-size: 13px; color: var(--text-main); }
+    .evt-detail-meta b { color: var(--text-muted); font-weight: 600; }
+    .evt-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .evt-detail-actions .primary { margin-right: auto; }
 
     /* ================= EVENTS LIST GRID ================= */
     .events-list {
@@ -1098,6 +1209,8 @@
       box-shadow: 0 12px 26px rgba(0, 0, 0, 0.45);
     }
 
+    .event-card.no-img { min-height: 72px; }
+    .event-card.no-img > div { padding-right: 34px; }
     .event-card img {
       width: 100%;
       height: 124px;
@@ -1550,8 +1663,13 @@
       #btnEvtFilters { display: inline-flex; grid-column: 2; align-items: center; justify-content: center; white-space: nowrap; padding: 0 12px; min-height: 39px; }
       .evt-filters { grid-column: 1 / -1; display: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; flex: none; }
       .evt-filters.open { display: grid; }
-      .evt-filters select, .evt-filters input[type="date"] { width: 100%; }
+      .evt-filters select, .evt-filters input[type="date"] { width: 100%; padding: 8px 10px; }
       .evt-filters > button { width: 100%; }
+      .evt-chips { padding: 0 10px 8px; }
+      .evt-detail-box { padding: 16px; }
+      .evt-detail-img { max-height: 42vh; }
+      .evt-detail-actions button { flex: 1 1 calc(50% - 4px); }
+      .evt-detail-actions .primary { flex-basis: 100%; margin-right: 0; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -1687,8 +1805,15 @@
   </div>
 
   <div class="timeline-container">
-    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--text-muted); margin-bottom:4px; font-variant-numeric:tabular-nums;">
-      <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
+    <div class="tl-top">
+      <div class="tl-ticks" id="tlTicks" aria-hidden="true"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+      <div class="tl-zoom" role="group" aria-label="Thu phóng dòng thời gian">
+        <button type="button" id="tlPanPrev" onclick="panTimeline(-1)" aria-label="Lùi khung giờ" title="Lùi khung giờ">‹</button>
+        <button type="button" data-tlzoom="86400" class="active" onclick="setTimelineZoom(86400)" aria-pressed="true">24h</button>
+        <button type="button" data-tlzoom="21600" onclick="setTimelineZoom(21600)" aria-pressed="false">6h</button>
+        <button type="button" data-tlzoom="3600" onclick="setTimelineZoom(3600)" aria-pressed="false">1h</button>
+        <button type="button" id="tlPanNext" onclick="panTimeline(1)" aria-label="Tới khung giờ" title="Tới khung giờ">›</button>
+      </div>
     </div>
     <div class="timeline-bar" id="timelineBar" title="Kéo hoặc bấm để tua">
       <div class="track">
@@ -1775,7 +1900,12 @@
     <input id="evtSearchQ" placeholder="🔎 Tìm sự kiện (nhãn, camera)…" oninput="debouncedEventSearch()">
     <button id="btnEvtFilters" type="button" onclick="toggleEvtFilters(event)" aria-expanded="false" aria-controls="evtFilters">⚙ Bộ lọc</button>
     <div class="evt-filters" id="evtFilters">
-      <select id="evtSearchCam"><option value="">Tất cả camera</option></select>
+      <div class="evt-presets" role="group" aria-label="Lọc nhanh theo ngày">
+        <button type="button" data-evtpreset="1" onclick="setEvtDatePreset(1)">Hôm nay</button>
+        <button type="button" data-evtpreset="7" onclick="setEvtDatePreset(7)">7 ngày</button>
+        <button type="button" data-evtpreset="30" onclick="setEvtDatePreset(30)">30 ngày</button>
+      </div>
+      <select id="evtSearchCam" onchange="runEventSearch()"><option value="">Tất cả camera</option></select>
       <select id="evtSearchLabel" title="Nhãn sự kiện" onchange="runEventSearch()"><option value="">Mọi nhãn</option></select>
       <input type="date" id="evtSearchFrom" title="Từ ngày" onchange="runEventSearch()">
       <input type="date" id="evtSearchTo" title="Đến ngày" onchange="runEventSearch()">
@@ -1785,12 +1915,28 @@
       <button onclick="clearEventSearch()">✕ Xoá lọc</button>
     </div>
   </div>
+  <div class="evt-chips" id="evtChips" role="group" hidden aria-label="Bộ lọc đang bật"></div>
   <div class="events-list" id="searchResults" style="display:none;"></div>
   <div id="evtSearchMore" style="display:none; padding:4px 14px 12px;">
-    <button onclick="loadMoreEvents()">⬇ Tải thêm</button>
+    <button id="evtMoreBtn" onclick="loadMoreEvents()">⬇ Tải thêm</button>
     <span id="evtSearchCount" style="color:var(--text-muted); margin-left:8px; font-size:13px;"></span>
   </div>
   <div class="events-list" id="eventsList"></div>
+
+  <!-- Modal chi tiết sự kiện -->
+  <div class="modal" id="evtModal">
+    <div class="modal-box evt-detail-box">
+      <h3 id="evtDetailTitle">Chi tiết sự kiện</h3>
+      <img id="evtDetailImg" class="evt-detail-img" alt="Ảnh sự kiện">
+      <div class="evt-detail-meta" id="evtDetailMeta"></div>
+      <div class="evt-detail-actions">
+        <button class="primary" onclick="openEvtDetailOnTimeline()" data-perm="playback">▶ Xem trên timeline</button>
+        <button id="evtDetailSave" onclick="downloadEvtDetailImage()">⬇ Tải ảnh</button>
+        <button onclick="exportEvtDetailClip()" data-perm="export">⬇ Tải clip</button>
+        <button onclick="closeEvtModal()">Đóng</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Modal Quản lý Camera -->
   <div class="modal" id="camModal">
@@ -2365,6 +2511,7 @@
   <script>
     let cameras = {}, sysInfo = {}, currentCam = "", segments = [], hls = null, liveHeartbeatTimer = null, liveMode = true;
     let lastCursorSec = 0;
+    let timelineZoom = 86400, timelineStart = 0, postMotionSec = 60, _tlViewKey = "";
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const video = document.getElementById("videoPlayer");
     const dateInput = document.getElementById("dateInput");
@@ -2655,6 +2802,7 @@
       video.addEventListener("timeupdate", () => {
         if (currentSegStartSec == null || isNaN(video.currentTime)) return;
         const sec = currentSegStartSec + video.currentTime;
+        ensureTimelineCursor(sec);
         setCursor(sec, false);
         document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(sec);
       });
@@ -3298,61 +3446,35 @@
     async function loadTimeline() {
       if (!currentCam) return;
       updateDateBadge();
+      const viewKey = currentCam + "|" + dateInput.value;
+      if (viewKey !== _tlViewKey) {
+        _tlViewKey = viewKey;
+        timelineZoom = 86400;
+        timelineStart = 0;
+      }
       const res = await fetch(`api/timeline/${encodeURIComponent(currentCam)}?date=${dateInput.value}`);
-      if (!res.ok) { segments = []; dayEvents = []; return; }
+      if (!res.ok) {
+        segments = [];
+        dayEvents = [];
+        postMotionSec = 60;
+        renderTimelineTicks();
+        renderTimelineLayers();
+        updateTimelineControls();
+        return;
+      }
       const data = await res.json();
       segments = data.segments || [];
       dayEvents = data.events || [];
+      postMotionSec = data.post_motion_sec || 60;
       if (!document.getElementById("calendarPop").hidden) loadCalDays();
-      const segLayer = document.getElementById("segLayer");
-      const evtLayer = document.getElementById("evtLayer");
-      const motionLayer = document.getElementById("motionLayer");
-      segLayer.innerHTML = "";
-      evtLayer.innerHTML = "";
-      motionLayer.innerHTML = "";
-
-      segments.forEach(s => {
-        const el = document.createElement("div");
-        el.className = "seg-mark" + (s.drive ? " drive" : "");
-        el.style.left = (s.start_sec / 86400 * 100) + "%";
-        el.title = (s.drive ? "☁️ Có bản ghi trên Drive: " : "Có bản ghi: ") + s.time;
-        segLayer.appendChild(el);
-      });
-
-      const post = data.post_motion_sec || 60;
-      const spans = (data.events || [])
-        .map(e => [e.sec_of_day, Math.min(86400, e.sec_of_day + post)])
-        .sort((a, b) => a[0] - b[0]);
-      const merged = [];
-      for (const [s, e] of spans) {
-        const last = merged[merged.length - 1];
-        if (last && s <= last[1]) last[1] = Math.max(last[1], e);
-        else merged.push([s, e]);
-      }
-      for (const [s, e] of merged) {
-        const band = document.createElement("div");
-        band.className = "motion-mark";
-        band.style.left = (s / 86400 * 100) + "%";
-        band.style.width = Math.max(0.15, ((e - s) / 86400) * 100) + "%";
-        band.title = `Chuyển động ${fmtHMS(s)} – ${fmtHMS(e)}`;
-        motionLayer.appendChild(band);
-      }
+      renderTimelineTicks();
+      renderTimelineLayers();
+      updateTimelineControls();
 
       const list = document.getElementById("eventsList");
       list.innerHTML = "";
       (data.events || []).forEach(e => {
-        const mark = document.createElement("div");
-        mark.className = "evt-mark";
-        mark.style.left = (e.sec_of_day / 86400 * 100) + "%";
-        mark.title = `${e.time} - ${e.label}`;
-        evtLayer.appendChild(mark);
-
-        const card = document.createElement("div");
-        card.className = "event-card";
-        card.onclick = () => openEvent(currentCam, dateInput.value, e.sec_of_day);
-        card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
-                          <div style="margin-top:8px;font-size:13px;"><b>${e.time}</b> - ${e.label}</div>
-                          <button class="evt-dl" title="Tải clip quanh sự kiện này" onclick="event.stopPropagation(); exportEvent(${e.sec_of_day})">⬇️</button>`;
+        const card = eventCard(e, currentCam, dateInput.value);
         list.appendChild(card);
       });
       setCursor(0, false);
@@ -3366,9 +3488,124 @@
       return `${h}:${m}:${s}`;
     }
 
+    function tlClampStart(sec) {
+      return Math.max(0, Math.min(Math.max(0, 86400 - timelineZoom), sec));
+    }
+    function tlPct(sec) {
+      return (sec - timelineStart) / timelineZoom * 100;
+    }
+    function renderTimelineTicks() {
+      const box = document.getElementById("tlTicks");
+      if (!box) return;
+      box.textContent = "";
+      for (let i = 0; i < 5; i++) {
+        const sec = Math.min(86400, timelineStart + timelineZoom * i / 4);
+        const sp = document.createElement("span");
+        sp.textContent = fmtHMS(sec).slice(0, 5);
+        box.appendChild(sp);
+      }
+    }
+    function updateTimelineControls() {
+      document.querySelectorAll("[data-tlzoom]").forEach(b => {
+        const on = Number(b.dataset.tlzoom) === timelineZoom;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      const prev = document.getElementById("tlPanPrev");
+      const next = document.getElementById("tlPanNext");
+      if (prev) prev.disabled = timelineStart <= 0;
+      if (next) next.disabled = timelineStart + timelineZoom >= 86400;
+    }
+    function renderTimelineLayers() {
+      const segLayer = document.getElementById("segLayer");
+      const evtLayer = document.getElementById("evtLayer");
+      const motionLayer = document.getElementById("motionLayer");
+      if (!segLayer || !evtLayer || !motionLayer) return;
+      segLayer.textContent = "";
+      evtLayer.textContent = "";
+      motionLayer.textContent = "";
+      const viewEnd = timelineStart + timelineZoom;
+
+      segments.forEach(s => {
+        if (s.start_sec < timelineStart || s.start_sec >= viewEnd) return;
+        const el = document.createElement("div");
+        el.className = "seg-mark" + (s.drive ? " drive" : "");
+        el.style.left = tlPct(s.start_sec) + "%";
+        el.title = (s.drive ? "☁️ Có bản ghi trên Drive: " : "Có bản ghi: ") + s.time;
+        segLayer.appendChild(el);
+      });
+
+      const spans = dayEvents
+        .map(e => [e.sec_of_day, Math.min(86400, e.sec_of_day + postMotionSec)])
+        .sort((a, b) => a[0] - b[0]);
+      const merged = [];
+      for (const [s, e] of spans) {
+        const last = merged[merged.length - 1];
+        if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+        else merged.push([s, e]);
+      }
+      for (const [s0, e0] of merged) {
+        const s = Math.max(s0, timelineStart);
+        const e = Math.min(e0, viewEnd);
+        if (e <= s) continue;
+        const band = document.createElement("div");
+        band.className = "motion-mark";
+        band.style.left = tlPct(s) + "%";
+        band.style.width = Math.max(0.4, ((e - s) / timelineZoom) * 100) + "%";
+        band.title = `Chuyển động ${fmtHMS(s0)} – ${fmtHMS(e0)}`;
+        motionLayer.appendChild(band);
+      }
+
+      dayEvents.forEach(e => {
+        if (e.sec_of_day < timelineStart || e.sec_of_day >= viewEnd) return;
+        const mark = document.createElement("div");
+        mark.className = "evt-mark";
+        mark.style.left = tlPct(e.sec_of_day) + "%";
+        mark.title = `${e.time} - ${e.label}`;
+        evtLayer.appendChild(mark);
+      });
+    }
+    function timelineFocusSec() {
+      if (lastCursorSec > 0) return lastCursorSec;
+      if (dateInput.value === todayStr()) {
+        const n = new Date();
+        return n.getHours() * 3600 + n.getMinutes() * 60 + n.getSeconds();
+      }
+      if (dayEvents.length) return dayEvents[Math.floor(dayEvents.length / 2)].sec_of_day;
+      if (segments.length) return segments[Math.floor(segments.length / 2)].start_sec;
+      return 43200;
+    }
+    function setTimelineZoom(z) {
+      z = Number(z) || 86400;
+      if (z === timelineZoom) return;
+      timelineZoom = z;
+      timelineStart = tlClampStart(timelineFocusSec() - z / 2);
+      renderTimelineTicks();
+      renderTimelineLayers();
+      updateTimelineControls();
+      setCursor(lastCursorSec || 0, false);
+    }
+    function panTimeline(dir) {
+      if (timelineZoom >= 86400) return;
+      timelineStart = tlClampStart(timelineStart + dir * timelineZoom * 0.5);
+      renderTimelineTicks();
+      renderTimelineLayers();
+      updateTimelineControls();
+      setCursor(lastCursorSec || 0, false);
+    }
+    function ensureTimelineCursor(sec) {
+      if (timelineZoom >= 86400) return;
+      const margin = timelineZoom * 0.08;
+      if (sec >= timelineStart + margin && sec <= timelineStart + timelineZoom - margin) return;
+      timelineStart = tlClampStart(sec - timelineZoom / 2);
+      renderTimelineTicks();
+      renderTimelineLayers();
+      updateTimelineControls();
+    }
+
     function setCursor(sec, showTip) {
       lastCursorSec = sec;
-      const pct = Math.max(0, Math.min(100, sec / 86400 * 100));
+      const pct = Math.max(0, Math.min(100, tlPct(sec)));
       const line = document.getElementById("cursorLine");
       const handle = document.getElementById("cursorHandle");
       const tip = document.getElementById("timeTip");
@@ -3412,6 +3649,76 @@
       clearTimeout(_evtSearchTimer);
       _evtSearchTimer = setTimeout(runEventSearch, 350);
     }
+    function evtDateText(date) {
+      const parts = String(date || "").split("-");
+      return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : date;
+    }
+    function evtDayLabel(date) {
+      const p = String(date || "").split("-").map(Number);
+      if (p.length !== 3 || p.some(n => !n)) return date || "";
+      const d = new Date(p[0], p[1] - 1, p[2]);
+      const wd = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"][d.getDay()];
+      return `${wd}, ${String(p[2]).padStart(2, "0")}/${String(p[1]).padStart(2, "0")}/${p[0]}`;
+    }
+    function setEvtDatePreset(days) {
+      const to = new Date();
+      const from = new Date();
+      from.setDate(to.getDate() - (Math.max(1, Number(days) || 1) - 1));
+      document.getElementById("evtSearchFrom").value = ymd(from);
+      document.getElementById("evtSearchTo").value = ymd(to);
+      runEventSearch();
+    }
+    function removeEvtFilter(key) {
+      if (key === "date") {
+        document.getElementById("evtSearchFrom").value = "";
+        document.getElementById("evtSearchTo").value = "";
+      } else if (key === "star") {
+        document.getElementById("evtSearchStar").checked = false;
+      } else {
+        const map = { q: "evtSearchQ", cam: "evtSearchCam", label: "evtSearchLabel" };
+        const el = document.getElementById(map[key]);
+        if (el) el.value = "";
+      }
+      runEventSearch();
+    }
+    function renderEvtChips(f) {
+      const box = document.getElementById("evtChips");
+      if (!box) return;
+      const chips = [];
+      if (f.q) chips.push(["q", `Từ khoá: ${f.q}`]);
+      if (f.cam) {
+        const opt = [...document.querySelectorAll("#evtSearchCam option")].find(o => o.value === f.cam);
+        chips.push(["cam", `Camera: ${opt ? opt.textContent : f.cam}`]);
+      }
+      if (f.label) chips.push(["label", `Nhãn: ${f.label}`]);
+      if (f.star) chips.push(["star", "Đã đánh dấu"]);
+      if (f.from || f.to) {
+        let txt;
+        if (f.from && f.to && f.from !== f.to) txt = `${evtDateText(f.from)} → ${evtDateText(f.to)}`;
+        else txt = evtDateText(f.from || f.to);
+        chips.push(["date", txt]);
+      }
+      box.hidden = !chips.length;
+      box.innerHTML = chips.map(([key, text]) =>
+        `<span class="evt-chip"><span>${esc(text)}</span><button type="button" onclick="removeEvtFilter('${key}')" aria-label="Bỏ lọc ${esc(text)}">✕</button></span>`
+      ).join("");
+    }
+    function updateEvtPresetButtons(f) {
+      document.querySelectorAll("[data-evtpreset]").forEach(b => {
+        const n = Number(b.dataset.evtpreset);
+        let active = false;
+        if (f.from && f.to) {
+          const a = new Date(f.from + "T00:00:00");
+          const z = new Date(f.to + "T00:00:00");
+          if (!isNaN(a.getTime()) && !isNaN(z.getTime())) {
+            active = z.getTime() === new Date(todayStr() + "T00:00:00").getTime()
+              && Math.round((z - a) / 86400000) + 1 === n;
+          }
+        }
+        b.classList.toggle("active", active);
+        b.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
     function toggleEvtFilters(ev) {
       if (ev) ev.stopPropagation();
       const box = document.getElementById("evtFilters");
@@ -3422,10 +3729,14 @@
     }
     function updateEvtFilterBtn(f) {
       const btn = document.getElementById("btnEvtFilters");
-      if (!btn) return;
-      const n = [f.cam, f.label, f.star, f.from, f.to].filter(Boolean).length;
-      btn.textContent = n ? `⚙ Bộ lọc (${n})` : "⚙ Bộ lọc";
-      btn.classList.toggle("active-filter", n > 0);
+      if (btn) {
+        let n = [f.cam, f.label, f.star].filter(Boolean).length;
+        if (f.from || f.to) n++;
+        btn.textContent = n ? `⚙ Bộ lọc (${n})` : "⚙ Bộ lọc";
+        btn.classList.toggle("active-filter", n > 0);
+      }
+      renderEvtChips(f);
+      updateEvtPresetButtons(f);
     }
     let _evtSearchOffset = 0;
     const EVT_PAGE = 60;
@@ -3454,15 +3765,29 @@
       params.set("offset", offset);
       return params;
     }
-    function searchEventCard(e) {
+    let evtDetail = null;
+    function eventSec(e) {
+      if (typeof e.sec_of_day === "number") return e.sec_of_day;
+      const p = String(e.time || "0:0:0").split(":").map(Number);
+      return (p[0] || 0) * 3600 + (p[1] || 0) * 60 + (p[2] || 0);
+    }
+    function eventCard(e, camId, date) {
       const card = document.createElement("div");
-      card.className = "event-card";
-      card.innerHTML = `<img src="${e.snapshot}" onerror="this.style.display='none'">
+      card.className = "event-card" + (e.snapshot ? "" : " no-img");
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      const camName = e.cam_name || (cameras[camId] && cameras[camId].name) || camId || "";
+      card.setAttribute("aria-label", `Sự kiện ${e.time || ""} ${e.label || ""} camera ${camName}`);
+      card.innerHTML = `${e.snapshot ? `<img src="${esc(e.snapshot)}" loading="lazy" decoding="async" alt="Ảnh sự kiện ${esc(e.time || "")}" onerror="this.style.display='none'">` : ""}
         <button class="evt-star" title="Đánh dấu sự kiện" aria-pressed="${e.starred ? "true" : "false"}">${e.starred ? "★" : "☆"}</button>
-        <div style="margin-top:8px;font-size:13px;"><b>${esc(e.cam_name)}</b><br>${e.date} ${e.time} - ${esc(e.label)}</div>`;
-      const sec = (typeof e.sec_of_day === "number") ? e.sec_of_day
-        : parseInt(e.time.split(":")[0]) * 3600 + parseInt(e.time.split(":")[1]) * 60 + parseInt(e.time.split(":")[2]);
-      card.onclick = () => openEvent(e.cam_id, e.date, sec);
+        <div style="margin-top:8px;font-size:13px;"><b>${esc(e.date || date || "")} ${esc(e.time || "")}</b><br>${esc(e.label || "")}</div>`;
+      card.onclick = () => showEventDetail(e, camId, date);
+      card.onkeydown = (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        if (ev.target.closest("button")) return;
+        ev.preventDefault();
+        showEventDetail(e, camId, date);
+      };
       const btn = card.querySelector(".evt-star");
       btn.onclick = async (ev) => {
         ev.stopPropagation();
@@ -3476,15 +3801,108 @@
           if (!r.ok) return;
           btn.setAttribute("aria-pressed", next ? "true" : "false");
           btn.textContent = next ? "★" : "☆";
+          e.starred = next;
         } catch (err) {}
       };
       return card;
     }
+    function showEventDetail(e, camId, date) {
+      const cam = e.cam_id || camId || currentCam;
+      const day = e.date || date || dateInput.value;
+      const sec = eventSec(e);
+      const camName = e.cam_name || (cameras[cam] && cameras[cam].name) || cam;
+      evtDetail = { ...e, cam_id: cam, date: day, sec_of_day: sec, cam_name: camName };
+      const img = document.getElementById("evtDetailImg");
+      const save = document.getElementById("evtDetailSave");
+      if (e.snapshot) {
+        img.style.display = "block";
+        img.onerror = () => { img.style.display = "none"; };
+        img.src = e.snapshot;
+        img.alt = `Ảnh sự kiện ${e.time || ""} camera ${camName}`;
+      } else {
+        img.style.display = "none";
+        img.removeAttribute("src");
+      }
+      save.style.display = e.snapshot ? "" : "none";
+      document.getElementById("evtDetailTitle").textContent = `Sự kiện ${e.time || ""}`;
+      document.getElementById("evtDetailMeta").innerHTML =
+        `<span><b>Camera:</b> ${esc(camName)}</span>` +
+        `<span><b>Ngày:</b> ${esc(evtDateText(day))}</span>` +
+        `<span><b>Giờ:</b> ${esc(e.time || "")}</span>` +
+        `<span><b>Nhãn:</b> ${esc(e.label || "Chuyển động")}</span>` +
+        (e.id ? `<span><b>Mã:</b> #${esc(e.id)}</span>` : "");
+      document.getElementById("evtModal").classList.add("open");
+    }
+    function closeEvtModal() {
+      document.getElementById("evtModal").classList.remove("open");
+    }
+    function openEvtDetailOnTimeline() {
+      if (!evtDetail) return;
+      const d = evtDetail;
+      closeEvtModal();
+      openEvent(d.cam_id, d.date, d.sec_of_day);
+    }
+    async function downloadEvtDetailImage() {
+      if (!evtDetail || !evtDetail.snapshot) return;
+      try {
+        const r = await fetch(evtDetail.snapshot);
+        if (!r.ok) throw new Error(r.status);
+        const blob = await r.blob();
+        const ext = (evtDetail.snapshot.split(".").pop() || "jpg").split("?")[0];
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `su-kien-${evtDetail.date || dateInput.value}-${String(evtDetail.time || "").replace(/:/g, "")}.${ext}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+      } catch (err) {
+        alert("Không tải được ảnh sự kiện");
+      }
+    }
+    function exportEvtDetailClip() {
+      if (!evtDetail) return;
+      exportEvent(evtDetail.sec_of_day, evtDetail.cam_id, evtDetail.date);
+    }
+    function appendSearchEvents(events) {
+      const box = document.getElementById("searchResults");
+      events.forEach(e => {
+        if (e.date !== _evtLastDay) {
+          _evtLastDay = e.date || "";
+          const head = document.createElement("div");
+          head.className = "evt-day-head";
+          head.textContent = evtDayLabel(e.date);
+          box.appendChild(head);
+        }
+        box.appendChild(eventCard(e, e.cam_id, e.date));
+      });
+    }
+    let _evtLastDay = "", _evtTotal = 0, _evtLoading = false, _evtMoreObserver = null, _evtSeq = 0;
+    function evtMoreVisible() {
+      const el = document.getElementById("evtSearchMore");
+      if (!el || el.style.display === "none") return false;
+      const r = el.getBoundingClientRect();
+      return r.top < innerHeight + 300 && r.bottom > -300;
+    }
+    function initEvtInfinite() {
+      const el = document.getElementById("evtSearchMore");
+      if (!el || _evtMoreObserver) return;
+      _evtMoreObserver = new IntersectionObserver(entries => {
+        if (entries.some(x => x.isIntersecting)) loadMoreEvents();
+      }, { rootMargin: "300px" });
+      _evtMoreObserver.observe(el);
+    }
     function updateSearchMore(count, total) {
+      _evtTotal = total;
       document.getElementById("evtSearchCount").textContent = `Hiện ${count}/${total} sự kiện`;
       document.getElementById("evtSearchMore").style.display = (count < total) ? "" : "none";
+      if (count < total) {
+        initEvtInfinite();
+        if (evtMoreVisible()) setTimeout(() => { if (_evtSearchOffset < _evtTotal) loadMoreEvents(); }, 60);
+      }
     }
     async function runEventSearch() {
+      const seq = ++_evtSeq;
       const f = evtSearchFiltered();
       updateEvtFilterBtn(f);
       const box = document.getElementById("searchResults");
@@ -3493,33 +3911,54 @@
         box.style.display = "none";
         document.getElementById("evtSearchMore").style.display = "none";
         list.style.display = "";
+        _evtLoading = false;
         return;
       }
       _evtSearchOffset = 0;
+      _evtLastDay = "";
+      _evtTotal = 0;
+      _evtLoading = false;
       let data = { events: [], total: 0 };
       try { data = await fetch("api/events?" + evtSearchQuery(f, 0).toString()).then(r => r.json()); } catch (e) {}
+      if (seq !== _evtSeq) return;
       box.innerHTML = "";
       const events = data.events || [];
       if (!events.length) {
-        box.innerHTML = '<div style="color:var(--text-muted); padding:12px;">Không có sự kiện phù hợp.</div>';
+        box.innerHTML = '<div class="evt-empty">Không có sự kiện phù hợp.</div>';
       } else {
-        events.forEach(e => box.appendChild(searchEventCard(e)));
+        appendSearchEvents(events);
       }
       _evtSearchOffset = events.length;
       box.style.display = "";
       list.style.display = "none";
-      updateSearchMore(_evtSearchOffset, data.total || 0);
+      updateSearchMore(_evtSearchOffset, Number(data.total) || events.length);
     }
     async function loadMoreEvents() {
+      if (_evtLoading) return;
       const f = evtSearchFiltered();
-      if (!evtSearchActive(f)) return;
+      if (!evtSearchActive(f) || _evtSearchOffset >= _evtTotal) return;
+      _evtLoading = true;
+      const seq = _evtSeq;
+      const btn = document.getElementById("evtMoreBtn");
+      if (btn) { btn.disabled = true; btn.textContent = "Đang tải…"; }
       let data = { events: [], total: 0 };
-      try { data = await fetch("api/events?" + evtSearchQuery(f, _evtSearchOffset).toString()).then(r => r.json()); } catch (e) {}
-      const events = data.events || [];
-      const box = document.getElementById("searchResults");
-      events.forEach(e => box.appendChild(searchEventCard(e)));
-      _evtSearchOffset += events.length;
-      updateSearchMore(_evtSearchOffset, data.total || 0);
+      try {
+        data = await fetch("api/events?" + evtSearchQuery(f, _evtSearchOffset).toString()).then(r => r.json());
+        if (seq !== _evtSeq) return;
+        const events = data.events || [];
+        appendSearchEvents(events);
+        _evtSearchOffset += events.length;
+        updateSearchMore(_evtSearchOffset, Number(data.total) || _evtTotal);
+        if (!events.length) {
+          _evtTotal = _evtSearchOffset;
+          document.getElementById("evtSearchMore").style.display = "none";
+          document.getElementById("evtSearchCount").textContent = `Hiện ${_evtSearchOffset}/${_evtSearchOffset} sự kiện`;
+        }
+      } catch (e) {
+      } finally {
+        _evtLoading = false;
+        if (btn) { btn.disabled = false; btn.textContent = "⬇ Tải thêm"; }
+      }
     }
     function clearEventSearch() {
       document.getElementById("evtSearchQ").value = "";
@@ -3537,7 +3976,7 @@
       const secAt = (ev) => {
         const rect = bar.getBoundingClientRect();
         const x = Math.min(Math.max(ev.clientX - rect.left, 0), rect.width);
-        return Math.floor((x / rect.width) * 86400);
+        return Math.floor(timelineStart + (x / rect.width) * timelineZoom);
       };
       bar.addEventListener("pointerdown", (ev) => {
         scrubbing = true;
@@ -3548,7 +3987,7 @@
       bar.addEventListener("pointermove", (ev) => {
         const sec = secAt(ev);
         const tip = document.getElementById("timeTip");
-        if (tip) { tip.style.left = (sec / 86400 * 100) + "%"; tip.textContent = fmtHMS(sec); }
+        if (tip) { tip.style.left = tlPct(sec) + "%"; tip.textContent = fmtHMS(sec); }
         if (scrubbing) setCursor(sec, true);
       });
       const finish = (ev) => {
@@ -3559,6 +3998,17 @@
       };
       bar.addEventListener("pointerup", finish);
       bar.addEventListener("pointercancel", () => { scrubbing = false; bar.classList.remove("scrubbing"); });
+      bar.addEventListener("wheel", (ev) => {
+        if (timelineZoom >= 86400) return;
+        if (!ev.shiftKey && Math.abs(ev.deltaX) <= Math.abs(ev.deltaY)) return;
+        ev.preventDefault();
+        const d = ev.shiftKey ? ev.deltaY : ev.deltaX;
+        timelineStart = tlClampStart(timelineStart + (d / bar.clientWidth) * timelineZoom);
+        renderTimelineTicks();
+        renderTimelineLayers();
+        updateTimelineControls();
+        setCursor(lastCursorSec || 0, false);
+      }, { passive: false });
     }
 
     async function openEvent(camId, date, sec) {
@@ -3619,6 +4069,7 @@
       liveMode = false;
       document.getElementById("btnLive").classList.remove("active");
       updateDateBadge();
+      ensureTimelineCursor(targetSec);
       setCursor(targetSec, false);
       document.getElementById("scrubTime").textContent = "Bản ghi: " + fmtHMS(targetSec);
 
@@ -4016,9 +4467,9 @@
       const p = v.split(":").map(Number);
       return (p[0] || 0) * 3600 + (p[1] || 0) * 60 + (p[2] || 0);
     }
-    function exportEvent(sec) {
+    function exportEvent(sec, camId, date) {
       const post = (sysInfo && sysInfo.post_motion_sec) || 60;
-      exportRange(Math.max(0, sec - 10), Math.min(86400, sec + post + 10), document.getElementById("expHc").checked);
+      exportRange(Math.max(0, sec - 10), Math.min(86400, sec + post + 10), document.getElementById("expHc").checked, camId, date);
     }
     function toggleExport(e) {
       if (e) e.stopPropagation();
@@ -4034,13 +4485,15 @@
       const to = timeStrToSec(document.getElementById("expTo").value, Math.min(86400, lastCursorSec + 60));
       exportRange(from, to, document.getElementById("expHc").checked);
     }
-    async function exportRange(fromSec, toSec, hc) {
-      if (!currentCam) return alert("Chưa chọn camera.");
+    async function exportRange(fromSec, toSec, hc, camId, date) {
+      const cam = camId || currentCam;
+      const day = date || dateInput.value;
+      if (!cam) return alert("Chưa chọn camera.");
       if (toSec <= fromSec) return alert("Khoảng thời gian không hợp lệ (đến phải sau từ).");
       const statusEl = document.getElementById("statusText");
       statusEl.textContent = "Đang ghép clip... (có thể mất vài giây)";
       try {
-        const url = `api/export/${encodeURIComponent(currentCam)}?date=${dateInput.value}&start=${Math.floor(fromSec)}&end=${Math.ceil(toSec)}&hc=${hc ? 1 : 0}`;
+        const url = `api/export/${encodeURIComponent(cam)}?date=${encodeURIComponent(day)}&start=${Math.floor(fromSec)}&end=${Math.ceil(toSec)}&hc=${hc ? 1 : 0}`;
         const r = await fetch(url);
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
@@ -4050,7 +4503,7 @@
         const blob = await r.blob();
         const cd = r.headers.get("Content-Disposition") || "";
         const m = cd.match(/filename="?([^";]+)/);
-        const fname = m ? m[1] : `${currentCam}_${dateInput.value}.mp4`;
+        const fname = m ? m[1] : `${cam}_${day}.mp4`;
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = fname;
@@ -4446,7 +4899,8 @@
         camModal: closeCamModal, storageModal: closeStorageModal, logsModal: closeLogsModal,
         hassModal: closeHassModal, notifyModal: closeNotifyModal, secModal: closeSecModal,
         backupModal: closeBackupModal,
-        driveModal: closeDriveModal
+        driveModal: closeDriveModal,
+        evtModal: closeEvtModal
       };
       const fn = closers[top.id];
       if (fn) fn(); else top.classList.remove("open");
